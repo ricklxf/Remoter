@@ -1,0 +1,25 @@
+# Node
+node_modules/
+dist/
+out/
+.DS_Store
+
+# Swift
+.build/
+*.o
+*.d
+*.swp
+Packages/
+.swiftpm/
+
+# Electron
+Remoter-Client/dist/
+Remoter-Client/out/
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*

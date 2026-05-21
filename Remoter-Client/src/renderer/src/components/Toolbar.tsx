@@ -1,0 +1,98 @@
+import React, { useRef } from 'react'
+import { Connection } from '../network/Connection'
+
+interface Props {
+  conn: Connection
+  onDisconnect: () => void
+  onToggleFullscreen: () => void
+  fps: number
+  bitrate: number
+  onQualityChange: (fps: number, bitrate: number) => void
+}
+
+const QUALITY_PRESETS = [
+  { label: '2K 60fps', fps: 60, bitrate: 15_000_000 },
+  { label: '1080 60fps', fps: 60, bitrate: 8_000_000 },
+  { label: '1080 30fps', fps: 30, bitrate: 4_000_000 },
+  { label: '流畅优先',   fps: 30, bitrate: 2_000_000 },
+]
+
+export function Toolbar({ conn, onDisconnect, onToggleFullscreen, fps, bitrate, onQualityChange }: Props) {
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    await conn.sendFile(file)
+  }
+
+  async function handleClipboard() {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text) conn.sendClipboard(text)
+    } catch { /* permission denied */ }
+  }
+
+  return (
+    <div style={styles.bar}>
+      {/* Quality selector */}
+      <select
+        style={styles.select}
+        value={`${fps}:${bitrate}`}
+        onChange={e => {
+          const [f, b] = e.target.value.split(':').map(Number)
+          onQualityChange(f, b)
+          conn.sendQuality(f, b)
+        }}
+      >
+        {QUALITY_PRESETS.map(p => (
+          <option key={p.label} value={`${p.fps}:${p.bitrate}`}>{p.label}</option>
+        ))}
+      </select>
+
+      <div style={styles.sep} />
+
+      <ToolBtn icon="📋" title="同步剪贴板" onClick={handleClipboard} />
+      <ToolBtn icon="📂" title="发送文件" onClick={() => fileRef.current?.click()} />
+      <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
+
+      <div style={styles.sep} />
+
+      <ToolBtn icon="⛶" title="全屏" onClick={onToggleFullscreen} />
+      <ToolBtn icon="⏏" title="断开连接" onClick={onDisconnect} danger />
+    </div>
+  )
+}
+
+function ToolBtn({ icon, title, onClick, danger }: {
+  icon: string; title: string; onClick: () => void; danger?: boolean
+}) {
+  return (
+    <button style={{ ...styles.btn, ...(danger ? styles.btnDanger : {}) }} title={title} onClick={onClick}>
+      {icon}
+    </button>
+  )
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  bar: {
+    display: 'flex', alignItems: 'center', gap: 4,
+    background: 'rgba(15,15,26,0.92)', backdropFilter: 'blur(8px)',
+    padding: '6px 12px', borderRadius: 10,
+    position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+    boxShadow: '0 2px 16px rgba(0,0,0,0.6)', zIndex: 100,
+    border: '1px solid rgba(255,255,255,0.08)'
+  },
+  select: {
+    background: 'var(--bg3)', color: 'var(--text)', border: '1px solid #333',
+    borderRadius: 6, padding: '4px 8px', fontSize: 13, cursor: 'pointer'
+  },
+  sep: { width: 1, height: 20, background: '#333', margin: '0 4px' },
+  btn: {
+    background: 'transparent', color: 'var(--text)',
+    padding: '6px 8px', borderRadius: 6, fontSize: 16,
+    transition: 'background 0.15s'
+  },
+  btnDanger: { color: 'var(--primary)' }
+}

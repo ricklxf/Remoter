@@ -3,6 +3,7 @@ import Network
 import AppKit
 
 // Manages one connected client: auth → capture → encode → stream
+// Video: WebRTC DataChannel (UDP) preferred, WebSocket fallback
 final class Session {
     let id: UUID
     let connection: NWConnection
@@ -13,6 +14,7 @@ final class Session {
     private var encoder: VideoEncoder?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
+    private var webrtc: WebRTCAgent?
 
     private var authenticated = false
     private var frameId: UInt32 = 0
@@ -35,6 +37,7 @@ final class Session {
 
         let msg = ClientMessage.parse(json)
 
+        // ── 认证 ──────────────────────────────────────────────
         if case .auth(let clientPin) = msg {
             if clientPin == pin {
                 authenticated = true
@@ -50,6 +53,8 @@ final class Session {
         guard authenticated else { return }
 
         switch msg {
+
+        // ── 输入事件（通过 WebSocket，UDP 丢包不影响控制准确性）──
         case .mouseMove(let x, let y):
             input?.mouseMove(x: x, y: y)
 
@@ -73,12 +78,22 @@ final class Session {
             fileReceiver?.finish(id: fid)
 
         case .qualitySet(let fps, let bitrate):
-            Task { try? await self.capturer?.updateConfig(fps: fps, width: capturer?.screenWidth ?? 2560, height: capturer?.screenHeight ?? 1440) }
-            encoder?.forceKeyframe()
-            _ = bitrate // bitrate change would require encoder re-setup
+            Task {
+                guard let c = self.capturer else { return }
+                try? await c.updateConfig(fps: fps, width: c.screenWidth, height: c.screenHeight)
+                self.encoder?.forceKeyframe()
+                _ = bitrate
+            }
 
         case .ping:
             sendJson(["type": "pong"])
+
+        // ── WebRTC 信令 ────────────────────────────────────────
+        case .webrtcOffer(let sdp):
+            setupWebRTC(offerSDP: sdp)
+
+        case .webrtcICE(let json):
+            webrtc?.handleRemoteICE(json)
 
         default:
             break
@@ -87,56 +102,84 @@ final class Session {
 
     func handleBinary(_ data: Data) {
         guard authenticated, data.count > 1, data[0] == FrameType.fileChunk.rawValue else { return }
-        // [0x02][16B id][4B offset BE][rest: chunk data]
         guard data.count > 21 else { return }
         let idData = data[1..<17]
-        let fid = String(data: idData, encoding: .utf8)?.trimmingCharacters(in: .init(charactersIn: "\0")) ?? ""
+        let fid = String(data: idData, encoding: .utf8)?
+            .trimmingCharacters(in: .init(charactersIn: "\0")) ?? ""
         var offsetBE: UInt32 = 0
         (data[17..<21] as NSData).getBytes(&offsetBE, length: 4)
         let offset = CFSwapInt32BigToHost(offsetBE)
-        let chunk = data[21...]
-        fileReceiver?.receive(id: fid, offset: Int64(offset), chunk: Data(chunk))
+        fileReceiver?.receive(id: fid, offset: Int64(offset), chunk: Data(data[21...]))
     }
 
     func close() {
         Task { await capturer?.stop() }
         encoder?.invalidate()
+        webrtc?.close()
     }
 
-    // MARK: - Private
+    // MARK: - WebRTC 信令设置
+
+    private func setupWebRTC(offerSDP: String) {
+        let agent = WebRTCAgent()
+
+        agent.onLocalDescription = { [weak self] type, sdp in
+            self?.sendJson(["type": "webrtc_\(type)", "sdp": sdp])
+        }
+        agent.onICECandidate = { [weak self] json in
+            self?.sendJson(["type": "webrtc_ice", "candidate": json])
+        }
+        agent.onConnected = { [weak self] in
+            // DataChannel 建立后强制一个关键帧
+            self?.encoder?.forceKeyframe()
+        }
+        agent.onDisconnected = { [weak self] in
+            // DataChannel 断开，视频自动回落到 WebSocket（onEncodedFrame 里判断）
+            print("[Session] WebRTC disconnected, falling back to WebSocket")
+        }
+        // DataChannel 上收到的控制消息，路由到和 WebSocket 一样的处理逻辑
+        agent.onControlMessage = { [weak self] text in
+            self?.handleText(text)
+        }
+
+        self.webrtc = agent
+        agent.handleOffer(offerSDP)
+    }
+
+    // MARK: - 采集与编码
 
     private func beginCapture() async {
-        let c = ScreenCapturer()
+        let c   = ScreenCapturer()
         let enc = VideoEncoder()
 
-        c.onFrame = { [weak self, weak enc] buf in
-            enc?.encode(sampleBuffer: buf)
-        }
+        c.onFrame = { [weak enc] buf in enc?.encode(sampleBuffer: buf) }
 
         enc.onEncodedFrame = { [weak self] data, isKeyframe in
             guard let self else { return }
-            let now = UInt32(Date().timeIntervalSince1970 * 1000) - self.startTime
-            let packet = buildVideoFramePacket(
-                data: data, frameId: self.frameId, ptsMs: now, isKeyframe: isKeyframe
-            )
+            let fid = self.frameId
             self.frameId &+= 1
-            self.server.sendBinary(packet, to: self.connection)
+
+            // 优先走 WebRTC DataChannel（UDP），否则 WebSocket 兜底
+            if let rtc = self.webrtc, rtc.isVideoChannelOpen {
+                rtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid)
+            } else {
+                let now = UInt32(Date().timeIntervalSince1970 * 1000) - self.startTime
+                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
+                self.server.sendBinary(pkt, to: self.connection)
+            }
         }
 
         do {
-            try enc.setup(
-                width: 2560, height: 1440, fps: 60,
-                bitrate: 15_000_000
-            )
+            try enc.setup(width: 2560, height: 1440, fps: 60, bitrate: 15_000_000)
             try await c.start(fps: 60)
-            self.capturer = c
-            self.encoder = enc
-            self.input = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
-            self.fileReceiver = FileReceiver()
-            self.startTime = UInt32(Date().timeIntervalSince1970 * 1000)
+            capturer     = c
+            encoder      = enc
+            input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
+            fileReceiver = FileReceiver()
+            startTime    = UInt32(Date().timeIntervalSince1970 * 1000)
             sendJson([
-                "type": "stream_started",
-                "width": c.screenWidth,
+                "type":   "stream_started",
+                "width":  c.screenWidth,
                 "height": c.screenHeight
             ])
         } catch {

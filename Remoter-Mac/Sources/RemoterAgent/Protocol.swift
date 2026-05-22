@@ -18,6 +18,8 @@ enum ClientMessage {
     case fileEnd(id: String)
     case qualitySet(fps: Int, bitrate: Int)
     case ping
+    case webrtcOffer(sdp: String)
+    case webrtcICE(json: String)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -65,6 +67,10 @@ enum ClientMessage {
             )
         case "ping":
             return .ping
+        case "webrtc_offer":
+            return .webrtcOffer(sdp: json["sdp"] as? String ?? "")
+        case "webrtc_ice":
+            return .webrtcICE(json: json["candidate"] as? String ?? "")
         default:
             return .unknown
         }

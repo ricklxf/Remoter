@@ -1,12 +1,20 @@
 import { ConnectParams, ConnectionState, StreamInfo } from '../types'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 
+export interface ConnStats {
+  fps: number
+  rttMs: number
+  bitrateKbps: number
+  transport: 'UDP' | 'TCP'
+}
+
 export type ConnEvent =
   | { type: 'state'; state: ConnectionState }
   | { type: 'stream_started'; info: StreamInfo }
   | { type: 'video_frame'; data: ArrayBuffer; frameId: number; ptsMs: number; keyframe: boolean }
   | { type: 'clipboard'; text: string }
   | { type: 'error'; message: string }
+  | { type: 'stats'; stats: ConnStats }
 
 const VIDEO_FRAME = 0x01
 
@@ -14,6 +22,13 @@ export class Connection {
   private ws: WebSocket | null = null
   private webrtc: WebRTCClient | null = null
   private params: ConnectParams | null = null
+  private statsTimer: ReturnType<typeof setInterval> | null = null
+
+  // Stats counters (reset every 2s)
+  private _frameCount  = 0
+  private _bytesCount  = 0
+  private _rttMs       = 0
+  private _pingTs      = 0
 
   onEvent: ((e: ConnEvent) => void) | null = null
 
@@ -57,6 +72,7 @@ export class Connection {
   }
 
   disconnect(): void {
+    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null }
     this.webrtc?.close()
     this.webrtc = null
     this.ws?.close()
@@ -121,7 +137,9 @@ export class Connection {
     this.webrtc = rtc
 
     // 收到视频帧 → 和 WebSocket 视频帧走同一个事件
-    rtc.onVideoFrame = (data, keyframe) => {
+    rtc.onVideoFrame = (data, keyframe, bytes) => {
+      this._frameCount++
+      this._bytesCount += bytes
       this.emit({ type: 'video_frame', data, frameId: 0, ptsMs: 0, keyframe })
     }
 
@@ -162,6 +180,7 @@ export class Connection {
           type: 'stream_started',
           info: { width: msg.width as number, height: msg.height as number }
         })
+        this.startStatsLoop()
         break
 
       // WebRTC 信令：Mac → Windows
@@ -176,6 +195,14 @@ export class Connection {
       case 'error':
         this.emit({ type: 'error', message: (msg.message ?? msg.code) as string })
         break
+
+      case 'pong': {
+        if (this._pingTs > 0) {
+          this._rttMs  = Date.now() - this._pingTs
+          this._pingTs = 0
+        }
+        break
+      }
 
       case 'clipboard':
         this.emit({ type: 'clipboard', text: msg.text as string })
@@ -194,11 +221,40 @@ export class Connection {
     const frameType = view.getUint8(0)
     if (frameType !== VIDEO_FRAME) return
 
+    this._frameCount++
+    this._bytesCount += buf.byteLength
+
     const frameId  = view.getUint32(1, false)
     const ptsMs    = view.getUint32(5, false)
     const keyframe = (view.getUint8(9) & 0x01) !== 0
     const payload  = buf.slice(10)
     this.emit({ type: 'video_frame', data: payload, frameId, ptsMs, keyframe })
+  }
+
+  // Stats loop：每 2s 上报一次，同时驱动 ABR
+  private startStatsLoop(): void {
+    if (this.statsTimer) clearInterval(this.statsTimer)
+    const INTERVAL = 2000
+
+    this.statsTimer = setInterval(() => {
+      const fps          = Math.round(this._frameCount / (INTERVAL / 1000))
+      const bitrateKbps  = Math.round(this._bytesCount * 8 / INTERVAL)  // bytes→bits / interval(ms)→(kbps)
+      const transport    = this.webrtc?.videoState === 'open' ? 'UDP' : 'TCP' as 'UDP' | 'TCP'
+
+      // 发 ping 测 RTT
+      this._pingTs = Date.now()
+      this.sendJson({ type: 'ping' })
+
+      // 上报给 Mac 用于 ABR
+      this.sendJson({ type: 'client_stats', fps, rtt_ms: this._rttMs })
+
+      // 通知 UI
+      this.emit({ type: 'stats', stats: { fps, rttMs: this._rttMs, bitrateKbps, transport } })
+
+      // 重置计数
+      this._frameCount = 0
+      this._bytesCount = 0
+    }, INTERVAL)
   }
 
   private emit(e: ConnEvent): void {

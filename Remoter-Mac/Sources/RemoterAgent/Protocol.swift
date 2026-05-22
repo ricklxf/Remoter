@@ -20,6 +20,7 @@ enum ClientMessage {
     case ping
     case webrtcOffer(sdp: String)
     case webrtcICE(json: String)
+    case clientStats(fps: Double, rttMs: Int)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -71,6 +72,11 @@ enum ClientMessage {
             return .webrtcOffer(sdp: json["sdp"] as? String ?? "")
         case "webrtc_ice":
             return .webrtcICE(json: json["candidate"] as? String ?? "")
+        case "client_stats":
+            return .clientStats(
+                fps:   json["fps"]    as? Double ?? 0,
+                rttMs: json["rtt_ms"] as? Int    ?? 0
+            )
         default:
             return .unknown
         }

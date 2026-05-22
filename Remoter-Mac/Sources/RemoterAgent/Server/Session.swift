@@ -19,6 +19,7 @@ final class Session {
     private var authenticated = false
     private var frameId: UInt32 = 0
     private var startTime: UInt32 = 0
+    private var abr: ABRController?
 
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
@@ -89,6 +90,12 @@ final class Session {
             sendJson(["type": "pong"])
 
         // ── WebRTC 信令 ────────────────────────────────────────
+        case .clientStats(let fps, let rttMs):
+            if let newBitrate = abr?.update(fps: fps, rttMs: rttMs) {
+                encoder?.adjustBitrate(newBitrate)
+                sendJson(["type": "bitrate_changed", "bitrate": newBitrate])
+            }
+
         case .webrtcOffer(let sdp):
             setupWebRTC(offerSDP: sdp)
 
@@ -176,6 +183,7 @@ final class Session {
             encoder      = enc
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
             fileReceiver = FileReceiver()
+            abr          = ABRController(targetFPS: 60, initialBitrate: 15_000_000)
             startTime    = UInt32(Date().timeIntervalSince1970 * 1000)
             sendJson([
                 "type":   "stream_started",

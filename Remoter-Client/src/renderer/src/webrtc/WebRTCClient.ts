@@ -19,7 +19,7 @@ export class WebRTCClient {
   private controlChannel: RTCDataChannel | null = null
 
   // 收到视频帧时的回调（与 WebSocket 路径共用同一 Decoder）
-  onVideoFrame:   ((data: ArrayBuffer, keyframe: boolean) => void) | null = null
+  onVideoFrame:   ((data: ArrayBuffer, keyframe: boolean, bytes: number) => void) | null = null
   onConnected:    (() => void) | null = null
   onDisconnected: (() => void) | null = null
   // 需要把 ICE candidate 发回给 Mac（通过 WebSocket）
@@ -112,7 +112,7 @@ export class WebRTCClient {
 
     // 单片帧，直接交给解码器
     if (totalChunks === 1) {
-      this.onVideoFrame?.(payload, isKeyframe)
+      this.onVideoFrame?.(payload, isKeyframe, data.byteLength)
       return
     }
 
@@ -137,7 +137,7 @@ export class WebRTCClient {
         const oldest = this.frameBuffer.keys().next().value
         if (oldest !== undefined) this.frameBuffer.delete(oldest)
       }
-      this.onVideoFrame?.(combined, buf.isKeyframe)
+      this.onVideoFrame?.(combined, buf.isKeyframe, combined.byteLength)
     }
   }
 }

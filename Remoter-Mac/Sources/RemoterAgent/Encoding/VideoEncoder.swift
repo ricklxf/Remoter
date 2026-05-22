@@ -70,6 +70,15 @@ final class VideoEncoder {
         frameCount = 0
     }
 
+    /// 动态调整编码器码率（ABR 调用）
+    func adjustBitrate(_ newBitrate: Int) {
+        guard let session else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFTypeRef)
+        let limits: [CFNumber] = [newBitrate as CFNumber, 1 as CFNumber]
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: limits as CFArray)
+        print("[ABR] bitrate → \(newBitrate / 1_000) kbps")
+    }
+
     func invalidate() {
         if let s = session {
             VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid)

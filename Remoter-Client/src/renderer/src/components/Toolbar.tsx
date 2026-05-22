@@ -8,16 +8,22 @@ interface Props {
   fps: number
   bitrate: number
   onQualityChange: (fps: number, bitrate: number) => void
+  showStats: boolean
+  onToggleStats: () => void
 }
 
 const QUALITY_PRESETS = [
-  { label: '2K 60fps', fps: 60, bitrate: 15_000_000 },
-  { label: '1080 60fps', fps: 60, bitrate: 8_000_000 },
-  { label: '1080 30fps', fps: 30, bitrate: 4_000_000 },
-  { label: '流畅优先',   fps: 30, bitrate: 2_000_000 },
+  { label: '2K 60fps',   fps: 60, bitrate: 15_000_000 },
+  { label: '1080 60fps', fps: 60, bitrate:  8_000_000 },
+  { label: '1080 30fps', fps: 30, bitrate:  4_000_000 },
+  { label: '流畅优先',    fps: 30, bitrate:  2_000_000 },
 ]
 
-export function Toolbar({ conn, onDisconnect, onToggleFullscreen, fps, bitrate, onQualityChange }: Props) {
+export function Toolbar({
+  conn, onDisconnect, onToggleFullscreen,
+  fps, bitrate, onQualityChange,
+  showStats, onToggleStats
+}: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -36,7 +42,6 @@ export function Toolbar({ conn, onDisconnect, onToggleFullscreen, fps, bitrate, 
 
   return (
     <div style={styles.bar}>
-      {/* Quality selector */}
       <select
         style={styles.select}
         value={`${fps}:${bitrate}`}
@@ -54,22 +59,36 @@ export function Toolbar({ conn, onDisconnect, onToggleFullscreen, fps, bitrate, 
       <div style={styles.sep} />
 
       <ToolBtn icon="📋" title="同步剪贴板" onClick={handleClipboard} />
-      <ToolBtn icon="📂" title="发送文件" onClick={() => fileRef.current?.click()} />
+      <ToolBtn icon="📂" title="发送文件"   onClick={() => fileRef.current?.click()} />
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
 
       <div style={styles.sep} />
 
-      <ToolBtn icon="⛶" title="全屏" onClick={onToggleFullscreen} />
-      <ToolBtn icon="⏏" title="断开连接" onClick={onDisconnect} danger />
+      <ToolBtn
+        icon="📊"
+        title={showStats ? '隐藏状态' : '显示状态'}
+        onClick={onToggleStats}
+        active={showStats}
+      />
+      <ToolBtn icon="⛶"  title="全屏"     onClick={onToggleFullscreen} />
+      <ToolBtn icon="⏏"  title="断开连接" onClick={onDisconnect} danger />
     </div>
   )
 }
 
-function ToolBtn({ icon, title, onClick, danger }: {
-  icon: string; title: string; onClick: () => void; danger?: boolean
+function ToolBtn({ icon, title, onClick, danger, active }: {
+  icon: string; title: string; onClick: () => void; danger?: boolean; active?: boolean
 }) {
   return (
-    <button style={{ ...styles.btn, ...(danger ? styles.btnDanger : {}) }} title={title} onClick={onClick}>
+    <button
+      style={{
+        ...styles.btn,
+        ...(danger  ? styles.btnDanger : {}),
+        ...(active  ? styles.btnActive : {})
+      }}
+      title={title}
+      onClick={onClick}
+    >
       {icon}
     </button>
   )
@@ -91,8 +110,8 @@ const styles: Record<string, React.CSSProperties> = {
   sep: { width: 1, height: 20, background: '#333', margin: '0 4px' },
   btn: {
     background: 'transparent', color: 'var(--text)',
-    padding: '6px 8px', borderRadius: 6, fontSize: 16,
-    transition: 'background 0.15s'
+    padding: '6px 8px', borderRadius: 6, fontSize: 16
   },
-  btnDanger: { color: 'var(--primary)' }
+  btnDanger: { color: 'var(--primary)' },
+  btnActive:  { background: 'rgba(255,255,255,0.1)' }
 }

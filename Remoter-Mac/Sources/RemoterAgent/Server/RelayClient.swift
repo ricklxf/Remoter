@@ -1,24 +1,23 @@
 import Foundation
 
-// Connects to the relay server as a host and bridges messages to/from Session
+// 连接中继服务器作为 host，将消息转发给/接收自对端 Session
 final class RelayClient {
-    var onText:       ((String) -> Void)?
-    var onBinary:     ((Data) -> Void)?
-    var onConnected:  ((String) -> Void)?   // session ID
+    var onText:         ((String) -> Void)?
+    var onBinary:       ((Data) -> Void)?
+    var onConnected:    ((String) -> Void)?   // session ID
     var onDisconnected: (() -> Void)?
 
     private var task: URLSessionWebSocketTask?
-    private let session = URLSession(configuration: .default)
+    private let urlSession = URLSession(configuration: .default)
 
     func connect(relayURL: URL, pin: String) {
-        let url = relayURL.appendingPathComponent("") // keep base
         var comps = URLComponents(url: relayURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
             URLQueryItem(name: "role", value: "host"),
             URLQueryItem(name: "pin",  value: pin)
         ]
-        guard let final = comps.url else { return }
-        task = session.webSocketTask(with: final)
+        guard let url = comps.url else { return }
+        task = urlSession.webSocketTask(with: url)
         task?.resume()
         receive()
     }
@@ -44,13 +43,15 @@ final class RelayClient {
             case .success(let msg):
                 switch msg {
                 case .string(let text):
+                    // 过滤中继自身的 registered 消息
                     if let data = text.data(using: .utf8),
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let type = json["type"] as? String, type == "registered",
-                       let sid = json["session_id"] as? String {
-                        self?.onConnected?(sid)
-                    } else {
-                        self?.onText?(text)
+                       let type = json["type"] as? String {
+                        if type == "registered", let sid = json["session_id"] as? String {
+                            self?.onConnected?(sid)
+                        } else {
+                            self?.onText?(text)
+                        }
                     }
                 case .data(let d):
                     self?.onBinary?(d)

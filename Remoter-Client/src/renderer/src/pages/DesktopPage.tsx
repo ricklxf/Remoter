@@ -1,8 +1,10 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { StreamInfo } from '../types'
+import { ConnStats } from '../network/Connection'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
+import { StatsHUD } from '../components/StatsHUD'
 
 interface Props {
   conn: Connection
@@ -10,23 +12,36 @@ interface Props {
   onDisconnect: () => void
 }
 
+const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP' }
+
 export function DesktopPage({ conn, streamInfo, onDisconnect }: Props) {
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
+  const [stats, setStats]     = useState<ConnStats>(DEFAULT_STATS)
+  const [showStats, setShowStats] = useState(true)
   const [toolbarVisible, setToolbarVisible] = useState(true)
-  const [hideTimer, setHideTimer]           = useState<ReturnType<typeof setTimeout> | null>(null)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Auto-hide toolbar after 3s of no mouse movement at top
+  // 订阅 stats 事件
+  useEffect(() => {
+    const prev = conn.onEvent
+    conn.onEvent = (e) => {
+      prev?.(e)
+      if (e.type === 'stats') setStats(e.stats)
+    }
+    return () => { conn.onEvent = prev }
+  }, [conn])
+
+  // 自动隐藏工具栏
   const showToolbar = useCallback(() => {
     setToolbarVisible(true)
-    if (hideTimer) clearTimeout(hideTimer)
-    const t = setTimeout(() => setToolbarVisible(false), 3000)
-    setHideTimer(t)
-  }, [hideTimer])
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    hideTimer.current = setTimeout(() => setToolbarVisible(false), 3000)
+  }, [])
 
   useEffect(() => {
     showToolbar()
-    return () => { if (hideTimer) clearTimeout(hideTimer) }
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
   }, [])
 
   function handleQualityChange(f: number, b: number) {
@@ -34,54 +49,33 @@ export function DesktopPage({ conn, streamInfo, onDisconnect }: Props) {
     setBitrate(b)
   }
 
-  function handleToggleFullscreen() {
-    window.remoterAPI?.toggleFullscreen()
-  }
-
   return (
-    <div
-      style={styles.wrap}
-      onMouseMove={showToolbar}
-    >
-      <RemoteCanvas
-        conn={conn}
-        streamInfo={streamInfo}
-        showCursor={true}
-      />
+    <div style={styles.wrap} onMouseMove={showToolbar}>
+      <RemoteCanvas conn={conn} streamInfo={streamInfo} showCursor={true} />
+
+      <StatsHUD stats={stats} visible={showStats} />
 
       <div style={{ ...styles.toolbarWrap, opacity: toolbarVisible ? 1 : 0 }}>
         <Toolbar
           conn={conn}
           onDisconnect={onDisconnect}
-          onToggleFullscreen={handleToggleFullscreen}
+          onToggleFullscreen={() => window.remoterAPI?.toggleFullscreen()}
           fps={fps}
           bitrate={bitrate}
           onQualityChange={handleQualityChange}
+          showStats={showStats}
+          onToggleStats={() => setShowStats(v => !v)}
         />
       </div>
-
-      <div style={styles.statusDot} title="已连接" />
     </div>
   )
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrap: {
-    position: 'relative', width: '100%', height: '100%',
-    background: '#000', overflow: 'hidden'
-  },
-  toolbarWrap: {
-    transition: 'opacity 0.3s',
-    pointerEvents: 'auto'
-  },
-  statusDot: {
-    position: 'absolute', bottom: 12, right: 12,
-    width: 8, height: 8, borderRadius: '50%',
-    background: '#4caf50', boxShadow: '0 0 6px #4caf50'
-  }
+  wrap: { position: 'relative', width: '100%', height: '100%', background: '#000', overflow: 'hidden' },
+  toolbarWrap: { transition: 'opacity 0.3s', pointerEvents: 'auto' }
 }
 
-// Extend window for preload API
 declare global {
   interface Window {
     remoterAPI?: {

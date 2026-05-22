@@ -28,9 +28,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)   // メニューバーのみ、Dockに表示しない
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let btn = statusItem?.button {
-            btn.title    = "⬡"
-            btn.toolTip  = "Remoter"
-            btn.font     = .monospacedSystemFont(ofSize: 14, weight: .regular)
+            // 使用 SF Symbol 作为图标，确保在所有 macOS 版本渲染正常
+            if let img = NSImage(systemSymbolName: "display.and.arrow.down", accessibilityDescription: "Remoter") {
+                img.isTemplate = true
+                btn.image = img
+            } else {
+                btn.title = "R"
+            }
+            btn.toolTip = "Remoter"
         }
         refresh()
     }
@@ -40,8 +45,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private func refresh() {
         let isConnected = status.connectedClients > 0
 
-        // 图标：连接中显示实心点
-        statusItem?.button?.title = isConnected ? "⬡•" : "⬡"
+        // 图标：连接中切换为活跃状态 SF Symbol
+        if let btn = statusItem?.button {
+            let symbolName = isConnected ? "display.and.arrow.down.fill" : "display.and.arrow.down"
+            if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Remoter") {
+                img.isTemplate = true
+                btn.image = img
+            }
+        }
 
         let menu = NSMenu()
 

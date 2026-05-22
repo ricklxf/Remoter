@@ -21,6 +21,8 @@ enum ClientMessage {
     case webrtcOffer(sdp: String)
     case webrtcICE(json: String)
     case clientStats(fps: Double, rttMs: Int)
+    case setCodec(codec: String)
+    case cryptoHello(pubkey: String)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -77,6 +79,10 @@ enum ClientMessage {
                 fps:   json["fps"]    as? Double ?? 0,
                 rttMs: json["rtt_ms"] as? Int    ?? 0
             )
+        case "set_codec":
+            return .setCodec(codec: json["codec"] as? String ?? "h264")
+        case "crypto_hello":
+            return .cryptoHello(pubkey: json["pubkey"] as? String ?? "")
         default:
             return .unknown
         }

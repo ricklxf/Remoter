@@ -161,11 +161,13 @@ func getLocalIPs() -> [String] {
 // MARK: - Entry point
 
 let cfg        = parseArgs()
-let menuBar    = MenuBarController()
+let menuBar    = MainActor.assumeIsolated { MenuBarController() }
 let agent      = RemoterAgent(config: cfg)
 
 agent.onStatusUpdate = { status in
-    menuBar.update(status)
+    DispatchQueue.main.async {
+        MainActor.assumeIsolated { menuBar.update(status) }
+    }
 }
 
 NSApplication.shared.delegate = menuBar

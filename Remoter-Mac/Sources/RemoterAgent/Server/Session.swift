@@ -4,6 +4,7 @@ import AppKit
 
 // Manages one connected client: auth → capture → encode → stream
 // Video: WebRTC DataChannel (UDP) preferred, WebSocket fallback
+// Security: P-256 ECDH + AES-256-GCM end-to-end encryption (0xE0 frame prefix)
 final class Session {
     let id: UUID
     let connection: NWConnection
@@ -15,11 +16,18 @@ final class Session {
     private var input: InputController?
     private var fileReceiver: FileReceiver?
     private var webrtc: WebRTCAgent?
+    private let crypto = E2ECrypto()
 
     private var authenticated = false
     private var frameId: UInt32 = 0
     private var startTime: UInt32 = 0
     private var abr: ABRController?
+
+    // For disconnection logging
+    private var connectTime: Date?
+    private var bytesSent: Int64 = 0
+    private var bytesRecv: Int64 = 0
+    private var sessionCodec: VideoCodec = .h264
 
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
@@ -29,14 +37,78 @@ final class Session {
     }
 
     func start() {
-        sendJson(["type": "hello", "version": "1.0", "os": "macOS"])
+        // Include our E2E public key so client can initiate handshake
+        sendJsonRaw(["type": "hello", "version": "1.0", "os": "macOS",
+                     "pubkey": crypto.publicKeyBase64])
     }
 
     func handleText(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        routeMessage(json)
+    }
 
+    func handleBinary(_ data: Data) {
+        guard data.count > 0 else { return }
+
+        // 0xE0 = encrypted JSON frame (sent after E2E handshake)
+        if data[0] == 0xE0 {
+            guard data.count > 1 else { return }
+            let ciphertext = Data(data[1...])
+            guard let plain = try? crypto.decrypt(ciphertext),
+                  let text = String(data: plain, encoding: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: plain) as? [String: Any]
+            else { return }
+            _ = text
+            routeMessage(json)
+            return
+        }
+
+        // Regular binary (file chunk)
+        guard authenticated, data.count > 1, data[0] == FrameType.fileChunk.rawValue else { return }
+        guard data.count > 21 else { return }
+        let idData = data[1..<17]
+        let fid = String(data: idData, encoding: .utf8)?
+            .trimmingCharacters(in: .init(charactersIn: "\0")) ?? ""
+        var offsetBE: UInt32 = 0
+        (data[17..<21] as NSData).getBytes(&offsetBE, length: 4)
+        let offset = CFSwapInt32BigToHost(offsetBE)
+        bytesRecv += Int64(data.count)
+        fileReceiver?.receive(id: fid, offset: Int64(offset), chunk: Data(data[21...]))
+    }
+
+    func close() {
+        // Log disconnection if we were streaming
+        if let t = connectTime {
+            let secs = Int(Date().timeIntervalSince(t))
+            ConnectionLogger.shared.logDisconnected(
+                sessionId: id.uuidString,
+                durationSecs: secs,
+                bytesSentMB: Double(bytesSent) / 1_048_576,
+                bytesRecvMB: Double(bytesRecv) / 1_048_576
+            )
+        }
+        Task { await capturer?.stop() }
+        encoder?.invalidate()
+        webrtc?.close()
+    }
+
+    // MARK: - Message routing
+
+    private func routeMessage(_ json: [String: Any]) {
         let msg = ClientMessage.parse(json)
+
+        // ── E2E 握手（无需认证）──────────────────────────────────
+        if case .cryptoHello(let pubkey) = msg {
+            do {
+                try crypto.deriveSharedKey(peerBase64: pubkey)
+                // Respond with our pubkey so client can verify (already sent in hello, but ack)
+                sendJsonRaw(["type": "crypto_ok"])
+            } catch {
+                sendJsonRaw(["type": "error", "code": "crypto_failed", "message": "\(error)"])
+            }
+            return
+        }
 
         // ── 认证 ──────────────────────────────────────────────
         if case .auth(let clientPin) = msg {
@@ -45,7 +117,8 @@ final class Session {
                 sendJson(["type": "auth_ok"])
                 Task { await self.beginCapture() }
             } else {
-                sendJson(["type": "error", "code": "auth_failed", "message": "Wrong PIN"])
+                ConnectionLogger.shared.logAuthFailed(sessionId: id.uuidString)
+                sendJsonRaw(["type": "error", "code": "auth_failed", "message": "Wrong PIN"])
                 connection.cancel()
             }
             return
@@ -55,7 +128,7 @@ final class Session {
 
         switch msg {
 
-        // ── 输入事件（通过 WebSocket，UDP 丢包不影响控制准确性）──
+        // ── 输入事件 ───────────────────────────────────────────
         case .mouseMove(let x, let y):
             input?.mouseMove(x: x, y: y)
 
@@ -90,39 +163,43 @@ final class Session {
             sendJson(["type": "pong"])
 
         // ── WebRTC 信令 ────────────────────────────────────────
-        case .clientStats(let fps, let rttMs):
-            if let newBitrate = abr?.update(fps: fps, rttMs: rttMs) {
-                encoder?.adjustBitrate(newBitrate)
-                sendJson(["type": "bitrate_changed", "bitrate": newBitrate])
-            }
-
         case .webrtcOffer(let sdp):
             setupWebRTC(offerSDP: sdp)
 
         case .webrtcICE(let json):
             webrtc?.handleRemoteICE(json)
 
+        case .clientStats(let fps, let rttMs):
+            if let newBitrate = abr?.update(fps: fps, rttMs: rttMs) {
+                encoder?.adjustBitrate(newBitrate)
+                sendJson(["type": "bitrate_changed", "bitrate": newBitrate])
+            }
+
+        // ── 编解码切换 ─────────────────────────────────────────
+        case .setCodec(let codecStr):
+            let newCodec: VideoCodec = codecStr == "h265" ? .h265 : .h264
+            switchCodec(to: newCodec)
+
         default:
             break
         }
     }
 
-    func handleBinary(_ data: Data) {
-        guard authenticated, data.count > 1, data[0] == FrameType.fileChunk.rawValue else { return }
-        guard data.count > 21 else { return }
-        let idData = data[1..<17]
-        let fid = String(data: idData, encoding: .utf8)?
-            .trimmingCharacters(in: .init(charactersIn: "\0")) ?? ""
-        var offsetBE: UInt32 = 0
-        (data[17..<21] as NSData).getBytes(&offsetBE, length: 4)
-        let offset = CFSwapInt32BigToHost(offsetBE)
-        fileReceiver?.receive(id: fid, offset: Int64(offset), chunk: Data(data[21...]))
-    }
+    // MARK: - 编解码切换
 
-    func close() {
-        Task { await capturer?.stop() }
-        encoder?.invalidate()
-        webrtc?.close()
+    private func switchCodec(to codec: VideoCodec) {
+        guard let enc = encoder, let cap = capturer else { return }
+        let w = cap.screenWidth, h = cap.screenHeight
+        do {
+            enc.invalidate()
+            try enc.setup(width: w, height: h, fps: 60,
+                          bitrate: abr?.currentBitrate ?? 15_000_000, codec: codec)
+            sessionCodec = codec
+            sendJson(["type": "codec_changed", "codec": codec.rawValue])
+            ConnectionLogger.shared.logCodecChanged(sessionId: id.uuidString, codec: codec.rawValue)
+        } catch {
+            sendJson(["type": "error", "code": "codec_switch_failed", "message": "\(error)"])
+        }
     }
 
     // MARK: - WebRTC 信令设置
@@ -137,14 +214,11 @@ final class Session {
             self?.sendJson(["type": "webrtc_ice", "candidate": json])
         }
         agent.onConnected = { [weak self] in
-            // DataChannel 建立后强制一个关键帧
             self?.encoder?.forceKeyframe()
         }
         agent.onDisconnected = { [weak self] in
-            // DataChannel 断开，视频自动回落到 WebSocket（onEncodedFrame 里判断）
             print("[Session] WebRTC disconnected, falling back to WebSocket")
         }
-        // DataChannel 上收到的控制消息，路由到和 WebSocket 一样的处理逻辑
         agent.onControlMessage = { [weak self] text in
             self?.handleText(text)
         }
@@ -158,6 +232,9 @@ final class Session {
     private func beginCapture() async {
         let c   = ScreenCapturer()
         let enc = VideoEncoder()
+        let useHEVC = VideoEncoder.isHEVCSupported()
+        let codec: VideoCodec = useHEVC ? .h265 : .h264
+        sessionCodec = codec
 
         c.onFrame = { [weak enc] buf in enc?.encode(sampleBuffer: buf) }
 
@@ -165,8 +242,8 @@ final class Session {
             guard let self else { return }
             let fid = self.frameId
             self.frameId &+= 1
+            self.bytesSent += Int64(data.count)
 
-            // 优先走 WebRTC DataChannel（UDP），否则 WebSocket 兜底
             if let rtc = self.webrtc, rtc.isVideoChannelOpen {
                 rtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid)
             } else {
@@ -176,26 +253,54 @@ final class Session {
             }
         }
 
+        let initialBitrate = 15_000_000
         do {
-            try enc.setup(width: 2560, height: 1440, fps: 60, bitrate: 15_000_000)
+            try enc.setup(width: 2560, height: 1440, fps: 60,
+                          bitrate: initialBitrate, codec: codec)
             try await c.start(fps: 60)
             capturer     = c
             encoder      = enc
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
             fileReceiver = FileReceiver()
-            abr          = ABRController(targetFPS: 60, initialBitrate: 15_000_000)
+            abr          = ABRController(targetFPS: 60, initialBitrate: initialBitrate)
             startTime    = UInt32(Date().timeIntervalSince1970 * 1000)
+            connectTime  = Date()
+
+            ConnectionLogger.shared.logConnected(
+                sessionId: id.uuidString,
+                codec: codec.rawValue,
+                encrypted: crypto.isReady
+            )
+
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
-                "height": c.screenHeight
+                "height": c.screenHeight,
+                "codec":  codec.rawValue
             ])
         } catch {
             sendJson(["type": "error", "code": "capture_failed", "message": "\(error)"])
         }
     }
 
+    // MARK: - JSON 发送
+
+    /// 加密发送（E2E 握手完成后）；握手前或握手消息本身走明文
     private func sendJson(_ dict: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return }
+        if crypto.isReady, let encrypted = try? crypto.encrypt(data) {
+            // 0xE0 前缀 + AES-GCM 密文
+            var frame = Data([0xE0])
+            frame.append(encrypted)
+            server.sendBinary(frame, to: connection)
+        } else {
+            guard let text = String(data: data, encoding: .utf8) else { return }
+            server.sendText(text, to: connection)
+        }
+    }
+
+    /// 无条件明文发送（hello / crypto_ok 等握手消息）
+    private func sendJsonRaw(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let text = String(data: data, encoding: .utf8) else { return }
         server.sendText(text, to: connection)

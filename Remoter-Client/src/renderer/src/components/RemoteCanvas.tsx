@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useCallback } from 'react'
 import { Connection } from '../network/Connection'
-import { H264Decoder } from '../video/Decoder'
+import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
 import { StreamInfo } from '../types'
@@ -8,12 +8,13 @@ import { StreamInfo } from '../types'
 interface Props {
   conn: Connection
   streamInfo: StreamInfo
+  initialCodec?: VideoCodec
   showCursor: boolean
 }
 
-export function RemoteCanvas({ conn, streamInfo, showCursor }: Props) {
+export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCursor }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
-  const decoderRef  = useRef<H264Decoder | null>(null)
+  const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())
   const inputRef    = useRef<InputHandler>(new InputHandler(conn))
 
@@ -26,14 +27,15 @@ export function RemoteCanvas({ conn, streamInfo, showCursor }: Props) {
     renderer.resize(streamInfo.width, streamInfo.height)
     renderer.attach(canvas)
 
-    if (!H264Decoder.isSupported()) {
+    if (!VideoDecoder_.isSupported()) {
       console.error('WebCodecs not supported in this Electron version')
       return
     }
 
-    const decoder = new H264Decoder((frame) => renderer.renderFrame(frame))
-    decoder.init(streamInfo.width, streamInfo.height)
+    const decoder = new VideoDecoder_((frame) => renderer.renderFrame(frame))
     decoderRef.current = decoder
+    // init 是 async（H.265 需要 isConfigSupported 检查），不阻塞渲染流程
+    decoder.init(streamInfo.width, streamInfo.height, initialCodec).catch(console.error)
 
     inputRef.current.attach(canvas, streamInfo.width, streamInfo.height)
 
@@ -42,9 +44,9 @@ export function RemoteCanvas({ conn, streamInfo, showCursor }: Props) {
       renderer.detach()
       inputRef.current.detach()
     }
-  }, [streamInfo])
+  }, [streamInfo, initialCodec])
 
-  // Wire up video frames from connection
+  // Wire up video frames + codec_changed events from connection
   useEffect(() => {
     const prev = conn.onEvent
     conn.onEvent = (e) => {
@@ -52,11 +54,14 @@ export function RemoteCanvas({ conn, streamInfo, showCursor }: Props) {
       if (e.type === 'video_frame' && decoderRef.current) {
         decoderRef.current.decode(e.data, e.keyframe, e.ptsMs * 1000)
       }
+      if (e.type === 'codec_changed' && decoderRef.current) {
+        console.log(`[RemoteCanvas] switching decoder to ${e.codec}`)
+        decoderRef.current.switchCodec(streamInfo.width, streamInfo.height, e.codec).catch(console.error)
+      }
     }
     return () => { conn.onEvent = prev }
-  }, [conn])
+  }, [conn, streamInfo])
 
-  // Sync cursor style
   const cursor = showCursor ? 'none' : 'default'
 
   return (

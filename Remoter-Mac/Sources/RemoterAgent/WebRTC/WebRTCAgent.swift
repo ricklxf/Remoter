@@ -41,7 +41,9 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         config.iceServers = servers
 
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        let p = WebRTCAgent.factory.peerConnection(with: config, constraints: constraints, delegate: self)
+        guard let p = WebRTCAgent.factory.peerConnection(with: config, constraints: constraints, delegate: self) else {
+            print("[WebRTC] failed to create peer connection"); return
+        }
         self.pc = p
 
         p.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] error in

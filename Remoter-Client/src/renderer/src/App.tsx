@@ -3,12 +3,14 @@ import { ConnectPage } from './pages/ConnectPage'
 import { DesktopPage } from './pages/DesktopPage'
 import { Connection } from './network/Connection'
 import { ConnectParams, ConnectionState, StreamInfo } from './types'
+import { VideoCodec } from './video/Decoder'
 
 export default function App() {
   const connRef  = useRef<Connection>(new Connection())
-  const [state, setState]         = useState<ConnectionState>('idle')
+  const [state, setState]           = useState<ConnectionState>('idle')
   const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null)
-  const [errorMsg, setErrorMsg]   = useState('')
+  const [codec, setCodec]           = useState<VideoCodec>('h264')
+  const [errorMsg, setErrorMsg]     = useState('')
 
   useEffect(() => {
     const conn = connRef.current
@@ -20,6 +22,7 @@ export default function App() {
           break
         case 'stream_started':
           setStreamInfo(e.info)
+          setCodec(e.codec ?? 'h264')
           setState('streaming')
           break
         case 'error':
@@ -49,6 +52,7 @@ export default function App() {
       <DesktopPage
         conn={connRef.current}
         streamInfo={streamInfo}
+        initialCodec={codec}
         onDisconnect={handleDisconnect}
       />
     )

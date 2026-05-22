@@ -86,6 +86,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
+        let logItem = NSMenuItem(title: "在 Finder 中显示日志",
+                                 action: #selector(showLogInFinder),
+                                 keyEquivalent: "")
+        logItem.target = self
+        menu.addItem(logItem)
+
+        menu.addItem(.separator())
         menu.addItem(withTitle: "退出 Remoter",
                      action: #selector(NSApplication.terminate(_:)),
                      keyEquivalent: "q")
@@ -103,6 +110,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.refresh()
         }
+    }
+
+    @objc private func showLogInFinder() {
+        let url = ConnectionLogger.shared.logFileURL
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     @objc private func copyIP(_ sender: NSMenuItem) {

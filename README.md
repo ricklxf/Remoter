@@ -1,95 +1,128 @@
 # Remoter
 
-个人远程办公工具，Windows 远程控制 Mac。
+个人远程桌面工具，支持从任意设备远程控制 Mac。
 
-- 最高 **2K 超清 60fps** 画质（H.264 硬件编码）
-- **超低延迟**：局域网 < 20ms
-- **超高速文件传输**：拖拽发送
-- **丝滑鼠标操作**：全键盘快捷键透传
-- 支持 **局域网直连** 和 **公网中继**
+- **H.265 / H.264** 自动切换，最高 2K 60fps
+- **端到端加密**：P-256 ECDH + AES-256-GCM，零明文传输
+- **WebRTC P2P**：优先 UDP 直连，自动降级到 WebSocket
+- **局域网直连**：延迟 < 20ms
+- **跨网络**：支持 WireGuard / VPN 穿透，或自建中继服务器
+- **文件传输**：从客户端发送文件到 Mac `~/Downloads`
+- **剪贴板同步**：双向文本同步
 
 ---
 
 ## 架构
 
 ```
-Remoter-Mac/        Mac 被控端（Swift + ScreenCaptureKit + VideoToolbox）
-Remoter-Client/     Windows 控制端（Electron + React + WebCodecs）
-Remoter-Server/     中继服务器（Node.js WebSocket，可选）
+Remoter-Mac/        Mac 被控端（Swift · ScreenCaptureKit · VideoToolbox · WebRTC）
+Remoter-Client/     控制端（Electron + React · WebCodecs · WebRTC）
+Remoter-Server/     公网中继服务器（Node.js WebSocket，可选）
 ```
 
 ---
 
-## 快速开始
+## Mac 被控端
 
-### 1. Mac 端（被控机）
+**系统要求：** macOS 13 Ventura 或更高
 
-**系统要求：** macOS 13 Ventura+
+### 编译 & 打包
+
+需要 Swift 5.9+（Xcode Command Line Tools 或完整 Xcode）：
 
 ```bash
+xcode-select --install   # 仅首次
+
 cd Remoter-Mac
-swift build -c release
-
-# 启动（局域网）
-.build/release/RemoterAgent --pin 123456 --port 7788
-
-# 启动（含公网中继）
-.build/release/RemoterAgent --pin 123456 --relay ws://your-server:7789
+bash scripts/build-app.sh          # debug 包
+bash scripts/build-app.sh --release  # release 包（更小更快）
 ```
 
-首次运行需要在系统设置中授权：
-- **隐私 → 屏幕录制** → 允许 Terminal
-- **隐私 → 辅助功能** → 允许 Terminal
+产物：`Remoter-Mac/build/RemoterAgent.app`
 
-启动后会显示：
+### 首次运行授权
 
-```
-  PIN: 123456
-  Direct connections (LAN):
-    ws://192.168.1.100:7788
-  Relay session ID: A1B2C3
-```
+**必须**在系统设置中授权以下两个权限，否则无法捕获画面和注入输入：
 
----
+- **隐私与安全性 → 屏幕与系统录音** → 允许 RemoterAgent
+- **隐私与安全性 → 辅助功能** → 允许 RemoterAgent
 
-### 2. 中继服务器（公网连接，可选）
-
-部署到任意 Node.js 环境：
+### 启动
 
 ```bash
-cd Remoter-Server
-npm install
-npm run build
-npm start          # 默认端口 7789
-PORT=8080 npm start
+# 随机生成 PIN
+open Remoter-Mac/build/RemoterAgent.app
+
+# 指定 PIN
+open Remoter-Mac/build/RemoterAgent.app --args --pin 123456
 ```
 
-Railway / Fly.io / 腾讯云等均可一键部署。
+启动后菜单栏出现 `⬇` 图标，点击可查看 **PIN 码**和**局域网地址**。
+
+### 连接日志
+
+日志存储于 `~/Library/Logs/Remoter/connections.log`，JSON Lines 格式，可通过菜单栏「在 Finder 中显示日志」快速打开。
 
 ---
 
-### 3. Windows 客户端
+## 控制端（Windows / Mac）
 
-**系统要求：** Windows 10/11 x64，Electron 31+（内置 WebCodecs）
+**系统要求：** Windows 10/11 x64 或 macOS 13+，需支持 WebCodecs API
+
+### 从源码构建
 
 ```bash
 cd Remoter-Client
 npm install
 
-# 开发模式
-npm run dev
-
-# 打包 Windows 安装包
+# 打包 Windows 安装包（自动递增版本号）
 npm run package:win
+
+# 打包 Mac 应用
+npm run package:mac
+
+# 开发模式（实时热更新）
+npm run dev
 ```
 
-打包产物在 `dist/` 目录，双击 `Remoter-Setup-*.exe` 安装。
+> **中国大陆网络**：electron 二进制下载较慢，可设置镜像：
+> ```bash
+> ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/" \
+> ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/" \
+> npm run package:win
+> ```
 
-**连接步骤：**
-1. 选择 **直连（局域网）** 或 **中继（公网）**
-2. 输入 Mac 的 IP 地址或会话 ID
-3. 输入 PIN 码
-4. 连接成功后进入远程桌面
+打包产物在 `Remoter-Client/dist/`，双击 `Remoter-Setup-x.x.x.exe` 安装。
+
+### 连接步骤
+
+1. 输入 Mac 的 **IP 地址**（局域网或 VPN 虚拟 IP）
+2. 输入 **PIN 码**（从 Mac 菜单栏复制）
+3. 点击连接，等待画面出现
+
+---
+
+## 跨网络连接
+
+### WireGuard / VPN（推荐）
+
+两端接入同一 WireGuard 网络后，直接填 WireGuard 虚拟 IP 连接，无需改动任何代码。
+
+```
+Windows (10.0.0.2) ──── WireGuard ──── Mac (10.0.0.3)
+```
+
+### 中继服务器（可选）
+
+适用于无法使用 VPN 的场景，部署到任意 Node.js 环境：
+
+```bash
+cd Remoter-Server
+npm install && npm start   # 默认端口 7789
+
+# 启用 TLS
+TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem npm start
+```
 
 ---
 
@@ -97,40 +130,21 @@ npm run package:win
 
 | 操作 | 说明 |
 |------|------|
-| 鼠标移动/点击 | 直接操作，1:1 映射 |
+| 鼠标移动 / 点击 | 直接操作，1:1 映射 |
 | 滚轮 | 自然方向滚动 |
-| 键盘快捷键 | 全部透传（包括 Cmd/Meta） |
-| 全屏 | 工具栏点击 ⛶ 按钮 |
+| 键盘快捷键 | 全部透传（含 Cmd/Meta） |
+| 全屏 | 工具栏 ⛶ 按钮 |
 | 工具栏 | 鼠标移到屏幕顶部自动显示 |
-| 发送文件 | 工具栏点击 📂，保存到 Mac 的 ~/Downloads |
-| 剪贴板同步 | 工具栏点击 📋，将本机剪贴板内容发送到 Mac |
-| 断开 | 工具栏点击 ⏏ |
-
----
-
-## 画质预设
-
-| 预设 | 分辨率 | 帧率 | 码率 |
-|------|--------|------|------|
-| 2K 60fps | 2560×1440 | 60 | 15 Mbps |
-| 1080 60fps | 1920×1080 | 60 | 8 Mbps |
-| 1080 30fps | 1920×1080 | 30 | 4 Mbps |
-| 流畅优先 | 1920×1080 | 30 | 2 Mbps |
-
----
-
-## 协议说明
-
-所有通信走 WebSocket：
-- **文本帧**：JSON 控制消息（认证、输入事件、剪贴板等）
-- **二进制帧**：视频帧（H.264 Annex B）和文件分块
-
-视频帧格式：`[0x01][4B frameId][4B ptsMs][1B flags][H.264 NALUs]`
+| 发送文件 | 工具栏 📂，保存到 Mac `~/Downloads` |
+| 剪贴板同步 | 工具栏 📋，将本机内容发送到 Mac |
+| 断开 | 工具栏 ⏏ |
 
 ---
 
 ## 安全说明
 
-- PIN 码认证，建议使用随机生成的强 PIN
-- 局域网直连无流量经过第三方服务器
-- 中继模式流量经过自建服务器，端对端不加密（可在此基础上加 TLS）
+- **PIN 认证**：连接前必须验证 PIN
+- **E2E 加密**：PIN 认证通过后，所有消息（包括视频流控制帧）均使用 P-256 ECDH 协商的 AES-256-GCM 加密
+- **WebRTC**：视频帧通过 DTLS 加密的 DataChannel 传输
+- **局域网直连**：数据不经过任何第三方服务器
+- **中继模式**：流量经过自建服务器透明转发，E2E 加密对服务器不可见

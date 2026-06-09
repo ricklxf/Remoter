@@ -1,6 +1,6 @@
 import Foundation
 
-// JSON Lines 格式连接日志
+// 纯文本日志，对齐格式
 // 存储路径：~/Library/Logs/Remoter/connections.log
 // 菜单栏"查看日志"在 Finder 中打开该文件
 
@@ -92,19 +92,48 @@ final class ConnectionLogger {
 
     // MARK: - Private
 
-    private func write(_ extra: [String: Any]) {
+    private func write(_ fields: [String: Any]) {
         queue.async { [weak self] in
             guard let self else { return }
 
-            // ts 固定排在最前面
-            let ts = self.iso.string(from: Date())
-            guard let restData = try? JSONSerialization.data(withJSONObject: extra),
-                  var restStr = String(data: restData, encoding: .utf8) else { return }
-            // restStr 形如 {...}，插入 ts 到第一个 { 后面
-            restStr.removeFirst()   // 去掉开头的 {
-            let line = "{\"ts\":\"\(ts)\",\(restStr)"
-            let lineData = Data((line + "\n").utf8)
+            let ts    = self.iso.string(from: Date())
+            let event = fields["event"] as? String ?? "unknown"
 
+            // 事件名：step 类展示为 step/xxx，其余直接用 event 值
+            let tag: String
+            if event == "step", let step = fields["step"] as? String {
+                tag = "step/\(step)"
+            } else {
+                tag = event
+            }
+
+            // 附加字段（去掉 event/step，按固定顺序排列常用字段）
+            let keyOrder = ["session", "remote", "codec", "detail",
+                            "error", "state", "port", "relay",
+                            "duration_s", "sent_mb", "recv_mb",
+                            "encrypted", "step"]
+            var extras: [String] = []
+            for key in keyOrder {
+                guard key != "event", key != "step" || event != "step" else { continue }
+                if let val = fields[key] {
+                    // session 只显示前 8 位
+                    if key == "session", let s = val as? String {
+                        extras.append("session=\(s.prefix(8))")
+                    } else {
+                        extras.append("\(key)=\(val)")
+                    }
+                }
+            }
+            // 其他未列出的字段追加在末尾
+            let knownKeys = Set(keyOrder + ["event"])
+            for key in fields.keys.sorted() where !knownKeys.contains(key) {
+                extras.append("\(key)=\(fields[key]!)")
+            }
+
+            let tagPadded = tag.padding(toLength: 24, withPad: " ", startingAt: 0)
+            let line = "\(ts)  \(tagPadded)  \(extras.joined(separator: "  "))"
+
+            let lineData = Data((line + "\n").utf8)
             if let fh = try? FileHandle(forWritingTo: self.logFileURL) {
                 defer { try? fh.close() }
                 try? fh.seekToEnd()

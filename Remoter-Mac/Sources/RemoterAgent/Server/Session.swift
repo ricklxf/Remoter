@@ -1,9 +1,12 @@
 import Foundation
 import Network
 import AppKit
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 
 // Manages one connected client: auth → capture → encode → stream
-// Video: WebRTC DataChannel (UDP) preferred, WebSocket fallback
+// Video: JPEG over WebSocket (bypasses VideoToolbox which hangs on macOS 26)
 // Security: P-256 ECDH + AES-256-GCM end-to-end encryption (0xE0 frame prefix)
 final class Session {
     let id: UUID
@@ -12,7 +15,6 @@ final class Session {
     private let pin: String
 
     private var capturer: ScreenCapturer?
-    private var encoder: VideoEncoder?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
     private var webrtc: WebRTCAgent?
@@ -21,13 +23,11 @@ final class Session {
     private var authenticated = false
     private var frameId: UInt32 = 0
     private var startTime: UInt32 = 0
-    private var abr: ABRController?
 
     // For disconnection logging
     private var connectTime: Date?
     private var bytesSent: Int64 = 0
     private var bytesRecv: Int64 = 0
-    private var sessionCodec: VideoCodec = .h264
 
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
@@ -92,7 +92,6 @@ final class Session {
             )
         }
         Task { await capturer?.stop() }
-        encoder?.invalidate()
         webrtc?.close()
     }
 
@@ -155,13 +154,8 @@ final class Session {
         case .fileEnd(let fid):
             fileReceiver?.finish(id: fid)
 
-        case .qualitySet(let fps, let bitrate):
-            Task {
-                guard let c = self.capturer else { return }
-                try? await c.updateConfig(fps: fps, width: c.screenWidth, height: c.screenHeight)
-                self.encoder?.forceKeyframe()
-                _ = bitrate
-            }
+        case .qualitySet:
+            break  // JPEG 模式下质量固定，忽略
 
         case .ping:
             sendJson(["type": "pong"])
@@ -173,36 +167,14 @@ final class Session {
         case .webrtcICE(let json):
             webrtc?.handleRemoteICE(json)
 
-        case .clientStats(let fps, let rttMs):
-            if let newBitrate = abr?.update(fps: fps, rttMs: rttMs) {
-                encoder?.adjustBitrate(newBitrate)
-                sendJson(["type": "bitrate_changed", "bitrate": newBitrate])
-            }
+        case .clientStats:
+            break  // JPEG 模式下无 ABR
 
-        // ── 编解码切换 ─────────────────────────────────────────
-        case .setCodec(let codecStr):
-            let newCodec: VideoCodec = codecStr == "h265" ? .h265 : .h264
-            switchCodec(to: newCodec)
+        case .setCodec:
+            break  // JPEG 模式下不支持切换
 
         default:
             break
-        }
-    }
-
-    // MARK: - 编解码切换
-
-    private func switchCodec(to codec: VideoCodec) {
-        guard let enc = encoder, let cap = capturer else { return }
-        let w = cap.screenWidth, h = cap.screenHeight
-        do {
-            enc.invalidate()
-            try enc.setup(width: w, height: h, fps: 60,
-                          bitrate: abr?.currentBitrate ?? 15_000_000, codec: codec)
-            sessionCodec = codec
-            sendJson(["type": "codec_changed", "codec": codec.rawValue])
-            ConnectionLogger.shared.logCodecChanged(sessionId: id.uuidString, codec: codec.rawValue)
-        } catch {
-            sendJson(["type": "error", "code": "codec_switch_failed", "message": "\(error)"])
         }
     }
 
@@ -217,8 +189,8 @@ final class Session {
         agent.onICECandidate = { [weak self] json in
             self?.sendJson(["type": "webrtc_ice", "candidate": json])
         }
-        agent.onConnected = { [weak self] in
-            self?.encoder?.forceKeyframe()
+        agent.onConnected = {
+            // JPEG 模式无需关键帧操作
         }
         agent.onDisconnected = { [weak self] in
             guard let self else { return }
@@ -232,121 +204,58 @@ final class Session {
         agent.handleOffer(offerSDP)
     }
 
-    // MARK: - 采集与编码
-
-    /// 在独立线程运行阻塞的 VTCompressionSessionCreate，带超时
-    /// - Returns: true = 成功，false = 超时或失败
-    private static func tryEncoderSetup(
-        enc: VideoEncoder,
-        width: Int, height: Int, fps: Int, bitrate: Int,
-        codec: VideoCodec
-    ) async -> Bool {
-        await withCheckedContinuation { cont in
-            let lock  = NSLock()
-            var done  = false
-            func finish(_ ok: Bool) {
-                lock.lock(); defer { lock.unlock() }
-                guard !done else { return }
-                done = true
-                cont.resume(returning: ok)
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { finish(false) }
-            Thread.detachNewThread {
-                do   { try enc.setup(width: width, height: height, fps: fps,
-                                     bitrate: bitrate, codec: codec); finish(true) }
-                catch { finish(false) }
-            }
-        }
-    }
-
-    /// 带超时的 encoder setup，HEVC 失败自动 fallback 到 H.264
-    private func setupEncoderWithFallback(
-        enc: VideoEncoder,
-        width: Int, height: Int, fps: Int, bitrate: Int,
-        preferred: VideoCodec,
-        sid: String
-    ) async throws -> VideoCodec {
-        if preferred == .h265 {
-            let ok = await Self.tryEncoderSetup(enc: enc, width: width, height: height,
-                                               fps: fps, bitrate: bitrate, codec: .h265)
-            if ok { return .h265 }
-            ConnectionLogger.shared.logStep(sessionId: sid, step: "hevc_fallback", detail: "timeout_5s")
-            // HEVC VT 线程已泄漏（C 调用无法取消）；重新初始化同一 enc 实例给 H.264
-            // enc 未被成功初始化，重调 setup(.h264) 是安全的
-        }
-        let ok = await Self.tryEncoderSetup(enc: enc, width: width, height: height,
-                                           fps: fps, bitrate: bitrate, codec: .h264)
-        if ok { return .h264 }
-        throw RemoterError.encoderSetupFailed
-    }
+    // MARK: - 采集与 JPEG 编码
 
     private func beginCapture() async {
         let c   = ScreenCapturer()
-        let enc = VideoEncoder()
-        let useHEVC = VideoEncoder.isHEVCSupported()
-        let codec: VideoCodec = useHEVC ? .h265 : .h264
-        sessionCodec = codec
-
-        c.onFrame = { [weak enc] buf in enc?.encode(sampleBuffer: buf) }
-
-        enc.onEncodedFrame = { [weak self] data, isKeyframe in
-            guard let self else { return }
-            let fid = self.frameId
-            self.frameId &+= 1
-            self.bytesSent += Int64(data.count)
-
-            if let rtc = self.webrtc, rtc.isVideoChannelOpen {
-                rtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid)
-            } else {
-                let now = UInt32(Date().timeIntervalSince1970 * 1000) - self.startTime
-                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
-                self.server.sendBinary(pkt, to: self.connection)
-            }
-        }
-
-        let initialBitrate = 15_000_000
         let sid = id.uuidString
-        ConnectionLogger.shared.logStep(sessionId: sid, step: "capture_begin", detail: codec.rawValue)
+        ConnectionLogger.shared.logStep(sessionId: sid, step: "capture_begin", detail: "jpeg")
         do {
-            // 先启动 capturer 获取真实屏幕尺寸，再初始化 encoder
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_start")
-            try await c.start(fps: 60)
+            try await c.start(fps: 30)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
-            ConnectionLogger.shared.logStep(sessionId: sid, step: "encoder_setup",
-                                            detail: "\(c.screenWidth)x\(c.screenHeight) codec=\(codec.rawValue)")
-            let w = c.screenWidth, h = c.screenHeight
-            let actualCodec = try await setupEncoderWithFallback(
-                enc: enc, width: w, height: h, fps: 60,
-                bitrate: initialBitrate, preferred: codec, sid: sid
-            )
-            sessionCodec = actualCodec
-            ConnectionLogger.shared.logStep(sessionId: sid, step: "encoder_ready",
-                                            detail: actualCodec.rawValue)
             capturer     = c
-            encoder      = enc
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
             fileReceiver = FileReceiver()
-            abr          = ABRController(targetFPS: 60, initialBitrate: initialBitrate)
             startTime    = UInt32(Date().timeIntervalSince1970 * 1000)
             connectTime  = Date()
 
-            ConnectionLogger.shared.logConnected(
-                sessionId: sid,
-                codec: actualCodec.rawValue,
-                encrypted: crypto.isReady
-            )
+            ConnectionLogger.shared.logConnected(sessionId: sid, codec: "jpeg", encrypted: crypto.isReady)
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
                 "height": c.screenHeight,
-                "codec":  actualCodec.rawValue
+                "codec":  "jpeg"
             ])
+
+            c.onFrame = { [weak self] cgImage, _, _ in
+                guard let self else { return }
+                guard let jpeg = Self.encodeJPEG(cgImage, quality: 0.65) else { return }
+                let fid = self.frameId
+                self.frameId &+= 1
+                self.bytesSent += Int64(jpeg.count)
+                let now = UInt32(Date().timeIntervalSince1970 * 1000) - self.startTime
+                let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
+                self.server.sendBinary(pkt, to: self.connection)
+            }
         } catch {
             let msg = "\(error)"
             ConnectionLogger.shared.logCaptureError(sessionId: sid, error: msg)
             sendJsonRaw(["type": "error", "code": "capture_failed", "message": msg])
         }
+    }
+
+    /// CGImage → JPEG Data（完全不依赖 VideoToolbox）
+    private static func encodeJPEG(_ image: CGImage, quality: Double) -> Data? {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            data, UTType.jpeg.identifier as CFString, 1, nil
+        ) else { return nil }
+        CGImageDestinationAddImage(dest, image,
+            [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return data as Data
     }
 
     // MARK: - JSON 发送

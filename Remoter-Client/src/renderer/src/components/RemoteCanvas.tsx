@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback } from 'react'
+import React, { useEffect, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
@@ -8,7 +8,7 @@ import { StreamInfo } from '../types'
 interface Props {
   conn: Connection
   streamInfo: StreamInfo
-  initialCodec?: VideoCodec
+  initialCodec?: VideoCodec | 'jpeg'
   showCursor: boolean
 }
 
@@ -17,52 +17,76 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
   const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())
   const inputRef    = useRef<InputHandler>(new InputHandler(conn))
+  // For JPEG mode: 2D context
+  const ctx2dRef    = useRef<CanvasRenderingContext2D | null>(null)
 
-  // Init decoder + renderer when stream info arrives
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const renderer = rendererRef.current
-    renderer.resize(streamInfo.width, streamInfo.height)
-    renderer.attach(canvas)
+    canvas.width  = streamInfo.width
+    canvas.height = streamInfo.height
 
-    if (!VideoDecoder_.isSupported()) {
-      console.error('WebCodecs not supported in this Electron version')
-      return
+    if (initialCodec === 'jpeg') {
+      // JPEG 模式：直接用 2D context 渲染，不需要 VideoDecoder
+      ctx2dRef.current = canvas.getContext('2d')
+      console.log('[RemoteCanvas] JPEG mode, using 2D canvas')
+    } else {
+      // H.264 / H.265 模式：使用 WebCodecs VideoDecoder
+      const renderer = rendererRef.current
+      renderer.resize(streamInfo.width, streamInfo.height)
+      renderer.attach(canvas)
+
+      if (!VideoDecoder_.isSupported()) {
+        console.error('WebCodecs not supported in this Electron version')
+        return
+      }
+
+      const decoder = new VideoDecoder_((frame) => renderer.renderFrame(frame))
+      decoderRef.current = decoder
+      decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch(console.error)
     }
-
-    const decoder = new VideoDecoder_((frame) => renderer.renderFrame(frame))
-    decoderRef.current = decoder
-    // init 是 async（H.265 需要 isConfigSupported 检查），不阻塞渲染流程
-    decoder.init(streamInfo.width, streamInfo.height, initialCodec).catch(console.error)
 
     inputRef.current.attach(canvas, streamInfo.width, streamInfo.height)
 
     return () => {
-      decoder.close()
-      renderer.detach()
+      decoderRef.current?.close()
+      rendererRef.current.detach()
       inputRef.current.detach()
+      ctx2dRef.current = null
     }
   }, [streamInfo, initialCodec])
 
-  // Wire up video frames + codec_changed events from connection
+  // Wire up video frames + codec_changed events
   useEffect(() => {
     const prev = conn.onEvent
     conn.onEvent = (e) => {
       prev?.(e)
-      if (e.type === 'video_frame' && decoderRef.current) {
-        decoderRef.current.decode(e.data, e.keyframe, e.ptsMs * 1000)
+
+      if (e.type === 'video_frame') {
+        if (initialCodec === 'jpeg') {
+          // JPEG 模式：直接 createImageBitmap 渲染
+          const blob = new Blob([e.data], { type: 'image/jpeg' })
+          createImageBitmap(blob).then((bmp) => {
+            const ctx = ctx2dRef.current
+            const canvas = canvasRef.current
+            if (ctx && canvas) {
+              ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height)
+              bmp.close()
+            }
+          }).catch(() => {/* ignore decode errors */})
+        } else if (decoderRef.current) {
+          decoderRef.current.decode(e.data, e.keyframe, e.ptsMs * 1000)
+        }
       }
+
       if (e.type === 'codec_changed' && decoderRef.current) {
         console.log(`[RemoteCanvas] switching decoder to ${e.codec}`)
         decoderRef.current.switchCodec(streamInfo.width, streamInfo.height, e.codec).catch(console.error)
       }
     }
     return () => { conn.onEvent = prev }
-  }, [conn, streamInfo])
-
-  const cursor = showCursor ? 'none' : 'default'
+  }, [conn, streamInfo, initialCodec])
 
   return (
     <canvas
@@ -73,7 +97,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
         width: '100%',
         height: '100%',
         objectFit: 'contain',
-        cursor,
+        cursor: showCursor ? 'none' : 'default',
         outline: 'none',
         background: '#000'
       }}

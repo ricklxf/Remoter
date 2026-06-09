@@ -2,9 +2,9 @@
 // H.265 需要 Chromium 107+ / Electron 22+ 且硬件解码器支持
 
 export type FrameCallback = (frame: VideoFrame) => void
-export type VideoCodec = 'h264' | 'h265'
+export type VideoCodec = 'h264' | 'h265' | 'jpeg'
 
-const CODEC_STRING: Record<VideoCodec, string> = {
+const CODEC_STRING: Record<Exclude<VideoCodec, 'jpeg'>, string> = {
   h264: 'avc1.640028',       // H.264 High Profile Level 4.0
   h265: 'hvc1.1.6.L150.B0'  // H.265 Main Profile Level 5.0
 }
@@ -20,10 +20,11 @@ export class VideoDecoder_ {
   }
 
   async init(width: number, height: number, codec: VideoCodec = 'h264'): Promise<void> {
+    if (codec === 'jpeg') return  // JPEG 由 RemoteCanvas 直接处理
     if (this.decoder) this.close()
     this.currentCodec = codec
 
-    const codecStr = CODEC_STRING[codec]
+    const codecStr = CODEC_STRING[codec as Exclude<VideoCodec, 'jpeg'>]
 
     // H.265 需要先检查浏览器是否支持
     if (codec === 'h265') {

@@ -9,7 +9,7 @@ export default function App() {
   const connRef  = useRef<Connection>(new Connection())
   const [state, setState]           = useState<ConnectionState>('idle')
   const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null)
-  const [codec, setCodec]           = useState<VideoCodec>('h264')
+  const [codec, setCodec]           = useState<VideoCodec | 'jpeg'>('jpeg')
   const [errorMsg, setErrorMsg]     = useState('')
 
   useEffect(() => {

@@ -10,13 +10,13 @@ import { VideoCodec } from '../video/Decoder'
 interface Props {
   conn: Connection
   streamInfo: StreamInfo
-  initialCodec?: VideoCodec
+  initialCodec?: VideoCodec | 'jpeg'
   onDisconnect: () => void
 }
 
 const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP' }
 
-export function DesktopPage({ conn, streamInfo, initialCodec = 'h264', onDisconnect }: Props) {
+export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', onDisconnect }: Props) {
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
   const [stats, setStats]     = useState<ConnStats>(DEFAULT_STATS)

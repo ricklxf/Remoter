@@ -90,11 +90,14 @@ final class ConnectionLogger {
     private func write(_ extra: [String: Any]) {
         queue.async { [weak self] in
             guard let self else { return }
-            var entry = extra
-            entry["ts"] = self.iso.string(from: Date())
 
-            guard let data = try? JSONSerialization.data(withJSONObject: entry),
-                  let line = String(data: data, encoding: .utf8) else { return }
+            // ts 固定排在最前面
+            let ts = self.iso.string(from: Date())
+            guard let restData = try? JSONSerialization.data(withJSONObject: extra),
+                  var restStr = String(data: restData, encoding: .utf8) else { return }
+            // restStr 形如 {...}，插入 ts 到第一个 { 后面
+            restStr.removeFirst()   // 去掉开头的 {
+            let line = "{\"ts\":\"\(ts)\",\(restStr)"
             let lineData = Data((line + "\n").utf8)
 
             if let fh = try? FileHandle(forWritingTo: self.logFileURL) {

@@ -87,7 +87,8 @@ final class VideoEncoder {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFTypeRef)
         let limits: [CFNumber] = [newBitrate as CFNumber, 1 as CFNumber]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: limits as CFArray)
-        print("[ABR] bitrate → \(newBitrate / 1_000) kbps")
+        ConnectionLogger.shared.logStep(sessionId: "abr", step: "bitrate_changed",
+                                       detail: "\(newBitrate / 1_000) kbps")
     }
 
     func invalidate() {

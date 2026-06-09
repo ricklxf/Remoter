@@ -262,13 +262,15 @@ final class Session {
         let sid = id.uuidString
         ConnectionLogger.shared.logStep(sessionId: sid, step: "capture_begin", detail: codec.rawValue)
         do {
-            ConnectionLogger.shared.logStep(sessionId: sid, step: "encoder_setup")
-            try enc.setup(width: 2560, height: 1440, fps: 60,
-                          bitrate: initialBitrate, codec: codec)
+            // 先启动 capturer 获取真实屏幕尺寸，再初始化 encoder
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_start")
             try await c.start(fps: 60)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
+            ConnectionLogger.shared.logStep(sessionId: sid, step: "encoder_setup",
+                                            detail: "\(c.screenWidth)x\(c.screenHeight)")
+            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 60,
+                          bitrate: initialBitrate, codec: codec)
             capturer     = c
             encoder      = enc
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)

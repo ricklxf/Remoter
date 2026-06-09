@@ -234,6 +234,48 @@ final class Session {
 
     // MARK: - 采集与编码
 
+    /// 带超时的 encoder setup，HEVC 失败自动 fallback 到 H.264
+    private func setupEncoderWithFallback(
+        enc: VideoEncoder,
+        width: Int, height: Int, fps: Int, bitrate: Int,
+        preferred: VideoCodec,
+        sid: String
+    ) async throws -> VideoCodec {
+        // 用 withThrowingTaskGroup 给同步的 VTCompressionSessionCreate 加超时
+        func trySetup(_ codec: VideoCodec) async throws {
+            try await withThrowingTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    try enc.setup(width: width, height: height, fps: fps,
+                                  bitrate: bitrate, codec: codec)
+                    return true
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 4_000_000_000) // 4s 超时
+                    return false
+                }
+                let ok = try await group.next()!
+                group.cancelAll()
+                if !ok { throw RemoterError.encoderSetupFailed }
+            }
+        }
+
+        if preferred == .h265 {
+            do {
+                try await trySetup(.h265)
+                return .h265
+            } catch {
+                ConnectionLogger.shared.logStep(sessionId: sid, step: "hevc_fallback",
+                                               detail: "\(error)")
+                enc.invalidate()
+                try await trySetup(.h264)
+                return .h264
+            }
+        } else {
+            try await trySetup(.h264)
+            return .h264
+        }
+    }
+
     private func beginCapture() async {
         let c   = ScreenCapturer()
         let enc = VideoEncoder()
@@ -268,9 +310,15 @@ final class Session {
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             ConnectionLogger.shared.logStep(sessionId: sid, step: "encoder_setup",
-                                            detail: "\(c.screenWidth)x\(c.screenHeight)")
-            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 60,
-                          bitrate: initialBitrate, codec: codec)
+                                            detail: "\(c.screenWidth)x\(c.screenHeight) codec=\(codec.rawValue)")
+            let w = c.screenWidth, h = c.screenHeight
+            let actualCodec = try await setupEncoderWithFallback(
+                enc: enc, width: w, height: h, fps: 60,
+                bitrate: initialBitrate, preferred: codec, sid: sid
+            )
+            sessionCodec = actualCodec
+            ConnectionLogger.shared.logStep(sessionId: sid, step: "encoder_ready",
+                                            detail: actualCodec.rawValue)
             capturer     = c
             encoder      = enc
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)

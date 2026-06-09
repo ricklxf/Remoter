@@ -10,7 +10,12 @@ final class ConnectionLogger {
     let logFileURL: URL
 
     private let queue = DispatchQueue(label: "remoter.logger", qos: .background)
-    private let iso   = ISO8601DateFormatter()
+    private let iso: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        f.timeZone   = TimeZone(identifier: "Asia/Shanghai")
+        return f
+    }()
 
     private init() {
         let dir = FileManager.default

@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "RemoterAgent",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     dependencies: [
         // Google WebRTC prebuilt framework (stasel/WebRTC)

@@ -47,6 +47,7 @@ export default function App() {
     setState('idle')
   }
 
+  // 远程桌面页全屏，不需要拖拽条
   if (state === 'streaming' && streamInfo) {
     return (
       <DesktopPage
@@ -59,10 +60,21 @@ export default function App() {
   }
 
   return (
-    <ConnectPage
-      onConnect={handleConnect}
-      isConnecting={state === 'connecting' || state === 'authenticating'}
-      errorMsg={errorMsg}
-    />
+    <>
+      {/* macOS hiddenInset 模式下的不可见拖拽区域，让窗口可以被拖动 */}
+      <div style={{
+        position: 'fixed', top: 0, left: 0, right: 0,
+        height: 28,
+        // @ts-ignore
+        WebkitAppRegion: 'drag',
+        zIndex: 9999,
+        pointerEvents: 'none'   // 不拦截点击，让下方内容正常交互
+      }} />
+      <ConnectPage
+        onConnect={handleConnect}
+        isConnecting={state === 'connecting' || state === 'authenticating'}
+        errorMsg={errorMsg}
+      />
+    </>
   )
 }

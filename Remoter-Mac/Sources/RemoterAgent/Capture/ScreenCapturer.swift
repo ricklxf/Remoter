@@ -1,18 +1,18 @@
 import Foundation
 import CoreGraphics
-import CoreMedia
 
 final class ScreenCapturer: @unchecked Sendable {
-    /// 每帧回调：(CGImage, displayWidth, displayHeight)
     var onFrame: ((CGImage, Int, Int) -> Void)?
-
-    private var captureTask: Task<Void, Never>?
-    private var displayID: CGDirectDisplayID = CGMainDisplayID()
 
     private(set) var screenWidth:  Int = 1920
     private(set) var screenHeight: Int = 1080
 
+    private var displayID: CGDirectDisplayID = CGMainDisplayID()
+    private var running   = false
+    private var fps       = 30
+
     func start(fps: Int = 30) async throws {
+        self.fps     = fps
         displayID    = CGMainDisplayID()
         screenWidth  = CGDisplayPixelsWide(displayID)
         screenHeight = CGDisplayPixelsHigh(displayID)
@@ -20,34 +20,36 @@ final class ScreenCapturer: @unchecked Sendable {
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
             detail: "id=\(displayID) \(screenWidth)x\(screenHeight)")
 
-        // 先抓一帧确认权限和 API 可用
+        // 测试帧：在当前 async 上下文直接调用（已知可行）
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "test_frame")
         guard CGDisplayCreateImage(displayID) != nil else {
             throw RemoterError.captureUnavailable
         }
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "test_frame_ok")
 
-        let interval = 1.0 / Double(fps)
+        // 采集循环用纯 OS 线程（Thread.detachNewThread），
+        // 避免 Swift 协作线程池在 macOS 26 上因 CGDisplayCreateImage 崩溃
+        running = true
         let did = displayID, w = screenWidth, h = screenHeight
-        captureTask = Task.detached(priority: .high) { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                let t = ContinuousClock.now
+        let interval = 1.0 / Double(fps)
+
+        Thread.detachNewThread { [weak self] in
+            ConnectionLogger.shared.logStep(sessionId: "capturer", step: "loop_started")
+            while let self, self.running {
+                let t = Date()
                 if let img = CGDisplayCreateImage(did) {
                     self.onFrame?(img, w, h)
                 }
-                let elapsed = ContinuousClock.now - t
-                let wait = Duration.seconds(interval) - elapsed
-                if wait > .zero {
-                    try? await Task.sleep(for: wait)
-                }
+                let elapsed = -t.timeIntervalSinceNow
+                let wait    = interval - elapsed
+                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
             }
+            ConnectionLogger.shared.logStep(sessionId: "capturer", step: "loop_stopped")
         }
     }
 
     func stop() async {
-        captureTask?.cancel()
-        captureTask = nil
+        running = false
     }
 }
 

@@ -1,5 +1,5 @@
 import AppKit
-import ScreenCaptureKit
+import CoreGraphics
 
 // MARK: - Status model
 
@@ -45,25 +45,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     // 主动触发屏幕录制权限申请，避免在后台连接时弹框被 macOS 忽略
     private func requestScreenCapturePermission() {
-        Task {
-            do {
-                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                ConnectionLogger.shared.logPermission(event: "screen_capture_granted")
-            } catch {
-                ConnectionLogger.shared.logPermission(event: "screen_capture_denied", detail: "\(error)")
-                // 弹一个原生对话框提示用户
-                await MainActor.run {
-                    let alert = NSAlert()
-                    alert.messageText = "需要屏幕录制权限"
-                    alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 RemoterAgent 的开关，然后重启本 app。"
-                    alert.alertStyle = .warning
-                    alert.addButton(withTitle: "打开系统设置")
-                    alert.addButton(withTitle: "稍后")
-                    NSApp.activate(ignoringOtherApps: true)
-                    if alert.runModal() == .alertFirstButtonReturn {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                    }
-                }
+        // CGRequestScreenCaptureAccess() 是 CoreGraphics 原生 API，
+        // 不走 ScreenCaptureKit，不会在 macOS 26 上挂住
+        let granted = CGRequestScreenCaptureAccess()
+        if granted {
+            ConnectionLogger.shared.logPermission(event: "screen_capture_granted")
+        } else {
+            ConnectionLogger.shared.logPermission(event: "screen_capture_denied")
+            let alert = NSAlert()
+            alert.messageText = "需要屏幕录制权限"
+            alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 RemoterAgent 的开关，然后重启本 app。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "打开系统设置")
+            alert.addButton(withTitle: "稍后")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
             }
         }
     }

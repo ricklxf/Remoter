@@ -66,6 +66,25 @@ final class ConnectionLogger {
         write(["event": "codec_changed", "session": sessionId, "codec": codec])
     }
 
+    /// 通用步骤日志（用于采集流程中间步骤的诊断）
+    func logStep(sessionId: String, step: String, detail: String? = nil) {
+        var d: [String: Any] = ["event": "step", "session": sessionId, "step": step]
+        if let detail { d["detail"] = detail }
+        write(d)
+    }
+
+    /// E2E 握手状态
+    func logE2E(sessionId: String, state: String) {
+        write(["event": "e2e", "session": sessionId, "state": state])
+    }
+
+    /// 权限检查结果
+    func logPermission(event: String, detail: String? = nil) {
+        var d: [String: Any] = ["event": event]
+        if let detail { d["detail"] = detail }
+        write(d)
+    }
+
     // MARK: - Private
 
     private func write(_ extra: [String: Any]) {

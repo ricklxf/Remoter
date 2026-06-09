@@ -48,9 +48,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         Task {
             do {
                 _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                print("[Permission] 屏幕录制权限已授权")
+                ConnectionLogger.shared.logPermission(event: "screen_capture_granted")
             } catch {
-                print("[Permission] 屏幕录制权限未授权，请在系统设置中允许: \(error)")
+                ConnectionLogger.shared.logPermission(event: "screen_capture_denied", detail: "\(error)")
                 // 弹一个原生对话框提示用户
                 await MainActor.run {
                     let alert = NSAlert()

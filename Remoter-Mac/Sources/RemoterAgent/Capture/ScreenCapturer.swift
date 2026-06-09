@@ -55,38 +55,36 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
 
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "calling_startCapture")
 
+        // 用 completionHandler 版本避免 macOS 26 上 async 版本挂起的问题
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            // 10 秒超时定时器
-            let timer = DispatchSource.makeTimerSource(queue: .global())
-            timer.schedule(deadline: .now() + 10)
             var resolved = false
             let lock = NSLock()
 
-            func resolve(_ result: Result<Void, Error>) {
+            // 10 秒超时
+            let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+            timer.schedule(deadline: .now() + 10)
+            timer.setEventHandler {
                 lock.lock()
                 defer { lock.unlock() }
                 guard !resolved else { return }
                 resolved = true
                 timer.cancel()
-                switch result {
-                case .success: cont.resume()
-                case .failure(let e): cont.resume(throwing: e)
-                }
-            }
-
-            timer.setEventHandler {
                 ConnectionLogger.shared.logStep(sessionId: "capturer", step: "startCapture_timeout")
-                resolve(.failure(RemoterError.captureTimeout))
+                cont.resume(throwing: RemoterError.captureTimeout)
             }
             timer.resume()
 
-            // 实际启动
-            Task {
-                do {
-                    try await s.startCapture()
-                    resolve(.success(()))
-                } catch {
-                    resolve(.failure(error))
+            // completionHandler 版本（ObjC bridging，不走 Swift executor）
+            s.startCapture { error in
+                lock.lock()
+                defer { lock.unlock() }
+                guard !resolved else { return }
+                resolved = true
+                timer.cancel()
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume()
                 }
             }
         }

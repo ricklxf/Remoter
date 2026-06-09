@@ -92,6 +92,21 @@ PLIST
 echo "✅ Built: $APP_DIR"
 echo ""
 
+# ── 代码签名（用本地证书保持身份稳定，TCC 权限不会因重编译丢失）──────────
+SIGN_IDENTITY="Remoter"
+echo "▶ Signing with \"$SIGN_IDENTITY\"…"
+if security find-certificate -c "$SIGN_IDENTITY" &>/dev/null; then
+    codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
+    echo "✅ Signed with local cert"
+else
+    # 证书不存在时降级为 ad-hoc（提示用户创建）
+    echo "⚠️  未找到证书 \"$SIGN_IDENTITY\"，使用 ad-hoc 签名（权限可能每次重置）"
+    echo "   一劳永逸方法：打开「钥匙串访问」→ 证书助理 → 创建证书"
+    echo "   名称填「Remoter Dev」，类型选「代码签名」"
+    codesign --force --deep --sign - "$APP_DIR"
+fi
+echo ""
+
 # ── 安装到 /Applications ──────────────────────────────────────────────────
 if [ "$INSTALL" -eq 1 ]; then
     echo "▶ Installing to /Applications…"

@@ -18,6 +18,13 @@ export class E2ECrypto {
 
   get isReady(): boolean { return this.symmetricKey !== null }
 
+  /** 重置所有密钥状态，在每次新连接前调用 */
+  reset(): void {
+    this.privateKey   = null
+    this.publicKey    = null
+    this.symmetricKey = null
+  }
+
   // MARK: - 密钥生成
 
   async generateKeyPair(): Promise<void> {

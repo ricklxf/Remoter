@@ -7,14 +7,15 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package:win": "npm run build && electron-builder --win",
-    "package:mac": "npm run build && electron-builder --mac"
+    "package:win": "npm version patch --no-git-tag-version && npm run build && electron-builder --win",
+    "package:mac": "npm version patch --no-git-tag-version && npm run build && electron-builder --mac"
   },
   "dependencies": {
     "electron-updater": "^6.1.7"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/tsconfig": "^2.0.0",
     "@electron-toolkit/utils": "^3.0.0",
     "@types/node": "^20.11.5",
     "@types/react": "^18.2.55",

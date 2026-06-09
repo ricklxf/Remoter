@@ -37,6 +37,11 @@ final class Session {
     }
 
     func start() {
+        // 记录连接建立（WebSocket 握手完成，尚未 PIN 认证）
+        let remote = "\(connection.endpoint)"
+        print("[Session] 客户端接入 \(remote) | session=\(id.uuidString.prefix(8))")
+        ConnectionLogger.shared.logClientConnected(sessionId: id.uuidString, remoteAddr: remote)
+
         // Include our E2E public key so client can initiate handshake
         sendJsonRaw(["type": "hello", "version": "1.0", "os": "macOS",
                      "pubkey": crypto.publicKeyBase64])
@@ -114,9 +119,12 @@ final class Session {
         if case .auth(let clientPin) = msg {
             if clientPin == pin {
                 authenticated = true
-                sendJson(["type": "auth_ok"])
+                print("[Session] ✅ 认证通过 session=\(id.uuidString.prefix(8))")
+                ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+                sendJsonRaw(["type": "auth_ok"])
                 Task { await self.beginCapture() }
             } else {
+                print("[Session] ❌ PIN 错误 session=\(id.uuidString.prefix(8))")
                 ConnectionLogger.shared.logAuthFailed(sessionId: id.uuidString)
                 sendJsonRaw(["type": "error", "code": "auth_failed", "message": "Wrong PIN"])
                 connection.cancel()
@@ -254,10 +262,14 @@ final class Session {
         }
 
         let initialBitrate = 15_000_000
+        print("[Session] ▶ 开始采集 codec=\(codec.rawValue) session=\(id.uuidString.prefix(8))")
         do {
+            print("[Session]   1/4 设置编码器…")
             try enc.setup(width: 2560, height: 1440, fps: 60,
                           bitrate: initialBitrate, codec: codec)
+            print("[Session]   2/4 编码器就绪，启动屏幕捕获…")
             try await c.start(fps: 60)
+            print("[Session]   3/4 屏幕捕获已启动 \(c.screenWidth)x\(c.screenHeight)")
             capturer     = c
             encoder      = enc
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
@@ -266,6 +278,8 @@ final class Session {
             startTime    = UInt32(Date().timeIntervalSince1970 * 1000)
             connectTime  = Date()
 
+            print("[Session]   4/4 发送 stream_started…")
+            print("[Session] ✅ 流启动 \(c.screenWidth)x\(c.screenHeight) codec=\(codec.rawValue) e2e=\(crypto.isReady)")
             ConnectionLogger.shared.logConnected(
                 sessionId: id.uuidString,
                 codec: codec.rawValue,
@@ -279,7 +293,10 @@ final class Session {
                 "codec":  codec.rawValue
             ])
         } catch {
-            sendJson(["type": "error", "code": "capture_failed", "message": "\(error)"])
+            let msg = "\(error)"
+            print("[Session] ❌ 采集失败: \(msg)")
+            ConnectionLogger.shared.logCaptureError(sessionId: id.uuidString, error: msg)
+            sendJsonRaw(["type": "error", "code": "capture_failed", "message": msg])
         }
     }
 

@@ -48,6 +48,9 @@ export class Connection {
 
   connect(params: ConnectParams): void {
     this.params = params
+    // 每次新连接重置 E2E 状态，避免旧加密密钥影响新 Session
+    this.e2e.reset()
+    this.sendQueue = Promise.resolve()
     this.emit({ type: 'state', state: 'connecting' })
 
     let url: string
@@ -280,6 +283,7 @@ export class Connection {
 
       case 'error':
         this.emit({ type: 'error', message: (msg.message ?? msg.code) as string })
+        this.emit({ type: 'state', state: 'error' })
         break
 
       case 'pong': {

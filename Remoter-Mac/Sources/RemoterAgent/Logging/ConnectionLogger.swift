@@ -28,8 +28,29 @@ final class ConnectionLogger {
         write(d)
     }
 
+    /// 客户端 TCP/WebSocket 握手完成，尚未认证
+    func logClientConnected(sessionId: String, remoteAddr: String) {
+        write(["event": "client_connected", "session": sessionId, "remote": remoteAddr])
+    }
+
+    /// PIN 认证通过
+    func logAuthSuccess(sessionId: String) {
+        write(["event": "auth_success", "session": sessionId])
+    }
+
+    /// PIN 认证失败
+    func logAuthFailed(sessionId: String) {
+        write(["event": "auth_failed", "session": sessionId])
+    }
+
+    /// 屏幕捕获 / 编码器启动失败
+    func logCaptureError(sessionId: String, error: String) {
+        write(["event": "capture_error", "session": sessionId, "error": error])
+    }
+
+    /// 流已成功启动
     func logConnected(sessionId: String, codec: String, encrypted: Bool) {
-        write(["event": "connected", "session": sessionId,
+        write(["event": "stream_started", "session": sessionId,
                "codec": codec, "encrypted": encrypted])
     }
 
@@ -39,10 +60,6 @@ final class ConnectionLogger {
                "duration_s": durationSecs,
                "sent_mb":    String(format: "%.2f", bytesSentMB),
                "recv_mb":    String(format: "%.2f", bytesRecvMB)])
-    }
-
-    func logAuthFailed(sessionId: String) {
-        write(["event": "auth_failed", "session": sessionId])
     }
 
     func logCodecChanged(sessionId: String, codec: String) {

@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 
 // MARK: - Status model
 
@@ -38,6 +39,33 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             btn.toolTip = "Remoter"
         }
         refresh()
+        // 启动时主动申请屏幕录制权限，确保弹框在前台出现
+        requestScreenCapturePermission()
+    }
+
+    // 主动触发屏幕录制权限申请，避免在后台连接时弹框被 macOS 忽略
+    private func requestScreenCapturePermission() {
+        Task {
+            do {
+                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                print("[Permission] 屏幕录制权限已授权")
+            } catch {
+                print("[Permission] 屏幕录制权限未授权，请在系统设置中允许: \(error)")
+                // 弹一个原生对话框提示用户
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = "需要屏幕录制权限"
+                    alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 RemoterAgent 的开关，然后重启本 app。"
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "打开系统设置")
+                    alert.addButton(withTitle: "稍后")
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Menu build
@@ -124,8 +152,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showLogInFinder() {
-        let url = ConnectionLogger.shared.logFileURL
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        let fileURL = ConnectionLogger.shared.logFileURL
+        let dirURL  = fileURL.deletingLastPathComponent()
+        // 目录不存在时先创建
+        try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            // 文件存在：在 Finder 中高亮选中
+            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        } else {
+            // 文件不存在（尚无连接日志）：打开目录
+            NSWorkspace.shared.open(dirURL)
+        }
     }
 
     @objc private func copyIP(_ sender: NSMenuItem) {

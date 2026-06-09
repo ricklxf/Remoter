@@ -8,7 +8,7 @@ enum VideoCodec: String {
     case h265 = "h265"
 }
 
-final class VideoEncoder {
+final class VideoEncoder: @unchecked Sendable {
     var onEncodedFrame: ((Data, Bool) -> Void)?
 
     private(set) var currentCodec: VideoCodec = .h264

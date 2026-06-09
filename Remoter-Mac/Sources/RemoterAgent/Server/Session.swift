@@ -234,6 +234,31 @@ final class Session {
 
     // MARK: - 采集与编码
 
+    /// 在独立线程运行阻塞的 VTCompressionSessionCreate，带超时
+    /// - Returns: true = 成功，false = 超时或失败
+    private static func tryEncoderSetup(
+        enc: VideoEncoder,
+        width: Int, height: Int, fps: Int, bitrate: Int,
+        codec: VideoCodec
+    ) async -> Bool {
+        await withCheckedContinuation { cont in
+            let lock  = NSLock()
+            var done  = false
+            func finish(_ ok: Bool) {
+                lock.lock(); defer { lock.unlock() }
+                guard !done else { return }
+                done = true
+                cont.resume(returning: ok)
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { finish(false) }
+            Thread.detachNewThread {
+                do   { try enc.setup(width: width, height: height, fps: fps,
+                                     bitrate: bitrate, codec: codec); finish(true) }
+                catch { finish(false) }
+            }
+        }
+    }
+
     /// 带超时的 encoder setup，HEVC 失败自动 fallback 到 H.264
     private func setupEncoderWithFallback(
         enc: VideoEncoder,
@@ -241,39 +266,18 @@ final class Session {
         preferred: VideoCodec,
         sid: String
     ) async throws -> VideoCodec {
-        // 用 withThrowingTaskGroup 给同步的 VTCompressionSessionCreate 加超时
-        func trySetup(_ codec: VideoCodec) async throws {
-            try await withThrowingTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    try enc.setup(width: width, height: height, fps: fps,
-                                  bitrate: bitrate, codec: codec)
-                    return true
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 4_000_000_000) // 4s 超时
-                    return false
-                }
-                let ok = try await group.next()!
-                group.cancelAll()
-                if !ok { throw RemoterError.encoderSetupFailed }
-            }
-        }
-
         if preferred == .h265 {
-            do {
-                try await trySetup(.h265)
-                return .h265
-            } catch {
-                ConnectionLogger.shared.logStep(sessionId: sid, step: "hevc_fallback",
-                                               detail: "\(error)")
-                enc.invalidate()
-                try await trySetup(.h264)
-                return .h264
-            }
-        } else {
-            try await trySetup(.h264)
-            return .h264
+            let ok = await Self.tryEncoderSetup(enc: enc, width: width, height: height,
+                                               fps: fps, bitrate: bitrate, codec: .h265)
+            if ok { return .h265 }
+            ConnectionLogger.shared.logStep(sessionId: sid, step: "hevc_fallback", detail: "timeout_5s")
+            // HEVC VT 线程已泄漏（C 调用无法取消）；重新初始化同一 enc 实例给 H.264
+            // enc 未被成功初始化，重调 setup(.h264) 是安全的
         }
+        let ok = await Self.tryEncoderSetup(enc: enc, width: width, height: height,
+                                           fps: fps, bitrate: bitrate, codec: .h264)
+        if ok { return .h264 }
+        throw RemoterError.encoderSetupFailed
     }
 
     private func beginCapture() async {
@@ -329,14 +333,14 @@ final class Session {
 
             ConnectionLogger.shared.logConnected(
                 sessionId: sid,
-                codec: codec.rawValue,
+                codec: actualCodec.rawValue,
                 encrypted: crypto.isReady
             )
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
                 "height": c.screenHeight,
-                "codec":  codec.rawValue
+                "codec":  actualCodec.rawValue
             ])
         } catch {
             let msg = "\(error)"

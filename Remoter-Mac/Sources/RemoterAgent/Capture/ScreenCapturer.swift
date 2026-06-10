@@ -27,13 +27,14 @@ final class ScreenCapturer: @unchecked Sendable {
         }
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "test_frame_ok")
 
-        // 采集循环用纯 OS 线程（Thread.detachNewThread），
-        // 避免 Swift 协作线程池在 macOS 26 上因 CGDisplayCreateImage 崩溃
+        // 采集循环用 DispatchQueue（GCD 管理的线程）
+        // macOS 26 上 CGDisplayCreateImage 在裸 OS 线程(Thread.detachNewThread)上会崩溃，
+        // 但在 GCD 线程 / 启动时的 DispatchQueue.global 上调用正常
         running = true
         let did = displayID, w = screenWidth, h = screenHeight
         let interval = 1.0 / Double(fps)
 
-        Thread.detachNewThread { [weak self] in
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             ConnectionLogger.shared.logStep(sessionId: "capturer", step: "loop_started")
             while let self, self.running {
                 let t = Date()

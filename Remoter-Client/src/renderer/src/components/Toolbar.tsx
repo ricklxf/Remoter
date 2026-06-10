@@ -55,7 +55,7 @@ export function Toolbar({
 
       <div style={styles.sep} />
 
-      <ToolBtn icon="📂" title="发送文件给远端" onClick={() => fileRef.current?.click()} />
+      <ToolBtn icon="↑" title="发送文件到远端 Mac (保存至 ~/Downloads)" onClick={() => fileRef.current?.click()} />
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
 
       <div style={styles.sep} />

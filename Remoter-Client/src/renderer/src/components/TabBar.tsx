@@ -59,9 +59,9 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect }: {
   const streaming = tab.state === 'streaming'
   const mbps = (tab.stats.bitrateKbps / 1000).toFixed(1)
 
-  // × disconnects when streaming; closes tab when idle
-  const handleX = streaming ? onDisconnect : (canClose ? onClose : undefined)
-  const xTitle  = streaming ? '断开连接' : '关闭标签页'
+  // 只有一个 tab 时 × = 断开连接；多个 tab 时 × = 关闭（含断开）
+  const handleX = canClose ? onClose : onDisconnect
+  const xTitle  = canClose ? '关闭标签页' : '断开连接'
 
   return (
     <div
@@ -75,15 +75,13 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect }: {
       {streaming && (
         <span style={styles.speed}>{mbps}M</span>
       )}
-      {handleX && (
-        <button
-          style={styles.closeBtn}
-          onClick={e => { e.stopPropagation(); handleX() }}
-          title={xTitle}
-          // @ts-ignore
-          WebkitAppRegion="no-drag"
-        >×</button>
-      )}
+      <button
+        style={styles.closeBtn}
+        onClick={e => { e.stopPropagation(); handleX() }}
+        title={xTitle}
+        // @ts-ignore
+        WebkitAppRegion="no-drag"
+      >×</button>
     </div>
   )
 }

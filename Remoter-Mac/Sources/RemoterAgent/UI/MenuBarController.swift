@@ -43,8 +43,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         refresh()
         // 启动时主动申请屏幕录制权限，确保弹框在前台出现
         requestScreenCapturePermission()
-        // 辅助功能权限：CGEvent.post 需要此权限才能注入鼠标/键盘事件
-        requestAccessibilityPermission()
     }
 
     // 主动触发屏幕录制权限申请，避免在后台连接时弹框被 macOS 忽略
@@ -79,30 +77,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func requestAccessibilityPermission() {
-        // 已授权：直接返回，不弹任何对话框
-        if AXIsProcessTrusted() {
-            ConnectionLogger.shared.logPermission(event: "accessibility_granted")
-            return
-        }
-        // 未授权：触发系统弹框（首次运行时）
-        ConnectionLogger.shared.logPermission(event: "accessibility_denied")
-        AXIsProcessTrustedWithOptions(
-            [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
-        )
-        let alert = NSAlert()
-        alert.messageText = "需要辅助功能权限"
-        alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 辅助功能」，打开 RemoterAgent 的开关，然后重启本 app。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "打开系统设置")
-        alert.addButton(withTitle: "稍后")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(
-                URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-            )
-        }
-    }
+    var isAccessibilityGranted: Bool { AXIsProcessTrusted() }
 
     // MARK: - Menu build
 
@@ -176,6 +151,20 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
         }
 
+        // ── 辅助功能权限状态 ────────────────────────────────────
+        menu.addItem(.separator())
+        if AXIsProcessTrusted() {
+            let axItem = NSMenuItem(title: "✓ 辅助功能已授权", action: nil, keyEquivalent: "")
+            axItem.isEnabled = false
+            menu.addItem(axItem)
+        } else {
+            let axItem = NSMenuItem(title: "⚠ 辅助功能未授权（点击授权）",
+                                    action: #selector(openAccessibilitySettings),
+                                    keyEquivalent: "")
+            axItem.target = self
+            menu.addItem(axItem)
+        }
+
         menu.addItem(.separator())
         let logItem = NSMenuItem(title: "在 Finder 中显示日志",
                                  action: #selector(showLogInFinder),
@@ -221,6 +210,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard let ip = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("ws://\(ip):7788", forType: .string)
+    }
+
+    @objc private func openAccessibilitySettings() {
+        NSWorkspace.shared.open(
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        )
     }
 
     @objc private func copyWebURL(_ sender: NSMenuItem) {

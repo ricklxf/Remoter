@@ -16,7 +16,7 @@ final class InputController {
     func mouseMove(x: Double, y: Double) {
         if !loggedAccessibility {
             loggedAccessibility = true
-            print("[Input] accessibility trusted=\(AXIsProcessTrusted())")
+            NSLog("[Input] accessibility trusted=%d", AXIsProcessTrusted() ? 1 : 0)
         }
         let pt = cgPoint(x: x, y: y)
         let src = CGEventSource(stateID: .hidSystemState)
@@ -70,11 +70,11 @@ final class InputController {
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let keyCode = keyCodeMap[code] else {
-            print("[Input] keyEvent: unknown code=\(code)")
+            NSLog("[Input] keyEvent: unknown code=%@", code)
             return
         }
         guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: down) else {
-            print("[Input] keyEvent: CGEvent creation failed code=\(code)")
+            NSLog("[Input] keyEvent: CGEvent creation failed code=%@", code)
             return
         }
 

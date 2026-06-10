@@ -62,7 +62,7 @@ final class Session {
                 guard let json = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
                 routeMessage(json)
             } catch {
-                print("[Session] E2E decrypt FAILED: \(error), e2eReady=\(crypto.isReady), len=\(data.count)")
+                NSLog("[Session] E2E decrypt FAILED: %@, e2eReady=%d, len=%d", "\(error)", crypto.isReady ? 1 : 0, data.count)
             }
             return
         }
@@ -129,7 +129,7 @@ final class Session {
 
         // ── 输入事件 ───────────────────────────────────────────
         case .mouseMove(let x, let y):
-            print("[Session] mouseMove x=\(x) y=\(y) input=\(input != nil)")
+            NSLog("[Session] mouseMove x=%.3f y=%.3f input=%d", x, y, input != nil ? 1 : 0)
             input?.mouseMove(x: x, y: y)
 
         case .mouseButton(let btn, let down, let x, let y):
@@ -139,7 +139,7 @@ final class Session {
             input?.mouseScroll(dx: dx, dy: dy)
 
         case .key(let code, let down, let mods):
-            print("[Session] keyEvent code=\(code) down=\(down) input=\(input != nil)")
+            NSLog("[Session] keyEvent code=%@ down=%d input=%d", code, down ? 1 : 0, input != nil ? 1 : 0)
             input?.keyEvent(code: code, down: down, modifiers: mods)
 
         case .clipboardSet(let text):

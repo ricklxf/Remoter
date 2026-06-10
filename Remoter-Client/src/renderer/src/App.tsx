@@ -47,34 +47,31 @@ export default function App() {
     setState('idle')
   }
 
-  // 远程桌面页全屏，不需要拖拽条
-  if (state === 'streaming' && streamInfo) {
-    return (
-      <DesktopPage
-        conn={connRef.current}
-        streamInfo={streamInfo}
-        initialCodec={codec}
-        onDisconnect={handleDisconnect}
-      />
-    )
-  }
-
   return (
     <>
-      {/* macOS hiddenInset 模式下的不可见拖拽区域，让窗口可以被拖动 */}
+      {/* macOS hiddenInset 模式下的不可见拖拽区域，始终存在让窗口可以被拖动 */}
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0,
         height: 28,
         // @ts-ignore
         WebkitAppRegion: 'drag',
         zIndex: 9999,
-        pointerEvents: 'none'   // 不拦截点击，让下方内容正常交互
+        pointerEvents: 'none'
       }} />
-      <ConnectPage
-        onConnect={handleConnect}
-        isConnecting={state === 'connecting' || state === 'authenticating'}
-        errorMsg={errorMsg}
-      />
+      {state === 'streaming' && streamInfo ? (
+        <DesktopPage
+          conn={connRef.current}
+          streamInfo={streamInfo}
+          initialCodec={codec}
+          onDisconnect={handleDisconnect}
+        />
+      ) : (
+        <ConnectPage
+          onConnect={handleConnect}
+          isConnecting={state === 'connecting' || state === 'authenticating'}
+          errorMsg={errorMsg}
+        />
+      )}
     </>
   )
 }

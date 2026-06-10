@@ -2,9 +2,7 @@ export type ConnectMode = 'direct' | 'relay'
 
 export interface ConnectParams {
   mode: ConnectMode
-  // direct: ws://host:port
   directUrl?: string
-  // relay: session ID from Mac agent
   relayUrl?: string
   sessionId?: string
   pin: string
@@ -23,10 +21,23 @@ export type ConnectionState =
   | 'disconnected'
   | 'error'
 
-export interface TransferFile {
+export interface FileTransfer {
   id: string
   name: string
   size: number
-  received: number
+  transferred: number
+  direction: 'upload' | 'download'
+  speedBps: number
   done: boolean
+  error?: string
+}
+
+declare global {
+  interface Window {
+    remoterAPI?: {
+      toggleFullscreen: () => void
+      saveFileDialog: (name: string) => Promise<string | null>
+      saveFile: (path: string, data: Uint8Array) => Promise<void>
+    }
+  }
 }

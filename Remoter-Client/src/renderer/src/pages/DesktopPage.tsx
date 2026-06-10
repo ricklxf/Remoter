@@ -1,40 +1,39 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
-import { StreamInfo } from '../types'
+import { StreamInfo, FileTransfer } from '../types'
 import { ConnStats } from '../network/Connection'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
 import { StatsHUD } from '../components/StatsHUD'
+import { FileTransferPanel } from '../components/FileTransferPanel'
 import { VideoCodec } from '../video/Decoder'
 
 interface Props {
   conn: Connection
   streamInfo: StreamInfo
   initialCodec?: VideoCodec | 'jpeg'
+  stats: ConnStats
+  transfers: FileTransfer[]
   onDisconnect: () => void
 }
 
-const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP' }
-
-export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', onDisconnect }: Props) {
+export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, transfers, onDisconnect }: Props) {
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
-  const [stats, setStats]     = useState<ConnStats>(DEFAULT_STATS)
-  const [showStats, setShowStats] = useState(true)
+  const [showStats, setShowStats]     = useState(false)
+  const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(true)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // 订阅 stats 事件
+  // Auto-show transfers panel when a new transfer starts
+  const prevTransfersLen = useRef(0)
   useEffect(() => {
-    const prev = conn.onEvent
-    conn.onEvent = (e) => {
-      prev?.(e)
-      if (e.type === 'stats') setStats(e.stats)
+    if (transfers.length > prevTransfersLen.current) {
+      setShowTransfers(true)
     }
-    return () => { conn.onEvent = prev }
-  }, [conn])
+    prevTransfersLen.current = transfers.length
+  }, [transfers.length])
 
-  // 自动隐藏工具栏
   const showToolbar = useCallback(() => {
     setToolbarVisible(true)
     if (hideTimer.current) clearTimeout(hideTimer.current)
@@ -53,9 +52,21 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', onDisconn
 
   return (
     <div style={styles.wrap} onMouseMove={showToolbar}>
-      <RemoteCanvas conn={conn} streamInfo={streamInfo} initialCodec={initialCodec} showCursor={true} />
+      <RemoteCanvas
+        conn={conn}
+        streamInfo={streamInfo}
+        initialCodec={initialCodec}
+        showCursor={true}
+      />
 
-      <StatsHUD stats={stats} visible={showStats} />
+      {showStats && <StatsHUD stats={stats} visible={showStats} />}
+
+      {showTransfers && (
+        <FileTransferPanel
+          transfers={transfers}
+          onClose={() => setShowTransfers(false)}
+        />
+      )}
 
       <div style={{ ...styles.toolbarWrap, opacity: toolbarVisible ? 1 : 0 }}>
         <Toolbar
@@ -67,6 +78,9 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', onDisconn
           onQualityChange={handleQualityChange}
           showStats={showStats}
           onToggleStats={() => setShowStats(v => !v)}
+          transferCount={transfers.filter(t => !t.done).length}
+          onToggleTransfers={() => setShowTransfers(v => !v)}
+          showTransfers={showTransfers}
         />
       </div>
     </div>
@@ -76,13 +90,4 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', onDisconn
 const styles: Record<string, React.CSSProperties> = {
   wrap: { position: 'relative', width: '100%', height: '100%', background: '#000', overflow: 'hidden' },
   toolbarWrap: { transition: 'opacity 0.3s', pointerEvents: 'auto' }
-}
-
-declare global {
-  interface Window {
-    remoterAPI?: {
-      toggleFullscreen: () => void
-      saveFileDialog: (name: string) => Promise<string | null>
-    }
-  }
 }

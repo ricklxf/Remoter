@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React, { useRef, useState } from 'react'
 import { Connection } from '../network/Connection'
 
 interface Props {
@@ -10,6 +10,9 @@ interface Props {
   onQualityChange: (fps: number, bitrate: number) => void
   showStats: boolean
   onToggleStats: () => void
+  transferCount: number
+  onToggleTransfers: () => void
+  showTransfers: boolean
 }
 
 const QUALITY_PRESETS = [
@@ -22,9 +25,11 @@ const QUALITY_PRESETS = [
 export function Toolbar({
   conn, onDisconnect, onToggleFullscreen,
   fps, bitrate, onQualityChange,
-  showStats, onToggleStats
+  showStats, onToggleStats,
+  transferCount, onToggleTransfers, showTransfers,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
+  const [clipState, setClipState] = useState<'idle' | 'ok' | 'empty' | 'fail'>('idle')
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -36,9 +41,24 @@ export function Toolbar({
   async function handleClipboard() {
     try {
       const text = await navigator.clipboard.readText()
-      if (text) conn.sendClipboard(text)
-    } catch { /* permission denied */ }
+      if (!text) {
+        flash('empty')
+        return
+      }
+      conn.sendClipboard(text)
+      flash('ok')
+    } catch {
+      flash('fail')
+    }
   }
+
+  function flash(s: 'ok' | 'empty' | 'fail') {
+    setClipState(s)
+    setTimeout(() => setClipState('idle'), 2000)
+  }
+
+  const clipIcon  = clipState === 'ok' ? '✓' : clipState === 'empty' ? '⊘' : clipState === 'fail' ? '✗' : '📋'
+  const clipTitle = clipState === 'ok' ? '已同步到远端' : clipState === 'empty' ? '剪贴板为空' : clipState === 'fail' ? '读取剪贴板失败' : '将本机剪贴板发送给远端'
 
   return (
     <div style={styles.bar}>
@@ -58,15 +78,27 @@ export function Toolbar({
 
       <div style={styles.sep} />
 
-      <ToolBtn icon="📋" title="同步剪贴板" onClick={handleClipboard} />
-      <ToolBtn icon="📂" title="发送文件"   onClick={() => fileRef.current?.click()} />
+      <ToolBtn
+        icon={clipIcon}
+        title={clipTitle}
+        onClick={handleClipboard}
+        active={clipState === 'ok'}
+      />
+      <ToolBtn icon="📂" title="发送文件给远端" onClick={() => fileRef.current?.click()} />
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
 
       <div style={styles.sep} />
 
       <ToolBtn
+        icon="⇅"
+        title={showTransfers ? '隐藏传输列表' : '文件传输列表'}
+        onClick={onToggleTransfers}
+        active={showTransfers}
+        badge={transferCount > 0 ? transferCount : undefined}
+      />
+      <ToolBtn
         icon="📊"
-        title={showStats ? '隐藏状态' : '显示状态'}
+        title={showStats ? '隐藏网络状态' : '显示网络状态'}
         onClick={onToggleStats}
         active={showStats}
       />
@@ -76,8 +108,9 @@ export function Toolbar({
   )
 }
 
-function ToolBtn({ icon, title, onClick, danger, active }: {
-  icon: string; title: string; onClick: () => void; danger?: boolean; active?: boolean
+function ToolBtn({ icon, title, onClick, danger, active, badge }: {
+  icon: string; title: string; onClick: () => void
+  danger?: boolean; active?: boolean; badge?: number
 }) {
   return (
     <button
@@ -90,6 +123,9 @@ function ToolBtn({ icon, title, onClick, danger, active }: {
       onClick={onClick}
     >
       {icon}
+      {badge != null && badge > 0 && (
+        <span style={styles.badge}>{badge}</span>
+      )}
     </button>
   )
 }
@@ -109,9 +145,23 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sep: { width: 1, height: 20, background: '#333', margin: '0 4px' },
   btn: {
+    position: 'relative',
     background: 'transparent', color: 'var(--text)',
     padding: '6px 8px', borderRadius: 6, fontSize: 16
   },
   btnDanger: { color: 'var(--primary)' },
-  btnActive:  { background: 'rgba(255,255,255,0.1)' }
+  btnActive:  { background: 'rgba(255,255,255,0.1)' },
+  badge: {
+    position: 'absolute',
+    top: 2, right: 2,
+    background: 'var(--primary)',
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: 700,
+    borderRadius: 8,
+    padding: '0 3px',
+    minWidth: 14,
+    textAlign: 'center',
+    lineHeight: '14px',
+  }
 }

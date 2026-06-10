@@ -284,4 +284,47 @@ final class Session {
               let text = String(data: data, encoding: .utf8) else { return }
         server.sendText(text, to: connection)
     }
+
+    // MARK: - 文件发送（Mac → 客户端）
+
+    func sendFile(_ url: URL) {
+        guard authenticated else { return }
+        guard let fileData = try? Data(contentsOf: url) else {
+            print("[Session] sendFile: cannot read \(url.lastPathComponent)")
+            return
+        }
+
+        // 16-byte ASCII ID（取 UUID 去掉连字符后前16位）
+        let rawId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let idStr = String(rawId.prefix(16))
+        let name  = url.lastPathComponent
+        let size  = fileData.count
+
+        sendJson(["type": "file_start", "id": idStr, "name": name, "size": size])
+
+        let CHUNK = 64 * 1024
+        var offset = 0
+        while offset < size {
+            let end   = min(offset + CHUNK, size)
+            let chunk = fileData[offset..<end]
+
+            // 0x02 | 16-byte-id (padded) | 4-byte-offset (big-endian) | data
+            var idBytes = [UInt8](repeating: 0, count: 16)
+            let idData  = idStr.data(using: .utf8)!
+            for (i, b) in idData.enumerated() where i < 16 { idBytes[i] = b }
+
+            var pkt = Data(capacity: 1 + 16 + 4 + chunk.count)
+            pkt.append(0x02)
+            pkt.append(contentsOf: idBytes)
+            var offBE = UInt32(offset).bigEndian
+            withUnsafeBytes(of: &offBE) { pkt.append(contentsOf: $0) }
+            pkt.append(chunk)
+
+            server.sendBinary(pkt, to: connection)
+            offset += CHUNK
+        }
+
+        sendJson(["type": "file_end", "id": idStr])
+        print("[Session] sendFile: sent \(name) (\(size) bytes)")
+    }
 }

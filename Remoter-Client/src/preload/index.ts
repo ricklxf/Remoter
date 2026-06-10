@@ -4,7 +4,9 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
   saveFileDialog: (name: string): Promise<string | null> =>
-    ipcRenderer.invoke('save-file-dialog', name)
+    ipcRenderer.invoke('save-file-dialog', name),
+  saveFile: (path: string, data: Uint8Array): Promise<void> =>
+    ipcRenderer.invoke('save-file', path, data)
 }
 
 if (process.contextIsolated) {

@@ -19,6 +19,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var status = AgentStatus(pin: "…", sessionId: nil, localIPs: [], connectedClients: 0)
 
+    // Set by main.swift to forward file sends to agent
+    var onSendFile: ((URL) -> Void)?
+
     // Called by RemoterAgent when something changes
     func update(_ newStatus: AgentStatus) {
         status = newStatus
@@ -158,6 +161,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
         }
 
+        // ── 发送文件给客户端（有连接时显示）────────────────────
+        if isConnected {
+            menu.addItem(.separator())
+            let sendItem = NSMenuItem(title: "发送文件给客户端…",
+                                      action: #selector(pickAndSendFile),
+                                      keyEquivalent: "")
+            sendItem.target = self
+            menu.addItem(sendItem)
+        }
+
         // ── 辅助功能权限状态 ────────────────────────────────────
         menu.addItem(.separator())
         if AXIsProcessTrusted() {
@@ -223,6 +236,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(
             URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         )
+    }
+
+    @objc private func pickAndSendFile() {
+        let panel = NSOpenPanel()
+        panel.title = "选择要发送的文件"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        onSendFile?(url)
     }
 
     @objc private func copyWebURL(_ sender: NSMenuItem) {

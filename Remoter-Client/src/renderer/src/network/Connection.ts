@@ -1,4 +1,4 @@
-import { ConnectParams, ConnectionState, StreamInfo } from '../types'
+import { ConnectParams, ConnectionState, StreamInfo, FileTransfer } from '../types'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
@@ -18,9 +18,22 @@ export type ConnEvent =
   | { type: 'clipboard'; text: string }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
+  | { type: 'file_progress'; transfer: FileTransfer }
 
 const VIDEO_FRAME   = 0x01
+const FILE_CHUNK    = 0x02
 const ENCRYPTED_MSG = 0xE0
+
+interface DownloadState {
+  name: string
+  size: number
+  chunks: Map<number, ArrayBuffer>
+  received: number
+  startTime: number
+  lastSpeedTime: number
+  lastSpeedBytes: number
+  speedBps: number
+}
 
 export class Connection {
   private ws: WebSocket | null = null
@@ -29,18 +42,17 @@ export class Connection {
   private statsTimer: ReturnType<typeof setInterval> | null = null
   private readonly e2e = new E2ECrypto()
 
-  // 发送队列：保证加密消息有序（async 链式 Promise）
   private sendQueue: Promise<void> = Promise.resolve()
 
-  // Stream dimensions (needed for codec switch)
   private streamWidth  = 0
   private streamHeight = 0
 
-  // Stats counters (reset every 2s)
   private _frameCount  = 0
   private _bytesCount  = 0
   private _rttMs       = 0
   private _pingTs      = 0
+
+  private downloads = new Map<string, DownloadState>()
 
   onEvent: ((e: ConnEvent) => void) | null = null
 
@@ -48,7 +60,6 @@ export class Connection {
 
   connect(params: ConnectParams): void {
     this.params = params
-    // 每次新连接重置 E2E 状态，避免旧加密密钥影响新 Session
     this.e2e.reset()
     this.sendQueue = Promise.resolve()
     this.emit({ type: 'state', state: 'connecting' })
@@ -81,6 +92,7 @@ export class Connection {
     ws.onclose = () => {
       this.webrtc?.close()
       this.webrtc = null
+      this.stopStats()
       this.emit({ type: 'state', state: 'disconnected' })
     }
     ws.onerror = () => {
@@ -90,14 +102,15 @@ export class Connection {
   }
 
   disconnect(): void {
-    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null }
+    this.stopStats()
     this.webrtc?.close()
     this.webrtc = null
     this.ws?.close()
     this.ws = null
+    this.downloads.clear()
   }
 
-  // MARK: - 输入事件（走 WebSocket，控制消息需要可靠性）
+  // MARK: - 输入事件
 
   sendMouseMove(x: number, y: number): void {
     this.sendJson({ type: 'mouse_move', x, y })
@@ -118,11 +131,6 @@ export class Connection {
     this.sendJson({ type: 'quality', fps, bitrate })
   }
 
-  /**
-   * 发送 JSON 消息。
-   * E2E 握手完成后，所有消息先加密再以 0xE0 二进制帧发出。
-   * 通过 sendQueue 保证加密的异步操作有序。
-   */
   sendJson(obj: object): void {
     if (this.e2e.isReady) {
       this.sendQueue = this.sendQueue.then(async () => {
@@ -141,22 +149,33 @@ export class Connection {
     }
   }
 
-  /** 发送原始二进制（文件块等，不加密）*/
   sendBinary(data: ArrayBuffer): void {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
   }
 
-  // 文件传输（走 WebSocket 二进制，可靠传输）
   async sendFile(file: File): Promise<void> {
     const id = crypto.randomUUID()
+    let lastSpeedTime = Date.now()
+    let lastSpeedBytes = 0
+    let speedBps = 0
+
+    const emitProgress = (transferred: number, done: boolean) => {
+      this.emit({ type: 'file_progress', transfer: {
+        id, name: file.name, size: file.size, transferred,
+        direction: 'upload', speedBps, done
+      }})
+    }
+
+    emitProgress(0, false)
     this.sendJson({ type: 'file_start', id, name: file.name, size: file.size })
+
     const CHUNK = 64 * 1024
     let offset = 0
     while (offset < file.size) {
       const buf  = await file.slice(offset, offset + CHUNK).arrayBuffer()
       const idB  = new TextEncoder().encode(id.padEnd(16, '\0').slice(0, 16))
       const hdr  = new Uint8Array(1 + 16 + 4)
-      hdr[0] = 0x02
+      hdr[0] = FILE_CHUNK
       hdr.set(idB, 1)
       new DataView(hdr.buffer).setUint32(17, offset, false)
       const pkt = new Uint8Array(hdr.length + buf.byteLength)
@@ -164,9 +183,20 @@ export class Connection {
       pkt.set(new Uint8Array(buf), hdr.length)
       this.sendBinary(pkt.buffer)
       offset += CHUNK
+
+      const now = Date.now()
+      const dt = now - lastSpeedTime
+      if (dt >= 300) {
+        speedBps = ((offset - lastSpeedBytes) / dt) * 1000
+        lastSpeedTime = now
+        lastSpeedBytes = offset
+      }
+      emitProgress(Math.min(offset, file.size), false)
       await new Promise(r => setTimeout(r, 0))
     }
+
     this.sendJson({ type: 'file_end', id })
+    emitProgress(file.size, true)
   }
 
   // MARK: - WebRTC 信令
@@ -181,7 +211,7 @@ export class Connection {
       this.emit({ type: 'video_frame', data, frameId: 0, ptsMs: 0, keyframe })
     }
     rtc.onConnected    = () => { console.log('[WebRTC] P2P 连接成功') }
-    rtc.onDisconnected = () => { console.log('[WebRTC] P2P 断开，回落到 WebSocket') }
+    rtc.onDisconnected = () => { console.log('[WebRTC] P2P 断开') }
     rtc.onICECandidate = (json) => { this.sendJson({ type: 'webrtc_ice', candidate: json }) }
 
     const offerSdp = await rtc.createOffer()
@@ -201,7 +231,6 @@ export class Connection {
     if (buf.byteLength < 1) return
     const prefix = view.getUint8(0)
 
-    // 0xE0 = 服务端发来的加密 JSON
     if (prefix === ENCRYPTED_MSG) {
       const ct = new Uint8Array(buf, 1)
       this.sendQueue = this.sendQueue.then(async () => {
@@ -215,7 +244,6 @@ export class Connection {
       return
     }
 
-    // 视频帧（0x01）
     if (prefix === VIDEO_FRAME && buf.byteLength >= 10) {
       this._frameCount++
       this._bytesCount += buf.byteLength
@@ -223,13 +251,63 @@ export class Connection {
       const ptsMs    = view.getUint32(5, false)
       const keyframe = (view.getUint8(9) & 0x01) !== 0
       this.emit({ type: 'video_frame', data: buf.slice(10), frameId, ptsMs, keyframe })
+      return
+    }
+
+    // 服务端发来的文件块（Mac → 客户端方向）
+    if (prefix === FILE_CHUNK && buf.byteLength >= 21) {
+      const idData = new Uint8Array(buf, 1, 16)
+      const fid = new TextDecoder().decode(idData).replace(/\0/g, '')
+      const offset = view.getUint32(17, false) // big-endian
+      const chunk = buf.slice(21)
+      this.handleDownloadChunk(fid, offset, chunk)
+    }
+  }
+
+  private handleDownloadChunk(id: string, offset: number, chunk: ArrayBuffer): void {
+    const t = this.downloads.get(id)
+    if (!t) return
+    t.chunks.set(offset, chunk)
+    t.received += chunk.byteLength
+
+    const now = Date.now()
+    const dt = now - t.lastSpeedTime
+    if (dt >= 300) {
+      t.speedBps = ((t.received - t.lastSpeedBytes) / dt) * 1000
+      t.lastSpeedTime = now
+      t.lastSpeedBytes = t.received
+    }
+
+    this.emit({ type: 'file_progress', transfer: {
+      id, name: t.name, size: t.size, transferred: t.received,
+      direction: 'download', speedBps: t.speedBps, done: false
+    }})
+  }
+
+  private async finishDownload(id: string): Promise<void> {
+    const t = this.downloads.get(id)
+    if (!t) return
+    this.downloads.delete(id)
+
+    const buffer = new Uint8Array(t.size)
+    t.chunks.forEach((chunk, offset) => {
+      buffer.set(new Uint8Array(chunk), offset)
+    })
+
+    this.emit({ type: 'file_progress', transfer: {
+      id, name: t.name, size: t.size, transferred: t.size,
+      direction: 'download', speedBps: 0, done: true
+    }})
+
+    const savePath = await window.remoterAPI?.saveFileDialog(t.name)
+    if (savePath) {
+      await window.remoterAPI?.saveFile(savePath, buffer)
     }
   }
 
   private routeMessage(msg: Record<string, unknown>): void {
     switch (msg.type) {
 
-      // ── hello：发起 E2E 握手，然后做 WebRTC ──────────────────
       case 'hello': {
         const macPubkey = msg.pubkey as string | undefined
         if (macPubkey) {
@@ -237,19 +315,15 @@ export class Connection {
             await this.e2e.generateKeyPair()
             await this.e2e.deriveSharedKey(macPubkey)
             const myPub = await this.e2e.getPublicKeyBase64()
-            // crypto_hello 本身必须明文发出（加密密钥刚推导完成）
             this.ws?.send(JSON.stringify({ type: 'crypto_hello', pubkey: myPub }))
-            console.log('[E2E] 握手完成，后续消息已加密')
           })
         }
         break
       }
 
       case 'crypto_ok':
-        // Mac 端确认握手成功（可选）
         break
 
-      // 认证成功后发起 WebRTC 协商
       case 'auth_ok':
       case 'connected':
         this.emit({ type: 'state', state: 'authenticating' })
@@ -272,7 +346,6 @@ export class Connection {
         break
       }
 
-      // WebRTC 信令
       case 'webrtc_answer':
         this.webrtc?.handleAnswer(msg.sdp as string)
         break
@@ -298,13 +371,33 @@ export class Connection {
         this.emit({ type: 'clipboard', text: msg.text as string })
         break
 
+      // 服务端发起的文件传输（Mac → 客户端）
+      case 'file_start': {
+        const id   = msg.id   as string
+        const name = msg.name as string
+        const size = msg.size as number
+        this.downloads.set(id, {
+          name, size, chunks: new Map(), received: 0,
+          startTime: Date.now(), lastSpeedTime: Date.now(), lastSpeedBytes: 0, speedBps: 0
+        })
+        this.emit({ type: 'file_progress', transfer: {
+          id, name, size, transferred: 0, direction: 'download', speedBps: 0, done: false
+        }})
+        break
+      }
+
+      case 'file_end': {
+        const id = msg.id as string
+        void this.finishDownload(id)
+        break
+      }
+
       case 'host_disconnected':
         this.emit({ type: 'state', state: 'disconnected' })
         break
     }
   }
 
-  // Stats loop：每 2s 上报一次，同时驱动 ABR
   private startStatsLoop(): void {
     if (this.statsTimer) clearInterval(this.statsTimer)
     const INTERVAL = 2000
@@ -322,6 +415,10 @@ export class Connection {
       this._frameCount = 0
       this._bytesCount = 0
     }, INTERVAL)
+  }
+
+  private stopStats(): void {
+    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null }
   }
 
   private emit(e: ConnEvent): void {

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
+import { writeFile } from 'fs/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 
@@ -57,6 +58,11 @@ app.whenReady().then(() => {
       title: 'Save received file'
     })
     return filePath ?? null
+  })
+
+  // Write file to disk (used after save-file-dialog returns a path)
+  ipcMain.handle('save-file', async (_, filePath: string, data: Uint8Array) => {
+    await writeFile(filePath, Buffer.from(data))
   })
 
   createWindow()

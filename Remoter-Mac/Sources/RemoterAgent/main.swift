@@ -123,6 +123,10 @@ final class RemoterAgent {
         relay.connect(relayURL: url, pin: pin)
     }
 
+    func sendFileToAllSessions(_ url: URL) {
+        sessions.values.forEach { $0.sendFile(url) }
+    }
+
     private func notifyStatus() {
         let status = AgentStatus(
             pin: pin,
@@ -173,6 +177,12 @@ let agent      = RemoterAgent(config: cfg)
 agent.onStatusUpdate = { status in
     DispatchQueue.main.async {
         MainActor.assumeIsolated { menuBar.update(status) }
+    }
+}
+
+MainActor.assumeIsolated {
+    menuBar.onSendFile = { url in
+        agent.sendFileToAllSessions(url)
     }
 }
 

@@ -71,7 +71,10 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
       <div style={{ ...styles.toolbarWrap, opacity: toolbarVisible ? 1 : 0 }}>
         <Toolbar
           conn={conn}
-          onDisconnect={onDisconnect}
+          onHide={() => {
+            if (hideTimer.current) clearTimeout(hideTimer.current)
+            setToolbarVisible(false)
+          }}
           onToggleFullscreen={() => window.remoterAPI?.toggleFullscreen()}
           fps={fps}
           bitrate={bitrate}

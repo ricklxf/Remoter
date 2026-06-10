@@ -3,7 +3,7 @@ import { Connection } from '../network/Connection'
 
 interface Props {
   conn: Connection
-  onDisconnect: () => void
+  onHide: () => void
   onToggleFullscreen: () => void
   fps: number
   bitrate: number
@@ -23,7 +23,7 @@ const QUALITY_PRESETS = [
 ]
 
 export function Toolbar({
-  conn, onDisconnect, onToggleFullscreen,
+  conn, onHide, onToggleFullscreen,
   fps, bitrate, onQualityChange,
   showStats, onToggleStats,
   transferCount, onToggleTransfers, showTransfers,
@@ -73,8 +73,8 @@ export function Toolbar({
         onClick={onToggleStats}
         active={showStats}
       />
-      <ToolBtn icon="⛶"  title="全屏"     onClick={onToggleFullscreen} />
-      <ToolBtn icon="⏏"  title="断开连接" onClick={onDisconnect} danger />
+      <ToolBtn icon="⛶"  title="全屏"         onClick={onToggleFullscreen} />
+      <ToolBtn icon="⊙"  title="隐藏工具栏" onClick={onHide} />
     </div>
   )
 }

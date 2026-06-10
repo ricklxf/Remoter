@@ -14,10 +14,11 @@ interface Props {
   activeId: string
   onSelect: (id: string) => void
   onClose: (id: string) => void
+  onDisconnect: (id: string) => void
   onAdd: () => void
 }
 
-export function TabBar({ tabs, activeId, onSelect, onClose, onAdd }: Props) {
+export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onAdd }: Props) {
   return (
     <div style={styles.bar}>
       <div style={styles.trafficSpacer} />
@@ -30,6 +31,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd }: Props) {
           canClose={tabs.length > 1}
           onSelect={() => onSelect(tab.id)}
           onClose={() => onClose(tab.id)}
+          onDisconnect={() => onDisconnect(tab.id)}
         />
       ))}
 
@@ -46,15 +48,20 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd }: Props) {
   )
 }
 
-function TabItem({ tab, active, canClose, onSelect, onClose }: {
+function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect }: {
   tab: TabInfo
   active: boolean
   canClose: boolean
   onSelect: () => void
   onClose: () => void
+  onDisconnect: () => void
 }) {
   const streaming = tab.state === 'streaming'
   const mbps = (tab.stats.bitrateKbps / 1000).toFixed(1)
+
+  // × disconnects when streaming; closes tab when idle
+  const handleX = streaming ? onDisconnect : (canClose ? onClose : undefined)
+  const xTitle  = streaming ? '断开连接' : '关闭标签页'
 
   return (
     <div
@@ -68,11 +75,11 @@ function TabItem({ tab, active, canClose, onSelect, onClose }: {
       {streaming && (
         <span style={styles.speed}>{mbps}M</span>
       )}
-      {canClose && (
+      {handleX && (
         <button
           style={styles.closeBtn}
-          onClick={e => { e.stopPropagation(); onClose() }}
-          title="关闭"
+          onClick={e => { e.stopPropagation(); handleX() }}
+          title={xTitle}
           // @ts-ignore
           WebkitAppRegion="no-drag"
         >×</button>
@@ -118,8 +125,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
     padding: '0 6px 0 10px',
     height: '100%',
-    minWidth: 100,
-    maxWidth: 200,
+    minWidth: 120,
+    maxWidth: 240,
     cursor: 'pointer',
     fontSize: 12,
     color: 'var(--text2)',

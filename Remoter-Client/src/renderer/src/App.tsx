@@ -132,6 +132,7 @@ export default function App() {
         activeId={activeId}
         onSelect={setActiveId}
         onClose={closeTab}
+        onDisconnect={handleDisconnect}
         onAdd={addTab}
       />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>

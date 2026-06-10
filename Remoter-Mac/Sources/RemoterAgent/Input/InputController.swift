@@ -1,10 +1,12 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import ApplicationServices
 
 final class InputController {
     var screenWidth: Int
     var screenHeight: Int
+    private var loggedAccessibility = false
 
     init(screenWidth: Int, screenHeight: Int) {
         self.screenWidth = screenWidth
@@ -12,10 +14,17 @@ final class InputController {
     }
 
     func mouseMove(x: Double, y: Double) {
+        if !loggedAccessibility {
+            loggedAccessibility = true
+            print("[Input] accessibility trusted=\(AXIsProcessTrusted())")
+        }
         let pt = cgPoint(x: x, y: y)
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
-                              mouseCursorPosition: pt, mouseButton: .left) else { return }
+                              mouseCursorPosition: pt, mouseButton: .left) else {
+            print("[Input] mouseMove: CGEvent creation failed")
+            return
+        }
         e.post(tap: .cgSessionEventTap)
     }
 
@@ -60,8 +69,14 @@ final class InputController {
 
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
         let src = CGEventSource(stateID: .hidSystemState)
-        guard let keyCode = keyCodeMap[code] else { return }
-        guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: down) else { return }
+        guard let keyCode = keyCodeMap[code] else {
+            print("[Input] keyEvent: unknown code=\(code)")
+            return
+        }
+        guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: down) else {
+            print("[Input] keyEvent: CGEvent creation failed code=\(code)")
+            return
+        }
 
         var flags = CGEventFlags()
         for mod in modifiers {

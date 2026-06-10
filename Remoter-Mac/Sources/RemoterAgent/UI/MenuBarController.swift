@@ -80,26 +80,27 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func requestAccessibilityPermission() {
-        // kAXTrustedCheckOptionPrompt=true 会让 macOS 自动弹出系统授权对话框
-        let trusted = AXIsProcessTrustedWithOptions(
+        // 已授权：直接返回，不弹任何对话框
+        if AXIsProcessTrusted() {
+            ConnectionLogger.shared.logPermission(event: "accessibility_granted")
+            return
+        }
+        // 未授权：触发系统弹框（首次运行时）
+        ConnectionLogger.shared.logPermission(event: "accessibility_denied")
+        AXIsProcessTrustedWithOptions(
             [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
         )
-        if trusted {
-            ConnectionLogger.shared.logPermission(event: "accessibility_granted")
-        } else {
-            ConnectionLogger.shared.logPermission(event: "accessibility_denied")
-            let alert = NSAlert()
-            alert.messageText = "需要辅助功能权限"
-            alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 辅助功能」，打开 RemoterAgent 的开关，然后重启本 app。"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "打开系统设置")
-            alert.addButton(withTitle: "稍后")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(
-                    URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-                )
-            }
+        let alert = NSAlert()
+        alert.messageText = "需要辅助功能权限"
+        alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 辅助功能」，打开 RemoterAgent 的开关，然后重启本 app。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "稍后")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(
+                URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+            )
         }
     }
 

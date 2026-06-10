@@ -57,14 +57,17 @@ final class Session {
         if data[0] == 0xE0 {
             guard data.count > 1 else { return }
             let ciphertext = Data(data[1...])
-            guard let plain = try? crypto.decrypt(ciphertext),
-                  let text = String(data: plain, encoding: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: plain) as? [String: Any]
-            else { return }
-            _ = text
-            routeMessage(json)
+            do {
+                let plain = try crypto.decrypt(ciphertext)
+                guard let json = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
+                routeMessage(json)
+            } catch {
+                print("[Session] E2E decrypt FAILED: \(error), e2eReady=\(crypto.isReady), len=\(data.count)")
+            }
             return
         }
+        // 未加密文本消息兜底（E2E 握手前）
+        print("[Session] binary non-E2E prefix=\(data[0]) len=\(data.count)")
 
         // Regular binary (file chunk)
         guard authenticated, data.count > 1, data[0] == FrameType.fileChunk.rawValue else { return }
@@ -126,6 +129,7 @@ final class Session {
 
         // ── 输入事件 ───────────────────────────────────────────
         case .mouseMove(let x, let y):
+            print("[Session] mouseMove x=\(x) y=\(y) input=\(input != nil)")
             input?.mouseMove(x: x, y: y)
 
         case .mouseButton(let btn, let down, let x, let y):
@@ -135,6 +139,7 @@ final class Session {
             input?.mouseScroll(dx: dx, dy: dy)
 
         case .key(let code, let down, let mods):
+            print("[Session] keyEvent code=\(code) down=\(down) input=\(input != nil)")
             input?.keyEvent(code: code, down: down, modifiers: mods)
 
         case .clipboardSet(let text):

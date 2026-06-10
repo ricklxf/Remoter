@@ -49,14 +49,13 @@ export default function App() {
 
   return (
     <>
-      {/* macOS hiddenInset 模式下的不可见拖拽区域，始终存在让窗口可以被拖动 */}
+      {/* macOS hiddenInset 拖拽区域：pointer-events:auto 才能被 Electron 检测到 */}
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0,
-        height: 28,
+        height: 8,
         // @ts-ignore
         WebkitAppRegion: 'drag',
         zIndex: 9999,
-        pointerEvents: 'none'
       }} />
       {state === 'streaming' && streamInfo ? (
         <DesktopPage

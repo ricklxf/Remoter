@@ -139,8 +139,8 @@ export default function App() {
         onAdd={addTab}
       />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-        {activeTab && activeConn && (
-          activeTab.state === 'streaming' && activeTab.streamInfo ? (
+        {activeTab && (
+          activeTab.state === 'streaming' && activeTab.streamInfo && activeConn ? (
             <DesktopPage
               key={activeTab.id}
               conn={activeConn}

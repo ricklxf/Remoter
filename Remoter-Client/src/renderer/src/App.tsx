@@ -52,7 +52,7 @@ export default function App() {
       {/* macOS hiddenInset 拖拽区域：pointer-events:auto 才能被 Electron 检测到 */}
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0,
-        height: 8,
+        height: 28,
         // @ts-ignore
         WebkitAppRegion: 'drag',
         zIndex: 9999,

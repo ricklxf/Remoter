@@ -104,18 +104,18 @@ if [ -d "$WEB_DIST" ]; then
 fi
 echo ""
 
-# ── 代码签名（用本地证书保持身份稳定，TCC 权限不会因重编译丢失）──────────
+# ── 代码签名 ─────────────────────────────────────────────────────────────
+# designated requirement 只包含 bundle ID，不绑定证书 hash。
+# 这样 TCC 的辅助功能授权在每次 rebuild 后仍然有效（只需授权一次）。
 SIGN_IDENTITY="Remoter"
+DR='=designated => identifier "com.remoter.agent"'
 echo "▶ Signing with \"$SIGN_IDENTITY\"…"
 if security find-certificate -c "$SIGN_IDENTITY" &>/dev/null; then
-    codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
-    echo "✅ Signed with local cert"
+    codesign --force --deep --sign "$SIGN_IDENTITY" --requirements "$DR" "$APP_DIR"
+    echo "✅ Signed (designated req: bundle ID only)"
 else
-    # 证书不存在时降级为 ad-hoc（提示用户创建）
-    echo "⚠️  未找到证书 \"$SIGN_IDENTITY\"，使用 ad-hoc 签名（权限可能每次重置）"
-    echo "   一劳永逸方法：打开「钥匙串访问」→ 证书助理 → 创建证书"
-    echo "   名称填「Remoter Dev」，类型选「代码签名」"
-    codesign --force --deep --sign - "$APP_DIR"
+    codesign --force --deep --sign - --requirements "$DR" "$APP_DIR"
+    echo "✅ Signed ad-hoc (designated req: bundle ID only)"
 fi
 echo ""
 

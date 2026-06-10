@@ -15,7 +15,6 @@ export type ConnEvent =
   | { type: 'stream_started'; info: StreamInfo; codec: VideoCodec }
   | { type: 'video_frame'; data: ArrayBuffer; frameId: number; ptsMs: number; keyframe: boolean }
   | { type: 'codec_changed'; codec: VideoCodec }
-  | { type: 'clipboard'; text: string }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
@@ -53,6 +52,10 @@ export class Connection {
   private _pingTs      = 0
 
   private downloads = new Map<string, DownloadState>()
+
+  // Clipboard auto-sync
+  private clipTimer: ReturnType<typeof setInterval> | null = null
+  private lastClipText = ''
 
   onEvent: ((e: ConnEvent) => void) | null = null
 
@@ -103,6 +106,7 @@ export class Connection {
 
   disconnect(): void {
     this.stopStats()
+    this.stopClipboardSync()
     this.webrtc?.close()
     this.webrtc = null
     this.ws?.close()
@@ -337,6 +341,7 @@ export class Connection {
         this.emit({ type: 'state', state: 'streaming' })
         this.emit({ type: 'stream_started', info: { width: this.streamWidth, height: this.streamHeight }, codec })
         this.startStatsLoop()
+        this.startClipboardSync()
         break
       }
 
@@ -367,9 +372,12 @@ export class Connection {
         break
       }
 
-      case 'clipboard':
-        this.emit({ type: 'clipboard', text: msg.text as string })
+      case 'clipboard': {
+        const text = msg.text as string
+        this.lastClipText = text  // prevent echo on next poll
+        navigator.clipboard.writeText(text).catch(() => {})
         break
+      }
 
       // 服务端发起的文件传输（Mac → 客户端）
       case 'file_start': {
@@ -419,6 +427,25 @@ export class Connection {
 
   private stopStats(): void {
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null }
+  }
+
+  private startClipboardSync(): void {
+    if (this.clipTimer) return
+    // Seed with current clipboard so we don't send stale content on connect
+    navigator.clipboard.readText().then(t => { this.lastClipText = t }).catch(() => {})
+    this.clipTimer = setInterval(async () => {
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text && text !== this.lastClipText) {
+          this.lastClipText = text
+          this.sendJson({ type: 'clipboard_set', text })
+        }
+      } catch { /* clipboard permission denied */ }
+    }, 1000)
+  }
+
+  private stopClipboardSync(): void {
+    if (this.clipTimer) { clearInterval(this.clipTimer); this.clipTimer = null }
   }
 
   private emit(e: ConnEvent): void {

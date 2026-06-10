@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useRef } from 'react'
 import { Connection } from '../network/Connection'
 
 interface Props {
@@ -29,7 +29,6 @@ export function Toolbar({
   transferCount, onToggleTransfers, showTransfers,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [clipState, setClipState] = useState<'idle' | 'ok' | 'empty' | 'fail'>('idle')
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -37,28 +36,6 @@ export function Toolbar({
     e.target.value = ''
     await conn.sendFile(file)
   }
-
-  async function handleClipboard() {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (!text) {
-        flash('empty')
-        return
-      }
-      conn.sendClipboard(text)
-      flash('ok')
-    } catch {
-      flash('fail')
-    }
-  }
-
-  function flash(s: 'ok' | 'empty' | 'fail') {
-    setClipState(s)
-    setTimeout(() => setClipState('idle'), 2000)
-  }
-
-  const clipIcon  = clipState === 'ok' ? '✓' : clipState === 'empty' ? '⊘' : clipState === 'fail' ? '✗' : '📋'
-  const clipTitle = clipState === 'ok' ? '已同步到远端' : clipState === 'empty' ? '剪贴板为空' : clipState === 'fail' ? '读取剪贴板失败' : '将本机剪贴板发送给远端'
 
   return (
     <div style={styles.bar}>
@@ -78,12 +55,6 @@ export function Toolbar({
 
       <div style={styles.sep} />
 
-      <ToolBtn
-        icon={clipIcon}
-        title={clipTitle}
-        onClick={handleClipboard}
-        active={clipState === 'ok'}
-      />
       <ToolBtn icon="📂" title="发送文件给远端" onClick={() => fileRef.current?.click()} />
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
 

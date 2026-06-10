@@ -30,6 +30,10 @@ final class Session {
     private var bytesRecv: Int64 = 0
     private var loggedFirstInput = false
 
+    // Clipboard auto-sync
+    private var clipboardTimer: DispatchSourceTimer?
+    private var lastClipboardContent = ""
+
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
         self.connection = connection
@@ -96,6 +100,7 @@ final class Session {
                 bytesRecvMB: Double(bytesRecv) / 1_048_576
             )
         }
+        stopClipboardMonitor()
         Task { await capturer?.stop() }
         webrtc?.close()
     }
@@ -150,6 +155,7 @@ final class Session {
             input?.keyEvent(code: code, down: down, modifiers: mods)
 
         case .clipboardSet(let text):
+            lastClipboardContent = text   // prevent echo-back
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
 
@@ -226,6 +232,7 @@ final class Session {
             connectTime  = Date()
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: "jpeg", encrypted: crypto.isReady)
+            startClipboardMonitor()
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
@@ -283,6 +290,29 @@ final class Session {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let text = String(data: data, encoding: .utf8) else { return }
         server.sendText(text, to: connection)
+    }
+
+    // MARK: - 剪贴板监控（双向自动同步）
+
+    private func startClipboardMonitor() {
+        lastClipboardContent = NSPasteboard.general.string(forType: .string) ?? ""
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + .milliseconds(500), repeating: .milliseconds(500))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let text = NSPasteboard.general.string(forType: .string) ?? ""
+            if !text.isEmpty && text != self.lastClipboardContent {
+                self.lastClipboardContent = text
+                self.sendJson(["type": "clipboard", "text": text])
+            }
+        }
+        timer.resume()
+        clipboardTimer = timer
+    }
+
+    private func stopClipboardMonitor() {
+        clipboardTimer?.cancel()
+        clipboardTimer = nil
     }
 
     // MARK: - 文件发送（Mac → 客户端）

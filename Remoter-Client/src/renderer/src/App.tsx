@@ -45,10 +45,6 @@ export default function App() {
   // Wire a Connection's onEvent to update a specific tab's display state
   const wireTab = useCallback((id: string, conn: Connection) => {
     conn.onEvent = (e: ConnEvent) => {
-      if (e.type === 'clipboard') {
-        navigator.clipboard.writeText(e.text).catch(() => {})
-        return
-      }
       setTabsRef.current!(prev => prev.map(t => {
         if (t.id !== id) return t
         switch (e.type) {

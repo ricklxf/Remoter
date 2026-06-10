@@ -13,9 +13,10 @@ Packages/
 .swiftpm/
 Remoter-Mac/build/
 
-# Electron
+# Electron / Web build
 Remoter-Client/dist/
 Remoter-Client/out/
+Remoter-Client/dist-web/
 
 # Env
 .env

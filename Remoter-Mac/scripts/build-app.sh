@@ -90,6 +90,18 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
 PLIST
 
 echo "✅ Built: $APP_DIR"
+
+# ── 嵌入 Web 客户端（可选）────────────────────────────────────────────────
+WEB_DIST="$PKG_DIR/../Remoter-Client/dist-web"
+RESOURCES_DIR="$APP_DIR/Contents/Resources"
+if [ -d "$WEB_DIST" ]; then
+    echo ""
+    echo "▶ 嵌入 Web 客户端…"
+    mkdir -p "$RESOURCES_DIR"
+    rm -rf "$RESOURCES_DIR/web"
+    cp -R "$WEB_DIST" "$RESOURCES_DIR/web"
+    echo "✅ Web 客户端已嵌入（浏览器访问 http://<ip>:7799）"
+fi
 echo ""
 
 # ── 代码签名（用本地证书保持身份稳定，TCC 权限不会因重编译丢失）──────────

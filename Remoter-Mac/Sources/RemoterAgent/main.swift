@@ -29,7 +29,8 @@ func parseArgs() -> Config {
 
 final class RemoterAgent {
     private let config: Config
-    private let wsServer  = WebSocketServer()
+    private let wsServer   = WebSocketServer()
+    private let httpServer = HTTPFileServer()
     private var sessions: [UUID: Session] = [:]
     private var relaySessionId: String?
     private var pin = ""
@@ -55,6 +56,7 @@ final class RemoterAgent {
         }
 
         try wsServer.start(port: config.port)
+        httpServer.start(port: 7799)
 
         let ips = getLocalIPs()
         print("╔══════════════════════════════════╗")
@@ -63,6 +65,9 @@ final class RemoterAgent {
         print("  PIN : \(pin)")
         print("  Port: \(config.port)")
         ips.forEach { print("  LAN : ws://\($0):\(config.port)") }
+        if httpServer.isEnabled {
+            ips.forEach { print("  Web : http://\($0):7799") }
+        }
 
         if !config.relayURL.isEmpty, let url = URL(string: config.relayURL) {
             connectRelay(url: url)
@@ -123,7 +128,8 @@ final class RemoterAgent {
             pin: pin,
             sessionId: relaySessionId,
             localIPs: getLocalIPs(),
-            connectedClients: sessions.count
+            connectedClients: sessions.count,
+            webEnabled: httpServer.isEnabled
         )
         DispatchQueue.main.async { [weak self] in
             self?.onStatusUpdate?(status)

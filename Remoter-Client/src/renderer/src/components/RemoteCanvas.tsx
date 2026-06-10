@@ -97,7 +97,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
         width: '100%',
         height: '100%',
         objectFit: 'contain',
-        cursor: showCursor ? 'none' : 'default',
+        cursor: 'default',
         outline: 'none',
         background: '#000'
       }}

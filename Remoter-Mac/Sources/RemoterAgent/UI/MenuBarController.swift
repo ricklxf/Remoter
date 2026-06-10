@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ApplicationServices
 
 // MARK: - Status model
 
@@ -8,6 +9,7 @@ struct AgentStatus {
     var sessionId: String?
     var localIPs: [String]
     var connectedClients: Int
+    var webEnabled: Bool = false
 }
 
 // MARK: - MenuBarController
@@ -41,6 +43,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         refresh()
         // 启动时主动申请屏幕录制权限，确保弹框在前台出现
         requestScreenCapturePermission()
+        // 辅助功能权限：CGEvent.post 需要此权限才能注入鼠标/键盘事件
+        requestAccessibilityPermission()
     }
 
     // 主动触发屏幕录制权限申请，避免在后台连接时弹框被 macOS 忽略
@@ -71,6 +75,30 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 ConnectionLogger.shared.logPermission(event: "session_auth_ok")
             } else {
                 ConnectionLogger.shared.logPermission(event: "session_auth_failed")
+            }
+        }
+    }
+
+    private func requestAccessibilityPermission() {
+        // kAXTrustedCheckOptionPrompt=true 会让 macOS 自动弹出系统授权对话框
+        let trusted = AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
+        )
+        if trusted {
+            ConnectionLogger.shared.logPermission(event: "accessibility_granted")
+        } else {
+            ConnectionLogger.shared.logPermission(event: "accessibility_denied")
+            let alert = NSAlert()
+            alert.messageText = "需要辅助功能权限"
+            alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 辅助功能」，打开 RemoterAgent 的开关，然后重启本 app。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "打开系统设置")
+            alert.addButton(withTitle: "稍后")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(
+                    URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+                )
             }
         }
     }
@@ -131,6 +159,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
         }
 
+        // ── Web 客户端地址（仅当 bundle 内嵌了 web 产物时显示）────
+        if status.webEnabled && !status.localIPs.isEmpty {
+            menu.addItem(.separator())
+            let webHeader = NSMenuItem(title: "Web 客户端", action: nil, keyEquivalent: "")
+            webHeader.isEnabled = false
+            menu.addItem(webHeader)
+            for ip in status.localIPs {
+                let item = NSMenuItem(title: "  http://\(ip):7799",
+                                      action: #selector(copyWebURL(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = ip
+                menu.addItem(item)
+            }
+        }
+
         menu.addItem(.separator())
         let logItem = NSMenuItem(title: "在 Finder 中显示日志",
                                  action: #selector(showLogInFinder),
@@ -176,6 +220,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard let ip = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("ws://\(ip):7788", forType: .string)
+    }
+
+    @objc private func copyWebURL(_ sender: NSMenuItem) {
+        guard let ip = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("http://\(ip):7799", forType: .string)
     }
 
     // MARK: - Helpers

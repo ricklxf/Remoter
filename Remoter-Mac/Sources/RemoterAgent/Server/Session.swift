@@ -22,7 +22,6 @@ final class Session {
 
     private var authenticated = false
     private var frameId: UInt32 = 0
-    private var startTime: UInt32 = 0
 
     // For disconnection logging
     private var connectTime: Date?
@@ -113,17 +112,11 @@ final class Session {
         }
 
         // ── 认证 ──────────────────────────────────────────────
-        if case .auth(let clientPin) = msg {
-            if clientPin == pin {
-                authenticated = true
-                ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
-                sendJsonRaw(["type": "auth_ok"])
-                Task { await self.beginCapture() }
-            } else {
-                ConnectionLogger.shared.logAuthFailed(sessionId: id.uuidString)
-                sendJsonRaw(["type": "error", "code": "auth_failed", "message": "Wrong PIN"])
-                connection.cancel()
-            }
+        if case .auth(_) = msg { // PIN 校验已暂时禁用，测试用
+            authenticated = true
+            ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+            sendJsonRaw(["type": "auth_ok"])
+            Task { await self.beginCapture() }
             return
         }
 
@@ -218,7 +211,6 @@ final class Session {
             capturer     = c
             input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
             fileReceiver = FileReceiver()
-            startTime    = UInt32(Date().timeIntervalSince1970 * 1000)
             connectTime  = Date()
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: "jpeg", encrypted: crypto.isReady)
@@ -235,7 +227,7 @@ final class Session {
                 let fid = self.frameId
                 self.frameId &+= 1
                 self.bytesSent += Int64(jpeg.count)
-                let now = UInt32(Date().timeIntervalSince1970 * 1000) - self.startTime
+                let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
                 let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
                 self.server.sendBinary(pkt, to: self.connection)
             }

@@ -9,7 +9,7 @@ interface Props {
 
 export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [mode, setMode]       = useState<ConnectMode>('direct')
-  const [directUrl, setDirectUrl] = useState('ws://192.168.1.100:7788')
+  const [directUrl, setDirectUrl] = useState('ws://192.168.1.144:7788')
   const [relayUrl, setRelayUrl]   = useState('ws://your-relay-server:7789')
   const [sessionId, setSessionId] = useState('')
   const [pin, setPin]         = useState('')
@@ -77,17 +77,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
             </>
           )}
 
-          <label style={styles.label}>
-            <span>PIN 码</span>
-            <input
-              type="password"
-              value={pin}
-              onChange={e => setPin(e.target.value)}
-              placeholder="••••••"
-              maxLength={12}
-              required
-            />
-          </label>
+          {/* PIN 登录已暂时禁用，测试用 */}
 
           {errorMsg && <div style={styles.error}>{errorMsg}</div>}
 

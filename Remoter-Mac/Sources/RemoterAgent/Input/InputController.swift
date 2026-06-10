@@ -13,7 +13,8 @@ final class InputController {
 
     func mouseMove(x: Double, y: Double) {
         let pt = cgPoint(x: x, y: y)
-        guard let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+        let src = CGEventSource(stateID: .hidSystemState)
+        guard let e = CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
                               mouseCursorPosition: pt, mouseButton: .left) else { return }
         e.post(tap: .cgSessionEventTap)
     }
@@ -28,20 +29,22 @@ final class InputController {
         case (_, true):         (.leftMouseDown,  .left)
         default:                (.leftMouseUp,    .left)
         }
-        guard let e = CGEvent(mouseEventSource: nil, mouseType: type,
+        let src = CGEventSource(stateID: .hidSystemState)
+        guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
         e.post(tap: .cgSessionEventTap)
     }
 
     func mouseDoubleClick(button: String, x: Double, y: Double) {
-        let pt = cgPoint(x: x, y: y)
+        let pt  = cgPoint(x: x, y: y)
+        let src = CGEventSource(stateID: .hidSystemState)
         let type: CGEventType = button == "right" ? .rightMouseDown : .leftMouseDown
         let btn: CGMouseButton = button == "right" ? .right : .left
-        guard let e = CGEvent(mouseEventSource: nil, mouseType: type,
+        guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
         e.setIntegerValueField(.mouseEventClickState, value: 2)
         e.post(tap: .cgSessionEventTap)
-        guard let eu = CGEvent(mouseEventSource: nil,
+        guard let eu = CGEvent(mouseEventSource: src,
                                mouseType: button == "right" ? .rightMouseUp : .leftMouseUp,
                                mouseCursorPosition: pt, mouseButton: btn) else { return }
         eu.setIntegerValueField(.mouseEventClickState, value: 2)
@@ -49,14 +52,16 @@ final class InputController {
     }
 
     func mouseScroll(dx: Int, dy: Int) {
-        guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+        let src = CGEventSource(stateID: .hidSystemState)
+        guard let e = CGEvent(scrollWheelEvent2Source: src, units: .line,
                               wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0) else { return }
         e.post(tap: .cgSessionEventTap)
     }
 
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
+        let src = CGEventSource(stateID: .hidSystemState)
         guard let keyCode = keyCodeMap[code] else { return }
-        guard let e = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: down) else { return }
+        guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: down) else { return }
 
         var flags = CGEventFlags()
         for mod in modifiers {

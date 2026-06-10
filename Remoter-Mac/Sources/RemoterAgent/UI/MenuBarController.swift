@@ -43,6 +43,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         refresh()
         // 启动时主动申请屏幕录制权限，确保弹框在前台出现
         requestScreenCapturePermission()
+        // 辅助功能权限：已授权则静默通过，未授权则弹一次系统对话框
+        requestAccessibilityPermission()
     }
 
     // 主动触发屏幕录制权限申请，避免在后台连接时弹框被 macOS 忽略
@@ -77,7 +79,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
     }
 
-    var isAccessibilityGranted: Bool { AXIsProcessTrusted() }
+    private func requestAccessibilityPermission() {
+        let trusted = AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
+        )
+        ConnectionLogger.shared.logPermission(event: trusted ? "accessibility_granted" : "accessibility_denied")
+    }
 
     // MARK: - Menu build
 

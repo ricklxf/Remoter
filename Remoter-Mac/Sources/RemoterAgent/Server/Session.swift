@@ -4,6 +4,7 @@ import AppKit
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import ApplicationServices
 
 // Manages one connected client: auth → capture → encode → stream
 // Video: JPEG over WebSocket (bypasses VideoToolbox which hangs on macOS 26)
@@ -27,6 +28,7 @@ final class Session {
     private var connectTime: Date?
     private var bytesSent: Int64 = 0
     private var bytesRecv: Int64 = 0
+    private var loggedFirstInput = false
 
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
@@ -62,7 +64,8 @@ final class Session {
                 guard let json = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
                 routeMessage(json)
             } catch {
-                NSLog("[Session] E2E decrypt FAILED: %@, e2eReady=%d, len=%d", "\(error)", crypto.isReady ? 1 : 0, data.count)
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "e2e_decrypt_failed",
+                                                detail: "\(error)")
             }
             return
         }
@@ -129,7 +132,11 @@ final class Session {
 
         // ── 输入事件 ───────────────────────────────────────────
         case .mouseMove(let x, let y):
-            NSLog("[Session] mouseMove x=%.3f y=%.3f input=%d", x, y, input != nil ? 1 : 0)
+            if !loggedFirstInput {
+                loggedFirstInput = true
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "first_input",
+                                                detail: "input=\(input != nil), ax=\(AXIsProcessTrusted())")
+            }
             input?.mouseMove(x: x, y: y)
 
         case .mouseButton(let btn, let down, let x, let y):

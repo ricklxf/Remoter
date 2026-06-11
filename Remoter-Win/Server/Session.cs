@@ -8,7 +8,7 @@ namespace RemoterWin;
 // Mirrors Mac agent Session.swift (same protocol, same frame format).
 sealed class Session
 {
-    private readonly WsConn         _conn;
+    private readonly IWsConn         _conn;
     private readonly string         _pin;
     private readonly E2ECrypto      _crypto = new();
 
@@ -26,7 +26,7 @@ sealed class Session
     private CancellationTokenSource? _cts;
     private System.Threading.Timer?  _clipTimer;
 
-    public Session(WsConn conn, string pin)
+    public Session(IWsConn conn, string pin)
     {
         _conn = conn;
         _pin  = pin;

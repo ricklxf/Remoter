@@ -9,10 +9,10 @@ namespace RemoterWin;
 // Handles the HTTP upgrade handshake and WebSocket framing manually.
 sealed class WebSocketServer
 {
-    public Action<WsConn>?         OnConnect;
-    public Action<WsConn, string>? OnText;
-    public Action<WsConn, byte[]>? OnBinary;
-    public Action<WsConn>?         OnDisconnect;
+    public Action<IWsConn>?         OnConnect;
+    public Action<IWsConn, string>? OnText;
+    public Action<IWsConn, byte[]>? OnBinary;
+    public Action<IWsConn>?         OnDisconnect;
 
     private TcpListener? _listener;
 
@@ -181,7 +181,7 @@ sealed class WebSocketServer
     }
 }
 
-sealed class WsConn
+sealed class WsConn : IWsConn
 {
     private readonly NetworkStream _stream;
     private readonly TcpClient     _tcp;

@@ -5,18 +5,20 @@ using RemoterWin;
 
 // ── Arg parsing ───────────────────────────────────────────────────────────
 
-static (string pin, ushort port) ParseArgs(string[] args)
+static (string pin, ushort port, string relay) ParseArgs(string[] args)
 {
-    string pin  = "";
-    ushort port = 7788;
+    string pin   = "";
+    ushort port  = 7788;
+    string relay = "";
     for (int i = 0; i + 1 < args.Length; i++)
     {
-        if (args[i] == "--pin")  pin  = args[i + 1];
-        if (args[i] == "--port") ushort.TryParse(args[i + 1], out port);
+        if (args[i] == "--pin")   pin   = args[i + 1];
+        if (args[i] == "--port")  ushort.TryParse(args[i + 1], out port);
+        if (args[i] == "--relay") relay = args[i + 1];
     }
     if (string.IsNullOrEmpty(pin))
         pin = Random.Shared.Next(100_000, 999_999).ToString();
-    return (pin, port);
+    return (pin, port, relay);
 }
 
 static List<string> GetLocalIPs()
@@ -35,11 +37,12 @@ static List<string> GetLocalIPs()
 
 // ── Agent bootstrap ───────────────────────────────────────────────────────
 
-var (pin, port) = ParseArgs(args);
-var sessions    = new Dictionary<WsConn, Session>();
+var (pin, port, relayUrl) = ParseArgs(args);
+var sessions    = new Dictionary<IWsConn, Session>();
 var server      = new WebSocketServer();
 var admin       = new AdminServer(port, pin);
 var webFiles    = new WebFileServer();
+RelayClient? relay = string.IsNullOrEmpty(relayUrl) ? null : new RelayClient(relayUrl, pin);
 
 // Route all AppLog entries to the admin SSE stream
 AppLog.OnLog += admin.Log;
@@ -48,6 +51,7 @@ AppLog.OnLog += admin.Log;
 admin.OnPinChange = newPin =>
 {
     pin = newPin;
+    relay?.UpdatePin(newPin);
     AppLog.Write($"[Agent] PIN updated to {newPin}");
 };
 
@@ -90,6 +94,7 @@ server.OnDisconnect = (conn) =>
 server.Start(port);
 admin.Start();
 webFiles.Start();
+relay?.Start();
 
 var ips = GetLocalIPs();
 AppLog.Write("╔══════════════════════════════════╗");
@@ -103,6 +108,8 @@ AppLog.Write($"  Admin: http://localhost:{port + 2}/");
 if (webFiles.IsEnabled)
     foreach (var ip in ips)
         AppLog.Write($"  Web : http://{ip}:{WebFileServer.Port}/");
+if (relay != null)
+    AppLog.Write($"  Relay: {relayUrl} (session ID printed on connect)");
 AppLog.Write("Ready. Waiting for connections…");
 
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; server.Stop(); admin.Stop(); webFiles.Stop(); };

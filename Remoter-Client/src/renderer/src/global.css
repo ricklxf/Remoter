@@ -1,15 +1,15 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:       #0f0f1a;
-  --bg2:      #1a1a2e;
-  --bg3:      #16213e;
-  --accent:   #0f3460;
-  --primary:  #e94560;
-  --text:     #eaeaea;
-  --text2:    #a0a0b0;
+  --bg:       #f0f4f8;
+  --bg2:      #ffffff;
+  --bg3:      #f1f5f9;
+  --accent:   #e2e8f0;
+  --primary:  #0d9488;
+  --text:     #1a1a2e;
+  --text2:    #64748b;
   --radius:   8px;
-  --shadow:   0 4px 24px rgba(0,0,0,0.5);
+  --shadow:   0 4px 24px rgba(0,0,0,0.08);
 }
 
 html, body, #root { height: 100%; width: 100%; overflow: hidden; }
@@ -34,7 +34,7 @@ input {
   font-family: inherit;
   outline: none;
   background: var(--bg3);
-  border: 1px solid #333;
+  border: 1px solid #d1d5db;
   color: var(--text);
   border-radius: var(--radius);
   padding: 10px 14px;
@@ -45,5 +45,5 @@ input {
 input:focus { border-color: var(--primary); }
 
 ::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--bg2); }
-::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }

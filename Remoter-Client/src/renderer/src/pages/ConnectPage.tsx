@@ -116,8 +116,8 @@ const styles: Record<string, React.CSSProperties> = {
   form: { display: 'flex', flexDirection: 'column', gap: 16 },
   label: { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: 'var(--text2)' },
   error: {
-    background: '#3a1020', color: '#ff6b8a', borderRadius: 6,
-    padding: '8px 12px', fontSize: 13
+    background: '#fef2f2', color: '#dc2626', borderRadius: 6,
+    padding: '8px 12px', fontSize: 13, border: '1px solid #fecaca'
   },
   btn: {
     marginTop: 4, padding: '12px 0', borderRadius: 8,
@@ -126,7 +126,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   hint: {
     marginTop: 24, fontSize: 12, color: 'var(--text2)',
-    lineHeight: 1.6, borderTop: '1px solid #2a2a3e', paddingTop: 16
+    lineHeight: 1.6, borderTop: '1px solid #e2e8f0', paddingTop: 16
   },
   code: {
     background: 'var(--bg)', padding: '2px 6px', borderRadius: 4,

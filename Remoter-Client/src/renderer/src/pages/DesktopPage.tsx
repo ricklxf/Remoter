@@ -59,20 +59,17 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         />
       )}
 
-      {/* Always-visible floating trigger button — horizontally centered */}
-      <button
-        style={{
-          ...styles.floatTrigger,
-          ...(toolbarVisible ? styles.floatTriggerActive : {}),
-        }}
+      {/* Floating trigger — only visible when toolbar is hidden */}
+      {!toolbarVisible && <button
+        style={styles.floatTrigger}
         onClick={toggleToolbar}
-        title={toolbarVisible ? '隐藏工具栏' : '显示工具栏'}
+        title="显示工具栏"
       >
         <span style={{ fontSize: 14 }}>≡</span>
         {transfers.filter(t => !t.done).length > 0 && (
           <span style={styles.floatBadge}>{transfers.filter(t => !t.done).length}</span>
         )}
-      </button>
+      </button>}
 
       {toolbarVisible && (
         <div style={styles.toolbarWrap}>
@@ -119,11 +116,6 @@ const styles: Record<string, React.CSSProperties> = {
     userSelect: 'none',
     pointerEvents: 'auto',
     whiteSpace: 'nowrap',
-  },
-  floatTriggerActive: {
-    background: 'rgba(233,69,96,0.3)',
-    border: '1px solid rgba(233,69,96,0.5)',
-    color: '#fff',
   },
   floatBadge: {
     fontSize: 10,

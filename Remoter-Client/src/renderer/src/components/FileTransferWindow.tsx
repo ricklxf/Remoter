@@ -11,15 +11,15 @@ interface Props {
 // ─── Utils ────────────────────────────────────────────────────────
 
 function fmtBytes(b: number): string {
-  if (b <= 0)             return ''
-  if (b < 1024)           return `${b} B`
-  if (b < 1024 * 1024)    return `${(b / 1024).toFixed(1)} KB`
+  if (b <= 0)            return ''
+  if (b < 1024)          return `${b} B`
+  if (b < 1024 * 1024)   return `${(b / 1024).toFixed(1)} KB`
   return `${(b / 1024 / 1024).toFixed(2)} MB`
 }
 
 function fmtSpeed(bps: number): string {
-  if (bps < 1024)         return `${Math.round(bps)} B/s`
-  if (bps < 1024 * 1024)  return `${(bps / 1024).toFixed(0)} KB/s`
+  if (bps < 1024)        return `${Math.round(bps)} B/s`
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KB/s`
   return `${(bps / 1024 / 1024).toFixed(1)} MB/s`
 }
 
@@ -51,7 +51,7 @@ function parentPath(p: string): string {
   return parts.slice(0, -1).join('/') || '/'
 }
 
-// ─── Sub-components ───────────────────────────────────────────────
+// ─── NavBar ────────────────────────────────────────────────────────
 
 function NavBar({ path, canBack, canForward, onBack, onForward, onUp, onRefresh, onChange, onSubmit }: {
   path: string; canBack: boolean; canForward: boolean
@@ -74,10 +74,12 @@ function NavBar({ path, canBack, canForward, onBack, onForward, onUp, onRefresh,
   )
 }
 const nb: Record<string, React.CSSProperties> = {
-  bar:   { display: 'flex', alignItems: 'center', gap: 2, padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)' },
-  btn:   { background: 'transparent', color: 'var(--text2)', padding: '2px 6px', fontSize: 14, borderRadius: 4, minWidth: 24 },
-  input: { flex: 1, fontSize: 12, padding: '3px 8px', background: 'var(--bg)', border: '1px solid #333', borderRadius: 4, color: 'var(--text)' },
+  bar:   { display: 'flex', alignItems: 'center', gap: 2, padding: '5px 8px', borderBottom: '1px solid #e0e4ea', background: '#f0f4f8' },
+  btn:   { background: 'transparent', color: '#4a5568', padding: '2px 7px', fontSize: 14, borderRadius: 4, border: '1px solid transparent', cursor: 'pointer' },
+  input: { flex: 1, fontSize: 12, padding: '3px 8px', background: '#fff', border: '1px solid #c8d0da', borderRadius: 4, color: '#1a1a2e' },
 }
+
+// ─── FileList ────────────────────────────────────────────────────────
 
 function FileList({ entries, selected, onSelect, onOpen }: {
   entries: DirEntry[]
@@ -114,11 +116,11 @@ function FileList({ entries, selected, onSelect, onOpen }: {
           >
             <span style={{ flex: 3, display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden' }}>
               <span style={{ flexShrink: 0 }}>{fileIcon(entry)}</span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a2e' }}>{entry.name}</span>
             </span>
-            <span style={{ flex: 1, textAlign: 'right', color: 'var(--text2)' }}>{fmtBytes(entry.size)}</span>
-            <span style={{ flex: 1.5, color: 'var(--text2)' }}>{fileType(entry)}</span>
-            <span style={{ flex: 2, color: 'var(--text2)' }}>{fmtDate(entry.modified)}</span>
+            <span style={{ flex: 1, textAlign: 'right', color: '#6c757d' }}>{fmtBytes(entry.size)}</span>
+            <span style={{ flex: 1.5, color: '#6c757d' }}>{fileType(entry)}</span>
+            <span style={{ flex: 2, color: '#6c757d' }}>{fmtDate(entry.modified)}</span>
           </div>
         ))}
       </div>
@@ -127,18 +129,20 @@ function FileList({ entries, selected, onSelect, onOpen }: {
 }
 const fl: Record<string, React.CSSProperties> = {
   wrap:   { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
-  header: { display: 'flex', padding: '4px 10px', fontSize: 11, color: 'var(--text2)', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 },
-  body:   { flex: 1, overflowY: 'auto' },
-  row:    { display: 'flex', padding: '4px 10px', fontSize: 12, cursor: 'default', borderBottom: '1px solid rgba(255,255,255,0.03)' },
-  rowSel: { background: 'rgba(233,69,96,0.15)' },
-  empty:  { padding: 20, color: '#555', fontSize: 12, textAlign: 'center' },
+  header: { display: 'flex', padding: '4px 10px', fontSize: 11, color: '#8899aa', borderBottom: '1px solid #e8ecf0', background: '#f8f9fa', flexShrink: 0, fontWeight: 600 },
+  body:   { flex: 1, overflowY: 'auto', background: '#fff' },
+  row:    { display: 'flex', padding: '5px 10px', fontSize: 12, cursor: 'default', borderBottom: '1px solid #f0f2f5' },
+  rowSel: { background: 'rgba(87,144,213,0.12)' },
+  empty:  { padding: 20, color: '#aaa', fontSize: 12, textAlign: 'center' },
 }
+
+// ─── StatusBar ────────────────────────────────────────────────────
 
 function StatusBar({ selected, total, showHidden, onToggleHidden }: {
   selected: number; total: number; showHidden: boolean; onToggleHidden: () => void
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', fontSize: 11, color: 'var(--text2)', borderTop: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', fontSize: 11, color: '#6c757d', borderTop: '1px solid #e0e4ea', background: '#f8f9fa', flexShrink: 0 }}>
       <span>{selected > 0 ? `${selected} 个对象被选定` : `${total} 个对象`}</span>
       <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
         <input type="checkbox" checked={showHidden} onChange={onToggleHidden} style={{ margin: 0 }} />
@@ -148,28 +152,30 @@ function StatusBar({ selected, total, showHidden, onToggleHidden }: {
   )
 }
 
+// ─── TransferItem ────────────────────────────────────────────────
+
 function TransferItem({ t }: { t: FileTransfer }) {
   const pct = t.size > 0 ? Math.min(100, (t.transferred / t.size * 100)) : 0
   const dir = t.direction === 'upload' ? '↑' : '↓'
-  const color = t.direction === 'upload' ? '#64b5f6' : '#81c784'
+  const color = t.direction === 'upload' ? '#3b82f6' : '#10b981'
   return (
-    <div style={{ padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-        <span style={{ color, fontWeight: 700 }}>{dir}</span>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
-        <span style={{ color: '#888', flexShrink: 0 }}>
+    <div style={{ padding: '7px 12px', borderBottom: '1px solid #f0f2f5', fontSize: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        <span style={{ color, fontWeight: 700, fontSize: 13 }}>{dir}</span>
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a2e' }}>{t.name}</span>
+        <span style={{ color: '#6c757d', flexShrink: 0 }}>
           {t.done ? '完成' : `${Math.round(pct)}%`}
           {!t.done && t.speedBps > 0 && ` · ${fmtSpeed(t.speedBps)}`}
         </span>
       </div>
-      <div style={{ height: 3, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: t.done ? '#4caf50' : color, borderRadius: 2, transition: 'width 0.2s' }} />
+      <div style={{ height: 3, background: '#e8ecf0', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: t.done ? '#10b981' : color, borderRadius: 2, transition: 'width 0.2s' }} />
       </div>
     </div>
   )
 }
 
-// ─── Main component ────────────────────────────────────────────────
+// ─── Main ────────────────────────────────────────────────────────
 
 export function FileTransferWindow({ conn, transfers, onClose }: Props) {
   const [localPath, setLocalPath]       = useState('')
@@ -198,8 +204,6 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
     setLog(prev => [`[${t}] ${msg}`, ...prev.slice(0, 99)])
   }
 
-  // ── Local navigation ──────────────────────────────────────────
-
   const loadLocal = useCallback(async (path: string, push = true) => {
     try {
       const res = await window.remoterAPI!.listDir(path)
@@ -215,8 +219,6 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
   useEffect(() => {
     window.remoterAPI!.homeDir().then(h => loadLocal(h, false))
   }, []) // eslint-disable-line
-
-  // ── Remote navigation ─────────────────────────────────────────
 
   const loadRemote = useCallback((path: string, push = true) => {
     if (push && remotePath) setRemoteHistory(h => [...h, remotePath])
@@ -242,8 +244,6 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
     }
     return () => { conn.onEvent = prev }
   }, [conn])
-
-  // ── Transfer ───────────────────────────────────────────────────
 
   async function sendToRemote() {
     const files = [...localSel].filter(n => localEntries.find(e => e.name === n && !e.isDir))
@@ -278,55 +278,42 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
   const activeTransfers = transfers.filter(t => !t.done)
 
   return (
-    <div style={s.overlay} onMouseDown={e => e.stopPropagation()}>
-      <div style={s.window}>
+    <div style={w.backdrop} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={w.window}>
 
-        {/* ── Header ── */}
-        <div style={s.header}>
-          <div style={s.headerSide}>
-            <span style={s.headerIcon}>🖥</span>
-            <div>
-              <div style={s.headerTitle}>本地计算机</div>
-            </div>
+        {/* Header */}
+        <div style={w.header}>
+          <div style={w.headerSide}>
+            <span style={{ fontSize: 16 }}>🖥</span>
+            <span style={w.headerTitle}>本地计算机</span>
           </div>
-          <div style={s.headerSide}>
-            <span style={s.headerIcon}>🖥</span>
-            <div>
-              <div style={s.headerTitle}>远程计算机</div>
-            </div>
+          <div style={{ width: 1, background: 'rgba(255,255,255,0.25)', margin: '0 8px', height: 18, alignSelf: 'center' }} />
+          <div style={w.headerSide}>
+            <span style={{ fontSize: 16 }}>🖥</span>
+            <span style={w.headerTitle}>远程计算机</span>
           </div>
-          <button style={s.headerClose} onClick={onClose} title="关闭">×</button>
+          <button style={w.closeBtn} onClick={onClose} title="关闭">×</button>
         </div>
 
-        {/* ── Panels ── */}
-        <div style={s.panels}>
+        {/* Panels */}
+        <div style={w.panels}>
 
           {/* Local */}
-          <div style={s.panel}>
+          <div style={w.panel}>
             <NavBar
               path={localInput}
               canBack={localHistory.length > 0}
               canForward={localFwd.length > 0}
-              onBack={() => {
-                const p = localHistory[localHistory.length - 1]
-                setLocalHistory(h => h.slice(0, -1))
-                setLocalFwd(f => [localPath, ...f])
-                loadLocal(p, false)
-              }}
-              onForward={() => {
-                const p = localFwd[0]
-                setLocalFwd(f => f.slice(1))
-                setLocalHistory(h => [...h, localPath])
-                loadLocal(p, false)
-              }}
+              onBack={() => { const p = localHistory[localHistory.length-1]; setLocalHistory(h=>h.slice(0,-1)); setLocalFwd(f=>[localPath,...f]); loadLocal(p,false) }}
+              onForward={() => { const p = localFwd[0]; setLocalFwd(f=>f.slice(1)); setLocalHistory(h=>[...h,localPath]); loadLocal(p,false) }}
               onUp={() => loadLocal(parentPath(localPath))}
               onRefresh={() => loadLocal(localPath, false)}
               onChange={setLocalInput}
               onSubmit={() => loadLocal(localInput)}
             />
-            <div style={s.panelBar}>
+            <div style={w.actionBar}>
               <button
-                style={{ ...s.transferBtn, opacity: localSel.size === 0 || busy ? 0.4 : 1 }}
+                style={{ ...w.sendBtn, opacity: localSel.size === 0 || busy ? 0.45 : 1 }}
                 disabled={localSel.size === 0 || busy}
                 onClick={sendToRemote}
               >发送 →</button>
@@ -337,69 +324,57 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
               showHidden={showHiddenL} onToggleHidden={() => setShowHiddenL(v => !v)} />
           </div>
 
-          <div style={s.divider} />
+          <div style={w.divider} />
 
           {/* Remote */}
-          <div style={s.panel}>
+          <div style={w.panel}>
             <NavBar
               path={remoteInput}
               canBack={remoteHistory.length > 0}
               canForward={remoteFwd.length > 0}
-              onBack={() => {
-                const p = remoteHistory[remoteHistory.length - 1]
-                setRemoteHistory(h => h.slice(0, -1))
-                setRemoteFwd(f => [remotePath, ...f])
-                loadRemote(p, false)
-              }}
-              onForward={() => {
-                const p = remoteFwd[0]
-                setRemoteFwd(f => f.slice(1))
-                setRemoteHistory(h => [...h, remotePath])
-                loadRemote(p, false)
-              }}
+              onBack={() => { const p = remoteHistory[remoteHistory.length-1]; setRemoteHistory(h=>h.slice(0,-1)); setRemoteFwd(f=>[remotePath,...f]); loadRemote(p,false) }}
+              onForward={() => { const p = remoteFwd[0]; setRemoteFwd(f=>f.slice(1)); setRemoteHistory(h=>[...h,remotePath]); loadRemote(p,false) }}
               onUp={() => loadRemote(parentPath(remotePath))}
               onRefresh={() => loadRemote(remotePath, false)}
               onChange={setRemoteInput}
               onSubmit={() => loadRemote(remoteInput)}
             />
-            <div style={s.panelBar}>
+            <div style={w.actionBar}>
               <button
-                style={{ ...s.transferBtn, background: 'var(--bg3)', opacity: remoteSel.size === 0 ? 0.4 : 1 }}
+                style={{ ...w.recvBtn, opacity: remoteSel.size === 0 ? 0.45 : 1 }}
                 disabled={remoteSel.size === 0}
                 onClick={requestFromRemote}
               >← 接收</button>
             </div>
-            {remoteLoading ? (
-              <div style={s.loading}>加载中…</div>
-            ) : (
-              <FileList entries={visibleRemote} selected={remoteSel} onSelect={setRemoteSel}
-                onOpen={e => e.isDir ? loadRemote(remotePath + '/' + e.name) : undefined} />
-            )}
+            {remoteLoading
+              ? <div style={w.loading}>加载中…</div>
+              : <FileList entries={visibleRemote} selected={remoteSel} onSelect={setRemoteSel}
+                  onOpen={e => e.isDir ? loadRemote(remotePath + '/' + e.name) : undefined} />
+            }
             <StatusBar selected={remoteSel.size} total={visibleRemote.length}
               showHidden={showHiddenR} onToggleHidden={() => setShowHiddenR(v => !v)} />
           </div>
         </div>
 
-        {/* ── Bottom ── */}
-        <div style={s.bottom}>
-          <div style={s.bottomTabBar}>
-            <button style={{ ...s.bottomTab, ...(activeTab === 'list' ? s.bottomTabActive : {}) }}
+        {/* Bottom */}
+        <div style={w.bottom}>
+          <div style={w.tabBar}>
+            <button style={{ ...w.tabBtn, ...(activeTab==='list' ? w.tabBtnActive : {}) }}
               onClick={() => setActiveTab('list')}>
-              传输列表{activeTransfers.length > 0 ? ` · ${activeTransfers.length}` : ''}
+              传输列表{activeTransfers.length > 0 ? ` (${activeTransfers.length})` : ''}
             </button>
-            <button style={{ ...s.bottomTab, ...(activeTab === 'log' ? s.bottomTabActive : {}) }}
+            <button style={{ ...w.tabBtn, ...(activeTab==='log' ? w.tabBtnActive : {}) }}
               onClick={() => setActiveTab('log')}>传输日志</button>
           </div>
-          <div style={s.bottomContent}>
-            {activeTab === 'list' ? (
-              transfers.length === 0
-                ? <div style={{ padding: 12, color: '#555', fontSize: 12 }}>暂无传输任务</div>
+          <div style={w.tabContent}>
+            {activeTab === 'list'
+              ? transfers.length === 0
+                ? <div style={{ padding: '12px 16px', color: '#aaa', fontSize: 12 }}>暂无传输任务</div>
                 : transfers.map(t => <TransferItem key={t.id} t={t} />)
-            ) : (
-              log.length === 0
-                ? <div style={{ padding: 12, color: '#555', fontSize: 12 }}>暂无日志</div>
-                : log.map((l, i) => <div key={i} style={{ padding: '2px 12px', fontSize: 11, color: '#999', fontFamily: 'monospace' }}>{l}</div>)
-            )}
+              : log.length === 0
+                ? <div style={{ padding: '12px 16px', color: '#aaa', fontSize: 12 }}>暂无日志</div>
+                : log.map((l, i) => <div key={i} style={{ padding: '2px 14px', fontSize: 11, color: '#555', fontFamily: 'monospace' }}>{l}</div>)
+            }
           </div>
         </div>
 
@@ -408,73 +383,76 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
   )
 }
 
-// ─── Styles ────────────────────────────────────────────────────────
+// ─── Styles ──────────────────────────────────────────────────────
 
-const s: Record<string, React.CSSProperties> = {
-  overlay: {
+const w: Record<string, React.CSSProperties> = {
+  backdrop: {
     position: 'absolute', inset: 0, zIndex: 150,
-    background: 'rgba(0,0,0,0.6)',
-    display: 'flex', alignItems: 'stretch',
+    background: 'rgba(0,0,0,0.35)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   window: {
-    flex: 1,
+    width: 920, height: 580,
     display: 'flex', flexDirection: 'column',
-    background: 'var(--bg2)',
+    background: '#fff',
+    borderRadius: 12,
     overflow: 'hidden',
+    boxShadow: '0 20px 60px rgba(0,0,0,0.35)',
   },
   header: {
     display: 'flex', alignItems: 'center',
-    padding: '8px 12px',
-    borderBottom: '1px solid rgba(255,255,255,0.08)',
-    background: 'var(--bg3)',
+    padding: '0 12px',
+    height: 40,
+    background: 'linear-gradient(180deg, #6da4e2 0%, #5790d5 100%)',
     flexShrink: 0,
-    position: 'relative',
   },
-  headerSide: {
-    flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+  headerSide: { display: 'flex', alignItems: 'center', gap: 6, flex: 1 },
+  headerTitle: { fontSize: 13, fontWeight: 600, color: '#fff' },
+  closeBtn: {
+    background: 'rgba(255,255,255,0.2)',
+    color: '#fff',
+    fontSize: 18,
+    width: 28, height: 28,
+    borderRadius: 6,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'pointer',
+    marginLeft: 'auto',
+    padding: 0,
+    lineHeight: '1',
   },
-  headerIcon: { fontSize: 22 },
-  headerTitle: { fontSize: 13, fontWeight: 600 },
-  headerClose: {
-    position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
-    background: 'transparent', color: '#888', fontSize: 20, padding: '0 6px', borderRadius: 4,
+  panels: { flex: 1, display: 'flex', overflow: 'hidden' },
+  panel:  { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  divider: { width: 1, background: '#e0e4ea', flexShrink: 0 },
+  actionBar: {
+    display: 'flex', alignItems: 'center', padding: '5px 8px',
+    borderBottom: '1px solid #e8ecf0', background: '#f8f9fa', gap: 6,
   },
-  panels: {
-    flex: 1, display: 'flex', overflow: 'hidden',
+  sendBtn: {
+    padding: '4px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+    background: '#5790d5', color: '#fff', cursor: 'pointer',
   },
-  panel: {
-    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  },
-  divider: {
-    width: 1, background: 'rgba(255,255,255,0.06)', flexShrink: 0,
-  },
-  panelBar: {
-    display: 'flex', alignItems: 'center', padding: '4px 8px',
-    borderBottom: '1px solid rgba(255,255,255,0.06)', gap: 6,
-  },
-  transferBtn: {
-    padding: '4px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-    background: 'var(--primary)', color: '#fff', cursor: 'pointer',
+  recvBtn: {
+    padding: '4px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+    background: '#e8f0fb', color: '#3b74c4', border: '1px solid #c4d9f5', cursor: 'pointer',
   },
   loading: {
     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    color: '#555', fontSize: 13,
+    color: '#aaa', fontSize: 13,
   },
   bottom: {
-    height: 160, flexShrink: 0, display: 'flex', flexDirection: 'column',
-    borderTop: '1px solid rgba(255,255,255,0.08)',
+    height: 150, flexShrink: 0, display: 'flex', flexDirection: 'column',
+    borderTop: '1px solid #e0e4ea',
   },
-  bottomTabBar: {
-    display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0,
+  tabBar: {
+    display: 'flex', borderBottom: '1px solid #e8ecf0', flexShrink: 0, background: '#f8f9fa',
   },
-  bottomTab: {
-    padding: '5px 16px', fontSize: 12, background: 'transparent', color: 'var(--text2)',
-    borderRight: '1px solid rgba(255,255,255,0.06)',
+  tabBtn: {
+    padding: '6px 16px', fontSize: 12, background: 'transparent', color: '#6c757d',
+    borderRight: '1px solid #e8ecf0', cursor: 'pointer',
   },
-  bottomTabActive: {
-    color: 'var(--text)', borderBottom: '2px solid var(--primary)',
+  tabBtnActive: {
+    color: '#1a1a2e', fontWeight: 600,
+    borderBottom: '2px solid #5790d5', background: '#fff',
   },
-  bottomContent: {
-    flex: 1, overflowY: 'auto',
-  },
+  tabContent: { flex: 1, overflowY: 'auto', background: '#fff' },
 }

@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React from 'react'
 import { Connection } from '../network/Connection'
 
 interface Props {
@@ -28,15 +28,6 @@ export function Toolbar({
   showStats, onToggleStats,
   transferCount, onToggleTransfers, showTransfers,
 }: Props) {
-  const fileRef = useRef<HTMLInputElement>(null)
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    e.target.value = ''
-    await conn.sendFile(file)
-  }
-
   return (
     <div style={styles.bar}>
       <select
@@ -55,14 +46,9 @@ export function Toolbar({
 
       <div style={styles.sep} />
 
-      <ToolBtn icon="↑" title="发送文件到远端 Mac (保存至 ~/Downloads)" onClick={() => fileRef.current?.click()} />
-      <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
-
-      <div style={styles.sep} />
-
       <ToolBtn
-        icon="⇅"
-        title={showTransfers ? '隐藏传输列表' : '文件传输列表'}
+        icon="📁"
+        title={showTransfers ? '关闭文件管理器' : '文件管理器'}
         onClick={onToggleTransfers}
         active={showTransfers}
         badge={transferCount > 0 ? transferCount : undefined}

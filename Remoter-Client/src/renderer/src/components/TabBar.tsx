@@ -24,9 +24,14 @@ const isMac = window.remoterAPI?.platform === 'darwin'
 
 // ─── Signal bars ────────────────────────────────────────────────────
 
+function rttColor(rttMs: number): string {
+  const level = rttMs <= 0 ? 0 : rttMs < 50 ? 4 : rttMs < 120 ? 3 : rttMs < 250 ? 2 : 1
+  return level >= 3 ? TEAL_DARK : level === 2 ? '#d97706' : '#dc2626'
+}
+
 function SignalBars({ rttMs }: { rttMs: number }) {
   const level = rttMs <= 0 ? 0 : rttMs < 50 ? 4 : rttMs < 120 ? 3 : rttMs < 250 ? 2 : 1
-  const barColor = level >= 3 ? TEAL_DARK : level === 2 ? '#d97706' : '#dc2626'
+  const barColor = rttColor(rttMs)
   const heights = [5, 8, 11, 14]
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
@@ -147,11 +152,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
       {streaming && (
         <>
           {rtt > 0 && <SignalBars rttMs={rtt} />}
-          {rtt > 0 && <span style={{ ...s.rttText, color: active ? TEAL_DARK : 'rgba(255,255,255,0.9)' }}>{rtt}ms</span>}
-          <svg width="10" height="12" viewBox="0 0 10 12" style={{ flexShrink: 0, opacity: 0.7 }}>
-            <rect x="1" y="5" width="8" height="7" rx="1.5" fill={active ? '#555' : 'rgba(255,255,255,0.9)'} />
-            <path d="M2.5 5V3.5a2.5 2.5 0 015 0V5" fill="none" stroke={active ? '#555' : 'rgba(255,255,255,0.9)'} strokeWidth="1.5" />
-          </svg>
+          {rtt > 0 && <span style={{ ...s.rttText, color: rttColor(rtt) }}>{rtt}ms</span>}
           <span style={{ ...s.hdBadge, background: active ? TEAL_DARK : 'rgba(255,255,255,0.25)', color: '#fff' }}>HD</span>
           <button
             style={{ ...s.iconBtn, color: textColor }}

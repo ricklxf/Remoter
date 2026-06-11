@@ -1,22 +1,25 @@
 # Remoter
 
-个人远程桌面工具，支持从任意设备远程控制 Mac。
+个人远程桌面工具，支持从任意设备远程控制 Mac 或 Windows。
 
-- **JPEG 流**：低延迟画面传输，兼容所有客户端
+- **JPEG 串流**：低延迟画面传输，兼容所有客户端
 - **端到端加密**：P-256 ECDH + AES-256-GCM，零明文传输
 - **局域网直连**：延迟 < 20ms
 - **跨网络**：支持 WireGuard / VPN 穿透，或自建中继服务器
-- **文件传输**：从客户端发送文件到 Mac `~/Downloads`
-- **剪贴板同步**：双向文本同步
-- **三端支持**：Windows、macOS（Electron 桌面客户端）+ 任意浏览器（Web 客户端）
+- **WebRTC DataChannel**：自动协商 UDP 传输通道，进一步降低延迟
+- **文件传输**：双向发送文件，保存到目标机 `~/Downloads`
+- **剪贴板同步**：双向文本自动同步
+- **多标签页**：同时管理多个远程会话，Tab 标签显示实时延迟
+- **主题切换**：跟随系统 / 浅色 / 深色，实时生效
 
 ---
 
 ## 架构
 
 ```
-Remoter-Mac/        Mac 被控端（Swift · CoreGraphics · Network.framework）
-Remoter-Client/     控制端（Electron + React + TypeScript）
+Remoter-Mac/        Mac 被控端   （Swift · CoreGraphics · Network.framework）
+Remoter-Win/        Windows 被控端（C# .NET 8 · DXGI Desktop Duplication · SendInput）
+Remoter-Client/     控制端        （Electron + React + TypeScript）
                      同一套代码也能构建为纯网页版（无需安装）
 Remoter-Server/     公网中继服务器（Node.js WebSocket，可选）
 ```
@@ -35,7 +38,7 @@ Remoter-Server/     公网中继服务器（Node.js WebSocket，可选）
 xcode-select --install   # 仅首次
 
 cd Remoter-Mac
-bash scripts/build-app.sh          # debug 包
+bash scripts/build-app.sh            # debug 包
 bash scripts/build-app.sh --release  # release 包（更小更快）
 ```
 
@@ -55,7 +58,7 @@ bash scripts/build-app.sh --release  # release 包（更小更快）
 ### 启动
 
 ```bash
-open Remoter-Mac/build/RemoterAgent.app              # 随机生成 PIN
+open Remoter-Mac/build/RemoterAgent.app                     # 随机生成 PIN
 open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 ```
 
@@ -64,6 +67,50 @@ open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 ### 连接日志
 
 日志存储于 `~/Library/Logs/Remoter/connections.log`，可通过菜单栏「在 Finder 中显示日志」快速打开。
+
+---
+
+## Windows 被控端
+
+**系统要求：** Windows 10 1803+ x64，.NET 8 Runtime
+
+画面采集使用 **DXGI Desktop Duplication API**（GPU 侧捕获，延迟 < 2ms/帧），输入注入使用 **SendInput** Win32 API。
+
+### 编译
+
+需要 .NET 8 SDK：
+
+```bash
+cd Remoter-Win
+dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true --self-contained
+```
+
+产物：`Remoter-Win/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe`（单文件，无需安装运行时）
+
+### 启动
+
+```
+RemoterWin.exe                     # 随机生成 PIN，端口 7788
+RemoterWin.exe --pin 123456        # 指定 PIN
+RemoterWin.exe --port 7789         # 指定端口
+```
+
+启动后控制台打印 PIN 码和局域网地址：
+
+```
+╔══════════════════════════════════╗
+║      Remoter Windows Agent        ║
+╚══════════════════════════════════╝
+  PIN : 481623
+  Port: 7788
+  LAN : ws://192.168.1.100:7788
+```
+
+### 注意事项
+
+- **SendSAS（Ctrl+Alt+Delete）**：需在注册表启用软件 SAS，或以 SYSTEM 身份运行。普通用户模式下会退回 SendInput 注入（安全桌面外有效）。
+- **注销 / 重启**：需要 `SeShutdownPrivilege`，以管理员身份运行可确保正常工作。
+- **音量静音**：当前版本暂未实现（待补）。
 
 ---
 
@@ -96,7 +143,7 @@ npm run dev           # 开发模式
 
 ### B. Web 客户端（任意浏览器，无需安装）
 
-同一套代码也能构建为网页，在 Chrome / Edge / Safari 等浏览器中直接打开，无需安装任何软件。
+同一套代码也能构建为网页，在 Chrome / Edge / Safari 等浏览器中直接打开。
 
 **推荐方式：内嵌到 Mac app（一步到位）**
 
@@ -120,26 +167,23 @@ cd Remoter-Client
 npm run dev:web        # 在 http://localhost:5174 启动本地开发服务器
 ```
 
-**独立部署（不内嵌到 Mac app）**
+**独立部署**
 
 ```bash
 cd Remoter-Client
 npm run build:web
-# 用任意静态文件服务器提供 dist-web/ 目录
 npx serve dist-web -p 7799
-# 或
-python3 -m http.server 7799 --directory dist-web
 ```
 
-> **浏览器兼容性**：Chrome 94+ / Edge 94+ / Safari 15.4+，推荐 Chrome 以获得最佳性能（WebCodecs 支持最完整）。
+> **浏览器兼容性**：Chrome 94+ / Edge 94+ / Safari 15.4+，推荐 Chrome（WebCodecs 支持最完整）。
 
 ---
 
 ### 连接步骤
 
-1. 打开控制端（桌面 app 或浏览器），选择「直连（局域网）」
-2. 输入 Mac 的局域网地址，格式：`ws://192.168.1.x:7788`
-3. 输入 **PIN 码**（从 Mac 菜单栏复制）
+1. 打开控制端（桌面 app 或浏览器），点击 `+` 新建连接
+2. 选择「直连（局域网）」，输入被控端地址：`ws://192.168.1.x:7788`
+3. 输入 **PIN 码**（从被控端控制台或菜单栏复制）
 4. 点击连接，等待画面出现
 
 ---
@@ -151,7 +195,7 @@ python3 -m http.server 7799 --directory dist-web
 两端接入同一 WireGuard 网络后，直接填 WireGuard 虚拟 IP 连接：
 
 ```
-客户端 (10.0.0.2) ──── WireGuard ──── Mac (10.0.0.3)
+客户端 (10.0.0.2) ──── WireGuard ──── 被控端 (10.0.0.3)
 ```
 
 ### 中继服务器（可选）
@@ -168,24 +212,28 @@ TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem npm start
 
 ---
 
-## 操作说明
+## 控制端操作说明
 
 | 操作 | 说明 |
 |------|------|
 | 鼠标移动 / 点击 | 直接操作，1:1 映射 |
 | 滚轮 | 自然方向滚动 |
 | 键盘快捷键 | 全部透传（含 Cmd/Meta） |
-| 全屏 | 工具栏 ⛶ 按钮 |
-| 工具栏 | 鼠标移到屏幕顶部自动显示 |
-| 发送文件 | 工具栏 📂，保存到 Mac `~/Downloads` |
-| 剪贴板同步 | 工具栏 📋，将本机内容发送到 Mac |
-| 断开 | 工具栏 ⏏ |
+| 工具栏 | 鼠标移到画面顶部中央 ▼ 按钮显示，3 秒无操作自动隐藏 |
+| 画质切换 | 工具栏左侧下拉，2K·60fps / 1080·60fps / 1080·30fps / 流畅优先 |
+| 控制菜单 | 发送 Ctrl+Alt+Delete、剪贴板同步开关、禁用被控端键鼠、锁屏 / 注销 / 重启 |
+| 文件管理器 | 工具栏 📁，浏览目录并收发文件 |
+| 主题切换 | 工具栏 💻/☀️/🌙，在跟随系统 / 浅色 / 深色之间循环 |
+| 全屏 | 工具栏 ⛶ |
+| 多标签页 | 顶部标签栏，鼠标悬停 Tab 显示延迟 / 帧率 / 码率弹窗 |
+| 静音远端 | Tab 上 🔊 按钮 |
+| 断开 / 关闭 | Tab 上 × 按钮 |
 
 ---
 
 ## 安全说明
 
-- **PIN 认证**：连接前必须验证 PIN
-- **E2E 加密**：认证通过后，所有消息均使用 P-256 ECDH + AES-256-GCM 加密
+- **PIN 认证**：连接前必须验证 PIN（生产环境请启用，开发模式默认跳过）
+- **E2E 加密**：P-256 ECDH 密钥交换 + HKDF-SHA256 派生 + AES-256-GCM 加密，握手完成后所有控制消息均加密
 - **局域网直连**：数据不经过任何第三方服务器
-- **中继模式**：流量经自建服务器透明转发，E2E 加密对服务器不可见
+- **中继模式**：流量经自建服务器透明转发，E2E 加密对中继服务器不可见

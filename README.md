@@ -17,12 +17,21 @@
 ## 架构
 
 ```
-Remoter-Mac/        Mac 被控端   （Swift · CoreGraphics · Network.framework）
-Remoter-Win/        Windows 被控端（C# .NET 8 · DXGI Desktop Duplication · SendInput）
-Remoter-Client/     控制端        （Electron + React + TypeScript）
-                     同一套代码也能构建为纯网页版（无需安装）
-Remoter-Server/     公网中继服务器（Node.js WebSocket，可选）
+Remoter-Mac/        Mac 被控端    Swift · CoreGraphics · Network.framework
+Remoter-Win/        Windows 被控端 C# .NET 8 · DXGI Desktop Duplication · SendInput
+Remoter-Client/     控制端         Electron + React + TypeScript
+                    同一套代码也能构建为纯网页版（无需安装）
+Remoter-Server/     公网中继服务器  Node.js WebSocket（可选）
 ```
+
+**端口一览**
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| Mac/Win WebSocket | 7788 | 被控端主连接（可 `--port` 覆盖） |
+| Mac/Win Web 客户端 | 7799 | 静态文件服务，有 `web/` 时自动开启 |
+| Win 管理控制台 | 主端口 + 2 | 默认 7790，日志 / PIN / 状态 |
+| 中继服务器 | 7789 | WebSocket 中转 + Web 客户端托管 |
 
 ---
 
@@ -44,7 +53,7 @@ bash scripts/build-app.sh --release  # release 包（更小更快）
 
 产物：`Remoter-Mac/build/RemoterAgent.app`
 
-> **内嵌 Web 客户端（可选）**：如果先构建了 Web 客户端（见下方），Mac app 会自动将其打包进去并在端口 7799 提供服务，无需额外部署。
+> **内嵌 Web 客户端（可选）**：先构建 Web 客户端（见下方），`build-app.sh` 会自动将产物打包进 bundle，启动后在端口 7799 提供服务。
 
 ### 首次运行授权
 
@@ -58,7 +67,7 @@ bash scripts/build-app.sh --release  # release 包（更小更快）
 ### 启动
 
 ```bash
-open Remoter-Mac/build/RemoterAgent.app                     # 随机生成 PIN
+open Remoter-Mac/build/RemoterAgent.app                      # 随机生成 PIN
 open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 ```
 
@@ -95,41 +104,41 @@ RemoterWin.exe --pin 123456        # 指定 PIN
 RemoterWin.exe --port 7789         # 指定端口
 ```
 
-启动后控制台打印 PIN 码和局域网地址（日志同时写入 `remoter.log`）：
+启动后日志写入 `remoter.log`（同时控制台输出），有 `web/` 目录时额外打印 Web 地址：
 
 ```
 ╔══════════════════════════════════╗
 ║      Remoter Windows Agent        ║
 ╚══════════════════════════════════╝
-  PIN : 481623
-  Port: 7788
-  LAN : ws://192.168.1.100:7788
-  Admin: http://localhost:7790
+  PIN  : 481623
+  Port : 7788
+  LAN  : ws://192.168.1.100:7788
+  Admin: http://localhost:7790/
+  Web  : http://192.168.1.100:7799/   ← 仅有 web/ 时显示
 ```
 
-**管理控制台**：浏览器访问 `http://localhost:7790`（端口 = 主端口 + 2），可查看实时日志、修改 PIN、查看连接状态。
+### 管理控制台
+
+浏览器访问 `http://localhost:{主端口+2}/`（默认 `http://localhost:7790/`），功能：
+- 实时日志流（SSE）
+- 热更新 PIN（无需重启）
+- 连接数 / 运行时间状态
 
 **日志文件**：运行目录下 `remoter.log`，超过 10MB 自动轮转为 `remoter.log.bak`。
 
 ### 内嵌 Web 客户端（可选）
 
-将 web 产物复制到 exe 同目录下的 `web/` 文件夹，启动时自动在端口 7799 提供服务：
+将 web 产物放到 exe 同目录的 `web/` 文件夹，启动时自动在端口 7799 提供服务：
 
 ```bash
-# 1. 构建 web 产物
-cd Remoter-Client && npm run build:web   # 输出到 Remoter-Server/public/
+# 1. 在项目根目录构建 web 产物（输出到 Remoter-Server/public/）
+cd Remoter-Client && npm run build:web
 
-# 2. 将产物复制到 exe 旁边
+# 2. 将产物复制到 exe 旁边（Windows 命令行）
 xcopy /E /I Remoter-Server\public publish\web
 
-# 3. 启动（有 web/ 时自动开启 7799）
+# 3. 启动
 publish\RemoterWin.exe
-```
-
-启动日志示例（有 web/ 时额外打印 Web 地址）：
-
-```
-  Web : http://192.168.1.100:7799
 ```
 
 ### 注意事项
@@ -171,42 +180,51 @@ npm run dev           # 开发模式
 
 同一套代码也能构建为网页，在 Chrome / Edge / Safari 等浏览器中直接打开。
 
-**方式一：内嵌到 Mac app（局域网直连，一步到位）**
+`npm run build:web` 将产物输出到 `Remoter-Server/public/`，有三种托管方式：
+
+**方式一：内嵌到 Mac app**
 
 ```bash
-# 1. 构建 web 产物（输出到 Remoter-Server/public/）
-cd Remoter-Client
-npm install
-npm run build:web
-
-# 2. 打包 Mac app（自动将 web 产物嵌入 bundle）
-cd ../Remoter-Mac
-bash scripts/build-app.sh
+cd Remoter-Client && npm install && npm run build:web
+cd ../Remoter-Mac  && bash scripts/build-app.sh
 ```
 
-启动 Mac app 后，菜单栏会显示 Web 客户端地址（如 `http://192.168.1.144:7799`）。用其他设备的浏览器打开该地址即可连接。
+Mac app 启动后菜单栏显示 `http://<LAN-IP>:7799`，局域网内其他设备直接用浏览器访问。
 
-**方式二：通过中继服务器托管（跨网络访问）**
+**方式二：内嵌到 Win 被控端**
+
+```bash
+cd Remoter-Client && npm run build:web
+xcopy /E /I Remoter-Server\public Remoter-Win\...\publish\web   # 复制到 exe 旁
+```
+
+Win 服务端启动时在端口 7799 提供服务，同样局域网可访问。
+
+**方式三：通过中继服务器托管（公网访问）**
 
 ```bash
 cd Remoter-Server
 npm install
-npm run build:all   # 同时构建 web 客户端和服务端
-npm start           # 默认端口 7789，访问 http://your-server:7789
+npm run build:all   # 构建 web 客户端 + 编译服务端 TypeScript
+npm start           # 默认端口 7789
 ```
 
-构建后 `Remoter-Server/public/` 目录包含完整 web 客户端，访问中继服务器地址即可打开。支持 HTTPS 部署（设置 `TLS_CERT` / `TLS_KEY` 环境变量后 `crypto.subtle` E2E 加密生效）。
+访问 `http://your-server:7789` 即可打开 web 客户端。建议配 TLS：
+
+```bash
+TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem npm start
+```
+
+HTTPS 下 `crypto.subtle` 可用，E2E 加密自动生效。HTTP 下 E2E 自动降级为明文，控制消息依然经 PIN 验证。
 
 **开发/调试模式**
 
 ```bash
 cd Remoter-Client
-npm run dev:web        # 在 http://localhost:5174 启动本地开发服务器
+npm run dev:web        # http://localhost:5174
 ```
 
 > **浏览器兼容性**：Chrome 94+ / Edge 94+ / Safari 15.4+，推荐 Chrome（WebCodecs 支持最完整）。
->
-> **E2E 加密**：`crypto.subtle` 仅在 HTTPS 或 localhost 下可用，HTTP 访问下 E2E 自动降级为明文传输，控制消息依然经 PIN 验证。
 
 ---
 
@@ -214,7 +232,7 @@ npm run dev:web        # 在 http://localhost:5174 启动本地开发服务器
 
 1. 打开控制端（桌面 app 或浏览器），点击 `+` 新建连接
 2. 选择「直连（局域网）」，输入被控端地址：`ws://192.168.1.x:7788`
-3. 输入 **PIN 码**（从被控端控制台或菜单栏复制）
+3. 输入 **PIN 码**（从被控端日志或菜单栏复制）
 4. 点击连接，等待画面出现
 
 ---
@@ -235,11 +253,22 @@ npm run dev:web        # 在 http://localhost:5174 启动本地开发服务器
 
 ```bash
 cd Remoter-Server
-npm install && npm start   # 默认端口 7789
-
-# 启用 TLS
-TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem npm start
+npm install
+npm run build:all   # 同时构建 web 客户端和服务端
+npm start           # 端口 7789，兼作 WebSocket 中转和 Web 客户端托管
 ```
+
+被控端启动时加 `--relay` 参数连接中继：
+
+```bash
+# Mac
+open RemoterAgent.app --args --relay ws://your-server:7789
+
+# Win
+RemoterWin.exe --relay ws://your-server:7789
+```
+
+控制端填写中继服务器地址（`ws://your-server:7789`）和被控端 PIN 即可跨网络连接。
 
 ---
 
@@ -268,3 +297,4 @@ TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem npm start
 - **E2E 加密**：P-256 ECDH 密钥交换 + HKDF-SHA256 派生 + AES-256-GCM 加密，握手完成后所有控制消息均加密
 - **局域网直连**：数据不经过任何第三方服务器
 - **中继模式**：流量经自建服务器透明转发，E2E 加密对中继服务器不可见
+- **HTTP 降级**：Web 客户端通过 HTTP 访问时，`crypto.subtle` 不可用，E2E 自动跳过，建议生产环境配置 TLS

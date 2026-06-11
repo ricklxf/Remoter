@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { DirEntry, FileTransfer } from '../types'
 
@@ -216,8 +216,12 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
     } catch (e) { addLog(`本地读取失败: ${e}`) }
   }, [localPath])
 
+  const isWeb = window.remoterAPI?.platform === 'web'
+
   useEffect(() => {
-    window.remoterAPI!.homeDir().then(h => loadLocal(h, false))
+    if (!isWeb) {
+      window.remoterAPI!.homeDir().then(h => loadLocal(h, false))
+    }
   }, []) // eslint-disable-line
 
   const loadRemote = useCallback((path: string, push = true) => {
@@ -231,19 +235,30 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
   useEffect(() => { loadRemote('~', false) }, []) // eslint-disable-line
 
   useEffect(() => {
-    const prev = conn.onEvent
-    conn.onEvent = (e) => {
-      prev?.(e)
-      if (e.type === 'dir_listing') {
-        setRemotePath(e.path)
-        setRemoteInput(e.path)
-        setRemoteEntries(e.entries)
-        setRemoteSel(new Set())
-        setRemoteLoading(false)
-      }
+    conn.onDirListing = (path, entries) => {
+      setRemotePath(path)
+      setRemoteInput(path)
+      setRemoteEntries(entries)
+      setRemoteSel(new Set())
+      setRemoteLoading(false)
     }
-    return () => { conn.onEvent = prev }
+    return () => { conn.onDirListing = null }
   }, [conn])
+
+  async function sendWebFiles(files: File[]) {
+    if (!files.length) return
+    setBusy(true)
+    setActiveTab('log')
+    for (const file of files) {
+      try {
+        addLog(`↑ 开始发送: ${file.name} (${fmtBytes(file.size)})`)
+        await conn.sendFile(file)
+        addLog(`↑ 发送完成: ${file.name}`)
+        if (remotePath) loadRemote(remotePath, false)
+      } catch (e) { addLog(`↑ 失败: ${file.name} - ${e}`) }
+    }
+    setBusy(false)
+  }
 
   async function sendToRemote() {
     const files = [...localSel].filter(n => localEntries.find(e => e.name === n && !e.isDir))
@@ -300,28 +315,34 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
 
           {/* Local */}
           <div style={w.panel}>
-            <NavBar
-              path={localInput}
-              canBack={localHistory.length > 0}
-              canForward={localFwd.length > 0}
-              onBack={() => { const p = localHistory[localHistory.length-1]; setLocalHistory(h=>h.slice(0,-1)); setLocalFwd(f=>[localPath,...f]); loadLocal(p,false) }}
-              onForward={() => { const p = localFwd[0]; setLocalFwd(f=>f.slice(1)); setLocalHistory(h=>[...h,localPath]); loadLocal(p,false) }}
-              onUp={() => loadLocal(parentPath(localPath))}
-              onRefresh={() => loadLocal(localPath, false)}
-              onChange={setLocalInput}
-              onSubmit={() => loadLocal(localInput)}
-            />
-            <div style={w.actionBar}>
-              <button
-                style={{ ...w.sendBtn, opacity: localSel.size === 0 || busy ? 0.45 : 1 }}
-                disabled={localSel.size === 0 || busy}
-                onClick={sendToRemote}
-              >发送 →</button>
-            </div>
-            <FileList entries={visibleLocal} selected={localSel} onSelect={setLocalSel}
-              onOpen={e => e.isDir ? loadLocal(localPath + '/' + e.name) : undefined} />
-            <StatusBar selected={localSel.size} total={visibleLocal.length}
-              showHidden={showHiddenL} onToggleHidden={() => setShowHiddenL(v => !v)} />
+            {isWeb ? (
+              <WebLocalPanel onSend={sendWebFiles} busy={busy} />
+            ) : (
+              <>
+                <NavBar
+                  path={localInput}
+                  canBack={localHistory.length > 0}
+                  canForward={localFwd.length > 0}
+                  onBack={() => { const p = localHistory[localHistory.length-1]; setLocalHistory(h=>h.slice(0,-1)); setLocalFwd(f=>[localPath,...f]); loadLocal(p,false) }}
+                  onForward={() => { const p = localFwd[0]; setLocalFwd(f=>f.slice(1)); setLocalHistory(h=>[...h,localPath]); loadLocal(p,false) }}
+                  onUp={() => loadLocal(parentPath(localPath))}
+                  onRefresh={() => loadLocal(localPath, false)}
+                  onChange={setLocalInput}
+                  onSubmit={() => loadLocal(localInput)}
+                />
+                <div style={w.actionBar}>
+                  <button
+                    style={{ ...w.sendBtn, opacity: localSel.size === 0 || busy ? 0.45 : 1 }}
+                    disabled={localSel.size === 0 || busy}
+                    onClick={sendToRemote}
+                  >发送 →</button>
+                </div>
+                <FileList entries={visibleLocal} selected={localSel} onSelect={setLocalSel}
+                  onOpen={e => e.isDir ? loadLocal(localPath + '/' + e.name) : undefined} />
+                <StatusBar selected={localSel.size} total={visibleLocal.length}
+                  showHidden={showHiddenL} onToggleHidden={() => setShowHiddenL(v => !v)} />
+              </>
+            )}
           </div>
 
           <div style={w.divider} />
@@ -381,6 +402,51 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
       </div>
     </div>
   )
+}
+
+// ─── WebLocalPanel ───────────────────────────────────────────────
+
+function WebLocalPanel({ onSend, busy }: { onSend: (files: File[]) => void; busy: boolean }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    if (files.length) onSend(files)
+    e.target.value = ''
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length && !busy) onSend(files)
+  }
+
+  return (
+    <div
+      style={wp.container}
+      onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+      onDrop={handleDrop}
+    >
+      <input ref={inputRef} type="file" multiple onChange={handleChange} style={{ display: 'none' }} />
+      <div style={wp.dropZone}>
+        <div style={wp.icon}>📂</div>
+        <p style={wp.title}>拖放文件到此处</p>
+        <p style={wp.desc}>或点击按钮选择文件，发送到远端 Downloads</p>
+        <button
+          style={{ ...w.sendBtn, opacity: busy ? 0.45 : 1, marginTop: 8 }}
+          disabled={busy}
+          onClick={() => inputRef.current?.click()}
+        >选择文件发送 →</button>
+      </div>
+    </div>
+  )
+}
+const wp: Record<string, React.CSSProperties> = {
+  container: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  dropZone:  { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 24, textAlign: 'center' },
+  icon:      { fontSize: 40, marginBottom: 4 },
+  title:     { fontSize: 14, fontWeight: 600, color: '#1a1a2e', margin: 0 },
+  desc:      { fontSize: 12, color: '#6c757d', margin: 0 },
 }
 
 // ─── Styles ──────────────────────────────────────────────────────

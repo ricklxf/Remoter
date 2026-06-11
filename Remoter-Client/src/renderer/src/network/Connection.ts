@@ -59,7 +59,8 @@ export class Connection {
   private lastClipText = ''
   private lastClipImgLen = -1
 
-  onEvent: ((e: ConnEvent) => void) | null = null
+  onEvent:      ((e: ConnEvent) => void)                               | null = null
+  onDirListing: ((path: string, entries: DirEntry[]) => void)          | null = null
 
   // MARK: - 连接 / 断开
 
@@ -451,9 +452,13 @@ export class Connection {
         break
       }
 
-      case 'dir_listing':
-        this.emit({ type: 'dir_listing', path: msg.path as string, entries: msg.entries as DirEntry[] })
+      case 'dir_listing': {
+        const dlPath    = msg.path    as string
+        const dlEntries = msg.entries as DirEntry[]
+        this.emit({ type: 'dir_listing', path: dlPath, entries: dlEntries })
+        this.onDirListing?.(dlPath, dlEntries)
         break
+      }
 
       case 'host_disconnected':
         this.emit({ type: 'state', state: 'disconnected' })

@@ -30,6 +30,29 @@ if (!window.remoterAPI) {
     readFile: async () => new Uint8Array(),
     readClipboard:  () => navigator.clipboard?.readText()  ?? Promise.resolve(''),
     writeClipboard: (text: string) => { navigator.clipboard?.writeText(text).catch(() => {}) },
+    readClipboardImage: async () => {
+      try {
+        const items = await navigator.clipboard.read()
+        for (const item of items) {
+          if (item.types.includes('image/png')) {
+            const blob = await item.getType('image/png')
+            return new Promise<string>((resolve) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve((reader.result as string).split(',')[1])
+              reader.readAsDataURL(blob)
+            })
+          }
+        }
+      } catch { /* ignore */ }
+      return null
+    },
+    writeClipboardImage: (data: string) => {
+      try {
+        const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0))
+        const blob  = new Blob([bytes], { type: 'image/png' })
+        navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).catch(() => {})
+      } catch { /* ignore */ }
+    },
   }
 }
 

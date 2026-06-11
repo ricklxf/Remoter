@@ -237,7 +237,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
 // ─── Styles ─────────────────────────────────────────────────────────
 
 const TEAL_DARK = '#0d9488'
-const BAR_BG = 'linear-gradient(180deg, #2dd4bf 0%, #0fb8ab 100%)'
+const BAR_BG = '#0fb8ab'
 
 const s: Record<string, React.CSSProperties> = {
   bar: {

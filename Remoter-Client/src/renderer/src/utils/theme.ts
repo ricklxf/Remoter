@@ -1,6 +1,9 @@
+import { useState, useEffect } from 'react'
+
 export type Theme = 'system' | 'light' | 'dark'
 
 const KEY = 'remoter-theme'
+const CHANGE_EVENT = 'remoter-theme-change'
 
 function resolved(t: Theme): 'light' | 'dark' {
   return t === 'system'
@@ -15,6 +18,7 @@ export function getTheme(): Theme {
 export function applyTheme(t: Theme): void {
   document.documentElement.setAttribute('data-theme', resolved(t))
   localStorage.setItem(KEY, t)
+  window.dispatchEvent(new Event(CHANGE_EVENT))
 }
 
 export function initTheme(): void {
@@ -22,4 +26,14 @@ export function initTheme(): void {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (getTheme() === 'system') applyTheme('system')
   })
+}
+
+export function useTheme(): Theme {
+  const [theme, setTheme] = useState<Theme>(getTheme)
+  useEffect(() => {
+    const handler = () => setTheme(getTheme())
+    window.addEventListener(CHANGE_EVENT, handler)
+    return () => window.removeEventListener(CHANGE_EVENT, handler)
+  }, [])
+  return theme
 }

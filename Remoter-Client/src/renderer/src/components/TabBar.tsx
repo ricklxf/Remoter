@@ -64,28 +64,28 @@ function StatsPopup({ tab, pos }: { tab: TabInfo; pos: { left: number; top: numb
       transform: 'translateX(-50%)',
       zIndex: 9999,
       pointerEvents: 'none',
-      background: 'rgba(255,255,255,0.97)',
+      background: 'var(--ov-popup-bg)',
       backdropFilter: 'blur(12px)',
       WebkitBackdropFilter: 'blur(12px)',
-      border: '1px solid rgba(0,0,0,0.1)',
+      border: '1px solid var(--ov-popup-bdr)',
       borderRadius: 10,
-      boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+      boxShadow: 'var(--ov-shadow)',
       minWidth: 180,
       overflow: 'hidden',
       fontSize: 12,
-      color: '#1a1a2e',
+      color: 'var(--ov-text)',
       userSelect: 'none',
     }}>
       <div style={{
         padding: '9px 14px',
-        borderBottom: streaming ? '1px solid rgba(0,0,0,0.06)' : undefined,
+        borderBottom: streaming ? '1px solid var(--ov-sep)' : undefined,
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATE_DOT[state], flexShrink: 0, display: 'inline-block' }} />
         <span style={{ fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {label}
         </span>
-        <span style={{ color: '#64748b', fontSize: 11, flexShrink: 0 }}>{STATE_LABEL[state]}</span>
+        <span style={{ color: 'var(--ov-text2)', fontSize: 11, flexShrink: 0 }}>{STATE_LABEL[state]}</span>
       </div>
       {streaming && (
         <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -103,7 +103,7 @@ function StatsPopup({ tab, pos }: { tab: TabInfo; pos: { left: number; top: numb
 function StatRow({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-      <span style={{ color: '#64748b' }}>{label}</span>
+      <span style={{ color: 'var(--ov-text2)' }}>{label}</span>
       <span style={{ color, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
     </div>
   )

@@ -11,6 +11,18 @@
   --border:   #d1d5db;
   --radius:   8px;
   --shadow:   0 4px 24px rgba(0,0,0,0.08);
+
+  /* overlay elements: toolbar, float trigger, stats popup */
+  --ov-bg:          rgba(255,255,255,0.92);
+  --ov-text:        #1a1a2e;
+  --ov-text2:       #64748b;
+  --ov-sep:         #dde2e8;
+  --ov-input-bg:    #f0f4f8;
+  --ov-input-bdr:   #c8d0da;
+  --ov-border:      rgba(0,0,0,0.09);
+  --ov-popup-bg:    rgba(255,255,255,0.97);
+  --ov-popup-bdr:   rgba(0,0,0,0.1);
+  --ov-shadow:      0 8px 24px rgba(0,0,0,0.15);
 }
 
 [data-theme="dark"] {
@@ -21,6 +33,17 @@
   --text2:  #a0a0b0;
   --border: #333344;
   --shadow: 0 4px 24px rgba(0,0,0,0.5);
+
+  --ov-bg:          rgba(20,20,36,0.94);
+  --ov-text:        #eaeaea;
+  --ov-text2:       #a0a0b0;
+  --ov-sep:         #2a2a3e;
+  --ov-input-bg:    #16213e;
+  --ov-input-bdr:   #333344;
+  --ov-border:      rgba(255,255,255,0.08);
+  --ov-popup-bg:    rgba(20,20,36,0.97);
+  --ov-popup-bdr:   rgba(255,255,255,0.08);
+  --ov-shadow:      0 8px 24px rgba(0,0,0,0.5);
 }
 
 html, body, #root { height: 100%; width: 100%; overflow: hidden; }

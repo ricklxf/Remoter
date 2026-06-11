@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Connection } from '../network/Connection'
-import { Theme, getTheme, applyTheme } from '../utils/theme'
+import { Theme, useTheme, applyTheme } from '../utils/theme'
 
 interface Props {
   conn: Connection
@@ -33,12 +33,10 @@ export function Toolbar({
   transferCount, onToggleTransfers, showTransfers,
   onMouseEnter, onMouseLeave,
 }: Props) {
-  const [theme, setTheme] = useState<Theme>(getTheme)
+  const theme = useTheme()
 
   function cycleTheme() {
-    const next = THEME_NEXT[theme]
-    applyTheme(next)
-    setTheme(next)
+    applyTheme(THEME_NEXT[theme])
   }
 
   return (
@@ -137,7 +135,7 @@ function ToolBtn({ icon, title, onClick, active, badge }: {
 const s: Record<string, React.CSSProperties> = {
   bar: {
     display: 'flex', alignItems: 'center', gap: 2,
-    background: 'rgba(255,255,255,0.92)',
+    background: 'var(--ov-bg)',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
     padding: '5px 10px',
@@ -145,14 +143,14 @@ const s: Record<string, React.CSSProperties> = {
     position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
     boxShadow: '0 4px 20px rgba(0,0,0,0.15), 0 1px 4px rgba(0,0,0,0.08)',
     zIndex: 100,
-    border: '1px solid rgba(0,0,0,0.09)',
+    border: '1px solid var(--ov-border)',
     pointerEvents: 'auto',
   },
   selectBtn: {
     display: 'flex', alignItems: 'center', gap: 6,
-    background: '#f0f4f8',
-    color: '#1a1a2e',
-    border: '1px solid #c8d0da',
+    background: 'var(--ov-input-bg)',
+    color: 'var(--ov-text)',
+    border: '1px solid var(--ov-input-bdr)',
     borderRadius: 8,
     padding: '5px 10px',
     fontSize: 13,
@@ -166,12 +164,12 @@ const s: Record<string, React.CSSProperties> = {
     top: 'calc(100% + 8px)',
     left: '50%',
     transform: 'translateX(-50%)',
-    background: 'rgba(255,255,255,0.97)',
+    background: 'var(--ov-popup-bg)',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
-    border: '1px solid rgba(0,0,0,0.1)',
+    border: '1px solid var(--ov-popup-bdr)',
     borderRadius: 10,
-    boxShadow: '0 8px 24px rgba(0,0,0,0.14)',
+    boxShadow: 'var(--ov-shadow)',
     overflow: 'hidden',
     zIndex: 200,
     minWidth: 130,
@@ -183,7 +181,7 @@ const s: Record<string, React.CSSProperties> = {
     width: '100%',
     padding: '9px 16px',
     fontSize: 13,
-    color: '#1a1a2e',
+    color: 'var(--ov-text)',
     background: 'transparent',
     cursor: 'pointer',
     whiteSpace: 'nowrap',
@@ -195,11 +193,11 @@ const s: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     background: 'rgba(13,148,136,0.07)',
   },
-  sep: { width: 1, height: 18, background: '#dde2e8', margin: '0 4px', flexShrink: 0 },
+  sep: { width: 1, height: 18, background: 'var(--ov-sep)', margin: '0 4px', flexShrink: 0 },
   btn: {
     position: 'relative',
     background: 'transparent',
-    color: '#1a1a2e',
+    color: 'var(--ov-text)',
     padding: '5px 8px',
     borderRadius: 8,
     fontSize: 16,

@@ -29,6 +29,7 @@ enum ClientMessage {
     case ctrlAltDel
     case setClipboardSync(enabled: Bool)
     case setInputEnabled(enabled: Bool)
+    case clipboardSetImage(data: String)
     case lockScreen
     case logout
     case restart
@@ -104,6 +105,8 @@ enum ClientMessage {
             return .setClipboardSync(enabled: json["enabled"] as? Bool ?? true)
         case "set_input_enabled":
             return .setInputEnabled(enabled: json["enabled"] as? Bool ?? true)
+        case "clipboard_set_image":
+            return .clipboardSetImage(data: json["data"] as? String ?? "")
         case "lock_screen":
             return .lockScreen
         case "logout":

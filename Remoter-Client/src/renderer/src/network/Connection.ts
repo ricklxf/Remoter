@@ -57,6 +57,7 @@ export class Connection {
   // Clipboard auto-sync
   private clipTimer: ReturnType<typeof setInterval> | null = null
   private lastClipText = ''
+  private lastClipImgLen = -1
 
   onEvent: ((e: ConnEvent) => void) | null = null
 
@@ -416,9 +417,16 @@ export class Connection {
       }
 
       case 'clipboard': {
-        const text = msg.text as string
-        this.lastClipText = text  // prevent echo on next poll
-        this.clipWrite(text)
+        const text  = msg.text  as string | undefined
+        const image = msg.image as string | undefined
+        if (text) {
+          this.lastClipText = text
+          this.clipWrite(text)
+        }
+        if (image) {
+          this.lastClipImgLen = image.length
+          this.clipWriteImage(image)
+        }
         break
       }
 
@@ -486,15 +494,59 @@ export class Connection {
     else navigator.clipboard.writeText(text).catch(() => {})
   }
 
+  private async clipReadImage(): Promise<string | null> {
+    if (window.remoterAPI?.readClipboardImage) {
+      return window.remoterAPI.readClipboardImage()
+    }
+    try {
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        if (item.types.includes('image/png')) {
+          const blob = await item.getType('image/png')
+          return new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve((reader.result as string).split(',')[1])
+            reader.readAsDataURL(blob)
+          })
+        }
+      }
+    } catch { /* ignore */ }
+    return null
+  }
+
+  private clipWriteImage(b64: string): void {
+    if (window.remoterAPI?.writeClipboardImage) {
+      window.remoterAPI.writeClipboardImage(b64)
+      return
+    }
+    try {
+      const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+      const blob  = new Blob([bytes], { type: 'image/png' })
+      navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).catch(() => {})
+    } catch { /* ignore */ }
+  }
+
   private startClipboardSync(): void {
     if (this.clipTimer) return
     this.clipRead().then(t => { this.lastClipText = t }).catch(() => {})
+    this.clipReadImage().then(img => { if (img) this.lastClipImgLen = img.length }).catch(() => {})
+
     this.clipTimer = setInterval(async () => {
       try {
         const text = await this.clipRead()
         if (text && text !== this.lastClipText) {
           this.lastClipText = text
           this.sendJson({ type: 'clipboard_set', text })
+        }
+      } catch { /* ignore */ }
+      try {
+        const img = await this.clipReadImage()
+        if (img && img.length !== this.lastClipImgLen) {
+          this.lastClipImgLen = img.length
+          // 4MB limit on raw PNG (base64 ~1.33× overhead)
+          if (img.length <= 5_600_000) {
+            this.sendJson({ type: 'clipboard_set_image', data: img })
+          }
         }
       } catch { /* ignore */ }
     }, 1000)

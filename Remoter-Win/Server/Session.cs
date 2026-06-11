@@ -20,6 +20,7 @@ sealed class Session
     private bool   _inputEnabled = true;
     private bool   _clipSync  = true;
     private string _lastClip  = "";
+    private int    _lastClipImgSize = -1;
     private uint   _frameId   = 0;
     private DateTime _connectTime;
 
@@ -136,6 +137,22 @@ sealed class Session
             case ClientMsg.ClipboardSet c:
                 _lastClip = c.Text;
                 SetClipboard(c.Text); break;
+
+            case ClientMsg.ClipboardSetImage ci:
+                if (!string.IsNullOrEmpty(ci.Data))
+                {
+                    try
+                    {
+                        var png = Convert.FromBase64String(ci.Data);
+                        if (SetClipboardImageFromPng(png))
+                        {
+                            var readback = GetClipboardImageBytes();
+                            _lastClipImgSize = readback?.Length ?? png.Length;
+                        }
+                    }
+                    catch { }
+                }
+                break;
 
             // ── File transfer ──────────────────────────────────────────
             case ClientMsg.FileStart f:
@@ -321,16 +338,28 @@ sealed class Session
     {
         if (_clipTimer != null) return;
         _lastClip = GetClipboard();
+        var initImg = GetClipboardImageBytes();
+        _lastClipImgSize = initImg?.Length ?? -1;
+
         _clipTimer = new System.Threading.Timer(_ =>
         {
             try
             {
                 if (!_clipSync) return;
+                // Text
                 var text = GetClipboard();
                 if (!string.IsNullOrEmpty(text) && text != _lastClip)
                 {
                     _lastClip = text;
                     Send(new { type = "clipboard", text });
+                }
+                // Image
+                var pngBytes = GetClipboardImageBytes();
+                if (pngBytes != null && pngBytes.Length != _lastClipImgSize)
+                {
+                    _lastClipImgSize = pngBytes.Length;
+                    if (pngBytes.Length <= 4 * 1024 * 1024)
+                        Send(new { type = "clipboard", image = Convert.ToBase64String(pngBytes) });
                 }
             }
             catch (Exception ex)
@@ -373,6 +402,76 @@ sealed class Session
             SetClipboardData(CF_UNICODETEXT, h);
         }
         finally { CloseClipboard(); }
+    }
+
+    private static byte[]? GetClipboardImageBytes()
+    {
+        if (!OpenClipboard(0)) return null;
+        try
+        {
+            var h = GetClipboardData(CF_DIB);
+            if (h == 0) return null;
+            var size = (int)GlobalSize(h);
+            if (size == 0) return null;
+            var p = GlobalLock(h);
+            if (p == 0) return null;
+            try
+            {
+                var dib = new byte[size];
+                Marshal.Copy((nint)p, dib, 0, size);
+
+                // Reconstruct BITMAPFILEHEADER (14 bytes) and prepend to DIB
+                var dibHeaderSize  = BitConverter.ToUInt32(dib, 0);
+                var bitCount       = BitConverter.ToUInt16(dib, 14);
+                var colorsUsed     = BitConverter.ToUInt32(dib, 32);
+                uint colorEntries  = colorsUsed != 0 ? colorsUsed
+                                   : bitCount  <= 8 ? (uint)(1 << bitCount) : 0u;
+                uint offBits       = 14 + dibHeaderSize + colorEntries * 4;
+
+                var bmpData = new byte[14 + size];
+                bmpData[0] = (byte)'B'; bmpData[1] = (byte)'M';
+                Buffer.BlockCopy(BitConverter.GetBytes((uint)(14 + size)), 0, bmpData,  2, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(offBits),            0, bmpData, 10, 4);
+                Buffer.BlockCopy(dib, 0, bmpData, 14, size);
+
+                using var ms    = new MemoryStream(bmpData);
+                using var bmp   = new System.Drawing.Bitmap(ms);
+                using var pngMs = new MemoryStream();
+                bmp.Save(pngMs, System.Drawing.Imaging.ImageFormat.Png);
+                return pngMs.ToArray();
+            }
+            finally { GlobalUnlock(h); }
+        }
+        catch { return null; }
+        finally { CloseClipboard(); }
+    }
+
+    private static bool SetClipboardImageFromPng(byte[] pngBytes)
+    {
+        try
+        {
+            using var pngMs  = new MemoryStream(pngBytes);
+            using var bmp    = new System.Drawing.Bitmap(pngMs);
+            using var bmpMs  = new MemoryStream();
+            bmp.Save(bmpMs, System.Drawing.Imaging.ImageFormat.Bmp);
+            var dib = bmpMs.ToArray()[14..]; // strip 14-byte BMP file header
+
+            if (!OpenClipboard(0)) return false;
+            try
+            {
+                EmptyClipboard();
+                var h = GlobalAlloc(GMEM_MOVEABLE, (nuint)dib.Length);
+                if (h == 0) return false;
+                var p = GlobalLock(h);
+                if (p == 0) { GlobalFree(h); return false; }
+                Marshal.Copy(dib, 0, (nint)p, dib.Length);
+                GlobalUnlock(h);
+                SetClipboardData(CF_DIB, h);
+                return true;
+            }
+            finally { CloseClipboard(); }
+        }
+        catch { return false; }
     }
 
     // ── System commands ───────────────────────────────────────────────────
@@ -442,6 +541,7 @@ sealed class Session
     [DllImport("kernel32.dll")] private static extern nuint GlobalLock(nuint hMem);
     [DllImport("kernel32.dll")] private static extern bool  GlobalUnlock(nuint hMem);
     [DllImport("kernel32.dll")] private static extern nuint GlobalFree(nuint hMem);
+    [DllImport("kernel32.dll")] private static extern nuint GlobalSize(nuint hMem);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(nint ProcessHandle, uint DesiredAccess, out nint TokenHandle);
@@ -457,6 +557,7 @@ sealed class Session
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     private const uint CF_UNICODETEXT = 13;
+    private const uint CF_DIB         = 8;
     private const uint GMEM_MOVEABLE  = 0x0002;
     private const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
     private const uint TOKEN_QUERY             = 0x0008;

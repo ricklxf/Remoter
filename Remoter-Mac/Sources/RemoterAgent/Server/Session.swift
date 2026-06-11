@@ -34,6 +34,7 @@ final class Session {
     // Clipboard auto-sync
     private var clipboardTimer: DispatchSourceTimer?
     private var lastClipboardContent = ""
+    private var lastClipboardImageSize: Int = -1
 
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
@@ -163,6 +164,18 @@ final class Session {
             lastClipboardContent = text   // prevent echo-back
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
+
+        case .clipboardSetImage(let data):
+            guard !data.isEmpty, let imgData = Data(base64Encoded: data) else { break }
+            lastClipboardImageSize = imgData.count
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.declareTypes([.png, .tiff], owner: nil)
+            pb.setData(imgData, forType: .png)
+            if let rep = NSBitmapImageRep(data: imgData),
+               let tiff = rep.representation(using: .tiff, properties: [:]) {
+                pb.setData(tiff, forType: .tiff)
+            }
 
         case .fileStart(let fid, let name, let size):
             fileReceiver?.start(id: fid, name: name, size: size)
@@ -376,18 +389,37 @@ final class Session {
 
     private func startClipboardMonitor() {
         lastClipboardContent = NSPasteboard.general.string(forType: .string) ?? ""
+        lastClipboardImageSize = clipboardImagePNG()?.count ?? -1
+
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + .milliseconds(500), repeating: .milliseconds(500))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
+            // Text
             let text = NSPasteboard.general.string(forType: .string) ?? ""
             if !text.isEmpty && text != self.lastClipboardContent {
                 self.lastClipboardContent = text
                 self.sendJson(["type": "clipboard", "text": text])
             }
+            // Image
+            guard let pngData = self.clipboardImagePNG() else { return }
+            guard pngData.count != self.lastClipboardImageSize else { return }
+            guard pngData.count <= 4 * 1024 * 1024 else { return }
+            self.lastClipboardImageSize = pngData.count
+            self.sendJson(["type": "clipboard", "image": pngData.base64EncodedString()])
         }
         timer.resume()
         clipboardTimer = timer
+    }
+
+    private func clipboardImagePNG() -> Data? {
+        let pb = NSPasteboard.general
+        if let png = pb.data(forType: .png) { return png }
+        if let tiff = pb.data(forType: .tiff),
+           let rep = NSBitmapImageRep(data: tiff) {
+            return rep.representation(using: .png, properties: [:])
+        }
+        return nil
     }
 
     private func stopClipboardMonitor() {

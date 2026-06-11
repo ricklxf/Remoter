@@ -27,6 +27,7 @@ public abstract record ClientMsg
     public record CtrlAltDel : ClientMsg;
     public record SetClipboardSync(bool Enabled) : ClientMsg;
     public record SetInputEnabled(bool Enabled) : ClientMsg;
+    public record ClipboardSetImage(string Data) : ClientMsg;
     public record LockScreen : ClientMsg;
     public record Logout : ClientMsg;
     public record Restart : ClientMsg;
@@ -56,9 +57,10 @@ public abstract record ClientMsg
             "request_file"      => new RequestFile(e.Str("path")),
             "set_muted"         => new SetMuted(e.Bool("muted")),
             "ctrl_alt_del"      => new CtrlAltDel(),
-            "set_clipboard_sync"=> new SetClipboardSync(e.Bool("enabled")),
-            "set_input_enabled" => new SetInputEnabled(e.Bool("enabled")),
-            "lock_screen"       => new LockScreen(),
+            "set_clipboard_sync"      => new SetClipboardSync(e.Bool("enabled")),
+            "set_input_enabled"       => new SetInputEnabled(e.Bool("enabled")),
+            "clipboard_set_image"     => new ClipboardSetImage(e.Str("data")),
+            "lock_screen"             => new LockScreen(),
             "logout"            => new Logout(),
             "restart"           => new Restart(),
             _                   => new Unknown(),

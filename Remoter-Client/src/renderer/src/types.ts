@@ -54,6 +54,8 @@ declare global {
       setTitleBarOverlay?: (color: string, symbolColor: string) => void
       readClipboard: () => Promise<string>
       writeClipboard: (text: string) => void
+      readClipboardImage: () => Promise<string | null>
+      writeClipboardImage: (data: string) => void
     }
   }
 }

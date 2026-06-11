@@ -59,7 +59,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         />
       )}
 
-      {/* Always-visible floating trigger button */}
+      {/* Always-visible floating trigger button — horizontally centered */}
       <button
         style={{
           ...styles.floatTrigger,
@@ -101,26 +101,28 @@ const styles: Record<string, React.CSSProperties> = {
   floatTrigger: {
     position: 'absolute',
     top: 10,
-    right: 10,
+    left: '50%',
+    transform: 'translateX(-50%)',
     zIndex: 120,
     display: 'flex',
     alignItems: 'center',
     gap: 4,
-    padding: '5px 10px',
-    background: 'rgba(20,20,25,0.7)',
-    backdropFilter: 'blur(8px)',
-    WebkitBackdropFilter: 'blur(8px)',
-    border: '1px solid rgba(255,255,255,0.12)',
-    borderRadius: 8,
-    color: 'rgba(255,255,255,0.85)',
+    padding: '5px 14px',
+    background: 'rgba(20,20,25,0.65)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    border: '1px solid rgba(255,255,255,0.15)',
+    borderRadius: 20,
+    color: 'rgba(255,255,255,0.88)',
     cursor: 'pointer',
     fontSize: 13,
     userSelect: 'none',
     pointerEvents: 'auto',
+    whiteSpace: 'nowrap',
   },
   floatTriggerActive: {
-    background: 'rgba(233,69,96,0.25)',
-    border: '1px solid rgba(233,69,96,0.4)',
+    background: 'rgba(233,69,96,0.3)',
+    border: '1px solid rgba(233,69,96,0.5)',
     color: '#fff',
   },
   floatBadge: {

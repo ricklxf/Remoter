@@ -35,7 +35,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: '#f0f4f8',
+    backgroundColor: '#0fb8ab',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isWin ? {
       titleBarOverlay: {

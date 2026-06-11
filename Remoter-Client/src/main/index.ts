@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, clipboard } from 'electron'
 import { writeFile, readdir, stat, readFile as fsReadFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -99,6 +99,9 @@ app.whenReady().then(() => {
   ipcMain.on('toggle-fullscreen', () => {
     if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen())
   })
+
+  ipcMain.handle('read-clipboard',  ()           => clipboard.readText())
+  ipcMain.on('write-clipboard',     (_e, text: string) => clipboard.writeText(text))
 
   ipcMain.on('set-title-bar-overlay', (_e, color: string, symbolColor: string) => {
     if (mainWindow && process.platform === 'win32') {

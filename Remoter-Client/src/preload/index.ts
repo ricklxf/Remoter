@@ -14,6 +14,8 @@ const api = {
   readFile:         (path: string): Promise<Uint8Array> => ipcRenderer.invoke('read-file', path),
   setTitleBarOverlay: (color: string, symbolColor: string): void =>
     ipcRenderer.send('set-title-bar-overlay', color, symbolColor),
+  readClipboard:  (): Promise<string> => ipcRenderer.invoke('read-clipboard'),
+  writeClipboard: (text: string): void => ipcRenderer.send('write-clipboard', text),
 }
 
 if (process.contextIsolated) {

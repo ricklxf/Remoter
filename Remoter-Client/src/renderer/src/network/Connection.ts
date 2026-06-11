@@ -412,7 +412,7 @@ export class Connection {
       case 'clipboard': {
         const text = msg.text as string
         this.lastClipText = text  // prevent echo on next poll
-        navigator.clipboard.writeText(text).catch(() => {})
+        window.remoterAPI?.writeClipboard(text)
         break
       }
 
@@ -473,15 +473,15 @@ export class Connection {
   private startClipboardSync(): void {
     if (this.clipTimer) return
     // Seed with current clipboard so we don't send stale content on connect
-    navigator.clipboard.readText().then(t => { this.lastClipText = t }).catch(() => {})
+    window.remoterAPI?.readClipboard().then(t => { this.lastClipText = t }).catch(() => {})
     this.clipTimer = setInterval(async () => {
       try {
-        const text = await navigator.clipboard.readText()
+        const text = await window.remoterAPI!.readClipboard()
         if (text && text !== this.lastClipText) {
           this.lastClipText = text
           this.sendJson({ type: 'clipboard_set', text })
         }
-      } catch { /* clipboard permission denied */ }
+      } catch { /* ignore */ }
     }, 1000)
   }
 

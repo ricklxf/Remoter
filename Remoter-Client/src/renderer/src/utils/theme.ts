@@ -17,7 +17,7 @@ export function getTheme(): Theme {
 
 const OVERLAY_COLORS: Record<'light' | 'dark', { color: string; symbolColor: string }> = {
   light: { color: '#0fb8ab', symbolColor: '#ffffff' },
-  dark:  { color: '#1a1a2e', symbolColor: '#eaeaea' },
+  dark:  { color: '#0d0d1a', symbolColor: '#eaeaea' },
 }
 
 export function applyTheme(t: Theme): void {

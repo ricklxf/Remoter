@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
+import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
 
 interface Props {
   conn: Connection
@@ -51,6 +52,8 @@ export function Toolbar({
       />
 
       <ControlMenu conn={conn} />
+
+      <KeymapMenu />
 
       <div style={s.sep} />
 
@@ -148,6 +151,84 @@ function ControlMenu({ conn }: { conn: Connection }) {
             <span style={s.ctrlItemIcon}>🔄</span>
             <span>重启计算机</span>
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Keyboard mapping menu ────────────────────────────────────────────
+
+const MODKEY_OPTS: Array<{ value: ModKey; label: string }> = [
+  { value: 'meta', label: 'Command ⌘' },
+  { value: 'ctrl', label: 'Control ^'  },
+  { value: 'alt',  label: 'Option ⌥'  },
+]
+
+const KEYMAP_ROWS: Array<{ field: keyof KeyMap; label: string }> = [
+  { field: 'ctrl', label: 'Ctrl 键' },
+  { field: 'meta', label: 'Windows / ⌘ 键' },
+  { field: 'alt',  label: 'Alt / Option 键' },
+]
+
+function KeymapMenu() {
+  const [open, setOpen] = useState(false)
+  const [km, setKm] = useState<KeyMap>(loadKeymap)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  function update(field: keyof KeyMap, val: ModKey) {
+    const next = { ...km, [field]: val }
+    setKm(next)
+    setKeymapGlobal(next)
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, gap: 5 }} onClick={() => setOpen(v => !v)}>
+        <span>键盘映射</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)',
+          background: 'var(--ov-popup-bg)', backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          border: '1px solid var(--ov-popup-bdr)', borderRadius: 10,
+          boxShadow: 'var(--ov-shadow)', zIndex: 200,
+          padding: '12px 14px 14px', minWidth: 260,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ov-text)', marginBottom: 3 }}>键盘设置</div>
+          <div style={{ fontSize: 11, color: 'var(--ov-text2)', marginBottom: 12, lineHeight: 1.4 }}>
+            控制该设备时的修饰键映射
+          </div>
+          {KEYMAP_ROWS.map(({ field, label }) => (
+            <div key={field} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: 'var(--ov-text2)' }}>{label}</span>
+              <select
+                value={km[field]}
+                onChange={e => update(field, e.target.value as ModKey)}
+                style={{
+                  background: 'var(--ov-input-bg)', color: 'var(--ov-text)',
+                  border: '1px solid var(--ov-input-bdr)', borderRadius: 6,
+                  padding: '3px 8px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                {MODKEY_OPTS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          ))}
         </div>
       )}
     </div>

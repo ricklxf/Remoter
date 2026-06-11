@@ -126,7 +126,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
   const rtt = tab.stats.rttMs
   const handleX = canClose ? onClose : onDisconnect
   const xTitle  = canClose ? '关闭标签页' : '断开连接'
-  const textColor = active ? '#1a1a2e' : 'rgba(255,255,255,0.88)'
+  const textColor = active ? 'var(--text)' : 'rgba(255,255,255,0.88)'
 
   return (
     <div
@@ -162,7 +162,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
       )}
 
       <button
-        style={{ ...s.closeBtn, color: active ? '#555' : 'rgba(255,255,255,0.7)' }}
+        style={{ ...s.closeBtn, color: active ? 'var(--text2)' : 'rgba(255,255,255,0.7)' }}
         onClick={e => { e.stopPropagation(); handleX() }}
         title={xTitle}
         // @ts-ignore
@@ -178,6 +178,11 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [popupPos, setPopupPos]   = useState<{ left: number; top: number } | null>(null)
   const hoveredTab = hoveredId ? (tabs.find(t => t.id === hoveredId) ?? null) : null
+
+  // Position of the active-tab connector strip
+  const spacerW   = isMac ? 72 : 8
+  const activeIdx = Math.max(0, tabs.findIndex(t => t.id === activeId))
+  const connLeft  = spacerW + activeIdx * 241   // 240px tab + 1px marginRight
 
   return (
     <>
@@ -209,6 +214,16 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
         >+</button>
 
         <div style={s.dragFill} />
+      </div>
+
+      {/* Connector strip — sibling of bar so it's not clipped by bar's overflow:hidden.
+          Active-tab slot shows content-area background; rest stays teal. */}
+      <div style={{ height: 2, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
+        <div style={{
+          position: 'absolute', top: 0, left: connLeft,
+          width: 240, height: 2,
+          background: 'var(--bg)',
+        }} />
       </div>
 
       {hoveredTab && popupPos && <StatsPopup tab={hoveredTab} pos={popupPos} />}
@@ -253,7 +268,7 @@ const s: Record<string, React.CSSProperties> = {
     // @ts-ignore
     WebkitAppRegion: 'no-drag',
   },
-  tabActive:   { background: '#f0faf9', boxShadow: '0 1px 0 #f0faf9' },
+  tabActive:   { background: 'var(--bg)' },
   tabInactive: { background: 'rgba(255,255,255,0.14)' },
   favicon:  { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
   tabLabel: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 },

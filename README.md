@@ -111,6 +111,27 @@ RemoterWin.exe --port 7789         # 指定端口
 
 **日志文件**：运行目录下 `remoter.log`，超过 10MB 自动轮转为 `remoter.log.bak`。
 
+### 内嵌 Web 客户端（可选）
+
+将 web 产物复制到 exe 同目录下的 `web/` 文件夹，启动时自动在端口 7799 提供服务：
+
+```bash
+# 1. 构建 web 产物
+cd Remoter-Client && npm run build:web   # 输出到 Remoter-Server/public/
+
+# 2. 将产物复制到 exe 旁边
+xcopy /E /I Remoter-Server\public publish\web
+
+# 3. 启动（有 web/ 时自动开启 7799）
+publish\RemoterWin.exe
+```
+
+启动日志示例（有 web/ 时额外打印 Web 地址）：
+
+```
+  Web : http://192.168.1.100:7799
+```
+
 ### 注意事项
 
 - **SendSAS（Ctrl+Alt+Delete）**：需在注册表启用软件 SAS，或以 SYSTEM 身份运行。普通用户模式下会退回 SendInput 注入（安全桌面外有效）。

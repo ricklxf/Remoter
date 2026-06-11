@@ -39,6 +39,7 @@ var (pin, port) = ParseArgs(args);
 var sessions    = new Dictionary<WsConn, Session>();
 var server      = new WebSocketServer();
 var admin       = new AdminServer(port, pin);
+var webFiles    = new WebFileServer();
 
 // Route all AppLog entries to the admin SSE stream
 AppLog.OnLog += admin.Log;
@@ -88,6 +89,7 @@ server.OnDisconnect = (conn) =>
 
 server.Start(port);
 admin.Start();
+webFiles.Start();
 
 var ips = GetLocalIPs();
 AppLog.Write("╔══════════════════════════════════╗");
@@ -98,7 +100,10 @@ AppLog.Write($"  Port: {port}");
 foreach (var ip in ips)
     AppLog.Write($"  LAN : ws://{ip}:{port}");
 AppLog.Write($"  Admin: http://localhost:{port + 2}/");
+if (webFiles.IsEnabled)
+    foreach (var ip in ips)
+        AppLog.Write($"  Web : http://{ip}:{WebFileServer.Port}/");
 AppLog.Write("Ready. Waiting for connections…");
 
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; server.Stop(); admin.Stop(); };
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; server.Stop(); admin.Stop(); webFiles.Stop(); };
 await Task.Delay(Timeout.Infinite);

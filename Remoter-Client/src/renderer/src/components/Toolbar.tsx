@@ -29,9 +29,9 @@ export function Toolbar({
   transferCount, onToggleTransfers, showTransfers,
 }: Props) {
   return (
-    <div style={styles.bar}>
+    <div style={s.bar}>
       <select
-        style={styles.select}
+        style={s.select}
         value={`${fps}:${bitrate}`}
         onChange={e => {
           const [f, b] = e.target.value.split(':').map(Number)
@@ -44,74 +44,80 @@ export function Toolbar({
         ))}
       </select>
 
-      <div style={styles.sep} />
+      <div style={s.sep} />
 
-      <ToolBtn
-        icon="📁"
-        title={showTransfers ? '关闭文件管理器' : '文件管理器'}
-        onClick={onToggleTransfers}
-        active={showTransfers}
-        badge={transferCount > 0 ? transferCount : undefined}
-      />
-      <ToolBtn
-        icon="📊"
-        title={showStats ? '隐藏网络状态' : '显示网络状态'}
-        onClick={onToggleStats}
-        active={showStats}
-      />
-      <ToolBtn icon="⛶"  title="全屏"         onClick={onToggleFullscreen} />
-      <ToolBtn icon="⊙"  title="隐藏工具栏" onClick={onHide} />
+      <ToolBtn icon="📁" title={showTransfers ? '关闭文件管理器' : '文件管理器'}
+        onClick={onToggleTransfers} active={showTransfers}
+        badge={transferCount > 0 ? transferCount : undefined} />
+      <ToolBtn icon="📊" title={showStats ? '隐藏网络状态' : '显示网络状态'}
+        onClick={onToggleStats} active={showStats} />
+      <ToolBtn icon="⛶"  title="全屏" onClick={onToggleFullscreen} />
+
+      <div style={s.sep} />
+
+      <ToolBtn icon="⊙" title="隐藏工具栏" onClick={onHide} />
     </div>
   )
 }
 
-function ToolBtn({ icon, title, onClick, danger, active, badge }: {
+function ToolBtn({ icon, title, onClick, active, badge }: {
   icon: string; title: string; onClick: () => void
-  danger?: boolean; active?: boolean; badge?: number
+  active?: boolean; badge?: number
 }) {
   return (
     <button
-      style={{
-        ...styles.btn,
-        ...(danger  ? styles.btnDanger : {}),
-        ...(active  ? styles.btnActive : {})
-      }}
+      style={{ ...s.btn, ...(active ? s.btnActive : {}) }}
       title={title}
       onClick={onClick}
     >
       {icon}
       {badge != null && badge > 0 && (
-        <span style={styles.badge}>{badge}</span>
+        <span style={s.badge}>{badge}</span>
       )}
     </button>
   )
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const s: Record<string, React.CSSProperties> = {
   bar: {
-    display: 'flex', alignItems: 'center', gap: 4,
-    background: 'rgba(15,15,26,0.92)', backdropFilter: 'blur(8px)',
-    padding: '6px 12px', borderRadius: 10,
+    display: 'flex', alignItems: 'center', gap: 2,
+    background: 'rgba(255,255,255,0.92)',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
+    padding: '5px 10px',
+    borderRadius: 20,
     position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
-    boxShadow: '0 2px 16px rgba(0,0,0,0.6)', zIndex: 100,
-    border: '1px solid rgba(255,255,255,0.08)'
+    boxShadow: '0 4px 20px rgba(0,0,0,0.15), 0 1px 4px rgba(0,0,0,0.08)',
+    zIndex: 100,
+    border: '1px solid rgba(0,0,0,0.09)',
+    pointerEvents: 'auto',
   },
   select: {
-    background: 'var(--bg3)', color: 'var(--text)', border: '1px solid #333',
-    borderRadius: 6, padding: '4px 8px', fontSize: 13, cursor: 'pointer'
+    background: '#f0f4f8',
+    color: '#1a1a2e',
+    border: '1px solid #c8d0da',
+    borderRadius: 8,
+    padding: '4px 8px',
+    fontSize: 12,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
   },
-  sep: { width: 1, height: 20, background: '#333', margin: '0 4px' },
+  sep: { width: 1, height: 18, background: '#dde2e8', margin: '0 4px', flexShrink: 0 },
   btn: {
     position: 'relative',
-    background: 'transparent', color: 'var(--text)',
-    padding: '6px 8px', borderRadius: 6, fontSize: 16
+    background: 'transparent',
+    color: '#1a1a2e',
+    padding: '5px 8px',
+    borderRadius: 8,
+    fontSize: 16,
+    cursor: 'pointer',
+    transition: 'background 0.1s',
   },
-  btnDanger: { color: 'var(--primary)' },
-  btnActive:  { background: 'rgba(255,255,255,0.1)' },
+  btnActive: { background: 'rgba(87,144,213,0.15)', color: '#3b74c4' },
   badge: {
     position: 'absolute',
     top: 2, right: 2,
-    background: 'var(--primary)',
+    background: '#e94560',
     color: '#fff',
     fontSize: 9,
     fontWeight: 700,
@@ -120,5 +126,5 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 14,
     textAlign: 'center',
     lineHeight: '14px',
-  }
+  },
 }

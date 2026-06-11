@@ -4,7 +4,26 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 
+// ─── Single-instance lock (fixes Windows double-click no-show) ─────
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+}
+
 let mainWindow: BrowserWindow | null = null
+
+function focusOrCreateWindow(): void {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  } else {
+    createWindow()
+  }
+}
+
+// Bring existing window to front when a second instance is launched
+app.on('second-instance', focusOrCreateWindow)
 
 function createWindow(): void {
   const isWin = process.platform === 'win32'
@@ -16,7 +35,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#f0f4f8',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isWin ? {
       titleBarOverlay: {
@@ -35,8 +54,18 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow!.show()
+    mainWindow!.focus()
   })
 
+  // Fallback: show window after a short delay in case ready-to-show is delayed
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  }, 800)
+
+  mainWindow.on('closed', () => { mainWindow = null })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -77,15 +106,12 @@ app.whenReady().then(() => {
     return filePath ?? null
   })
 
-  // Write file to disk (used after save-file-dialog returns a path)
   ipcMain.handle('save-file', async (_, filePath: string, data: Uint8Array) => {
     await writeFile(filePath, Buffer.from(data))
   })
 
-  // Home directory
   ipcMain.handle('home-dir', () => homedir())
 
-  // List directory contents
   ipcMain.handle('list-dir', async (_, dirPath: string) => {
     const expanded = dirPath.startsWith('~') ? join(homedir(), dirPath.slice(1)) : dirPath
     const names = await readdir(expanded)
@@ -104,7 +130,6 @@ app.whenReady().then(() => {
     return { path: expanded, entries }
   })
 
-  // Read local file for upload
   ipcMain.handle('read-file', async (_, filePath: string) => {
     return fsReadFile(filePath)
   })
@@ -113,6 +138,7 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else focusOrCreateWindow()
   })
 })
 

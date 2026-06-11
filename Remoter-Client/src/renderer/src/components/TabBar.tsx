@@ -131,15 +131,11 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
   const rtt = tab.stats.rttMs
   const handleX = canClose ? onClose : onDisconnect
   const xTitle  = canClose ? '关闭标签页' : '断开连接'
-  // When streaming, active tab sits directly above the black video area → use black bg + white text
-  const activeBg  = streaming ? '#000' : 'var(--bg)'
-  const textColor = active
-    ? (streaming ? 'rgba(255,255,255,0.9)' : 'var(--text)')
-    : 'rgba(255,255,255,0.88)'
+  const textColor = active ? 'var(--text)' : 'rgba(255,255,255,0.88)'
 
   return (
     <div
-      style={{ ...s.tab, background: active ? activeBg : 'rgba(255,255,255,0.14)' }}
+      style={{ ...s.tab, background: active ? 'var(--bg)' : 'rgba(255,255,255,0.14)' }}
       onClick={onSelect}
       onMouseEnter={onHover}
       onMouseLeave={onHoverEnd}
@@ -167,7 +163,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
       )}
 
       <button
-        style={{ ...s.closeBtn, color: active ? (streaming ? 'rgba(255,255,255,0.7)' : 'var(--text2)') : 'rgba(255,255,255,0.7)' }}
+        style={{ ...s.closeBtn, color: active ? 'var(--text2)' : 'rgba(255,255,255,0.7)' }}
         onClick={e => { e.stopPropagation(); handleX() }}
         title={xTitle}
         // @ts-ignore

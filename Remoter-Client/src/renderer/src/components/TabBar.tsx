@@ -184,8 +184,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
   const spacerW       = isMac ? 72 : 8
   const activeIdx     = Math.max(0, tabs.findIndex(t => t.id === activeId))
   const connLeft      = spacerW + activeIdx * 241   // 240px tab + 1px marginRight
-  const activeState   = tabs.find(t => t.id === activeId)?.state
-  const connectorBg   = activeState === 'streaming' ? '#000' : 'var(--bg)'
+  const connectorBg   = 'var(--bg)'
 
   return (
     <>

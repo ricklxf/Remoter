@@ -218,18 +218,10 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
         <div style={s.dragFill} />
       </div>
 
-      {/* Connector strip — active-tab slot + concave arcs via radial-gradient */}
-      <div style={{ height: CURVE, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
-        {/* Left arc: circle at bottom-right corner, content color inside → bar bg outside */}
-        <div style={{ position: 'absolute', top: 0, left: connLeft - CURVE,
-          width: CURVE, height: CURVE,
-          background: `radial-gradient(circle at 100% 100%, ${connectorBg} ${CURVE}px, transparent ${CURVE}px)` }} />
+      {/* Connector strip */}
+      <div style={{ height: 3, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
         <div style={{ position: 'absolute', top: 0, left: connLeft,
-          width: 240, height: CURVE, background: connectorBg }} />
-        {/* Right arc: circle at bottom-left corner */}
-        <div style={{ position: 'absolute', top: 0, left: connLeft + 240,
-          width: CURVE, height: CURVE,
-          background: `radial-gradient(circle at 0% 100%, ${connectorBg} ${CURVE}px, transparent ${CURVE}px)` }} />
+          width: 240, height: 3, background: connectorBg }} />
       </div>
 
       {hoveredTab && popupPos && <StatsPopup tab={hoveredTab} pos={popupPos} />}
@@ -241,7 +233,6 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
 
 const TEAL_DARK = '#0d9488'
 const BAR_BG = 'var(--bar-bg)'
-const CURVE = 8  // px — radius of the concave arc at active-tab bottom corners
 
 const s: Record<string, React.CSSProperties> = {
   bar: {

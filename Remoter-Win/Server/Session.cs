@@ -369,7 +369,7 @@ sealed class Session
         // SendSAS() in sas.dll — may require "Software\Microsoft\Windows\CurrentVersion\Policies\System"
         // AllowSoftwareSAS=1 registry key or running as SYSTEM.
         // Fallback: inject Ctrl+Alt+Del via SendInput (works for non-UAC scenarios).
-        try { NativeSendSAS(0); }
+        try { NativeSendSAS(false); }
         catch
         {
             // Fallback: keyboard injection (doesn't trigger SAS in secure desktops)

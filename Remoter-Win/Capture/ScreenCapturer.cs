@@ -4,6 +4,9 @@ using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 
+// Suppress the MapFlags ambiguity — we always mean D3D11 here
+using D3D11MapFlags = Vortice.Direct3D11.MapFlags;
+
 namespace RemoterWin;
 
 // DXGI Desktop Duplication — GPU-side capture, CPU staging texture, GDI+ JPEG encode.
@@ -34,39 +37,38 @@ sealed class ScreenCapturer : IDisposable
 
     public void Initialize()
     {
+        // 3.5.0: context parameter removed from D3D11CreateDevice; use ImmediateContext instead
         D3D11.D3D11CreateDevice(
-            adapter:       null,
-            driverType:    DriverType.Hardware,
-            flags:         DeviceCreationFlags.None,
-            featureLevels: [FeatureLevel.Level_11_0],
-            device:        out _device!,
-            context:       out _context!
+            null,
+            DriverType.Hardware,
+            DeviceCreationFlags.None,
+            [FeatureLevel.Level_11_0],
+            out _device!
         ).CheckError();
+        _context = _device.ImmediateContext;
 
-        using var dxgiDev  = _device.QueryInterface<IDXGIDevice1>();
-        using var adapter  = dxgiDev.GetParent<IDXGIAdapter1>();
-        using var output   = adapter.EnumOutputs(0);
+        using var dxgiDev = _device.QueryInterface<IDXGIDevice1>();
+        using var adapter = dxgiDev.GetParent<IDXGIAdapter1>();
 
-        var desc = output.Description;
-        Width  = desc.DesktopCoordinates.Right  - desc.DesktopCoordinates.Left;
-        Height = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
-
-        using var output1 = output.QueryInterface<IDXGIOutput1>();
-        _dup = output1.DuplicateOutput(_device);
-
-        _staging = _device.CreateTexture2D(new Texture2DDescription
+        // 3.5.0: EnumOutputs now uses out-parameter; returns Result, not IDXGIOutput
+        adapter.EnumOutputs(0, out IDXGIOutput output).CheckError();
+        using (output)
         {
-            Width              = Width,
-            Height             = Height,
-            MipLevels          = 1,
-            ArraySize          = 1,
-            Format             = Format.B8G8R8A8_UNorm,
-            SampleDescription  = new SampleDescription(1, 0),
-            Usage              = ResourceUsage.Staging,
-            BindFlags          = BindFlags.None,
-            CpuAccessFlags     = CpuAccessFlags.Read,
-            MiscFlags          = ResourceOptionFlags.None,
-        });
+            var desc = output.Description;
+            Width  = desc.DesktopCoordinates.Right  - desc.DesktopCoordinates.Left;
+            Height = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
+
+            using var output1 = output.QueryInterface<IDXGIOutput1>();
+            _dup = output1.DuplicateOutput(_device);
+        }
+
+        // Use convenience overload to avoid Texture2DDescription struct field name changes in 3.5.0
+        _staging = _device.CreateTexture2D(
+            Format.B8G8R8A8_UNorm, Width, Height,
+            usage:          ResourceUsage.Staging,
+            bindFlags:      BindFlags.None,
+            cpuAccessFlags: CpuAccessFlags.Read
+        );
 
         Console.WriteLine($"[Capturer] {Width}x{Height} DXGI Desktop Duplication ready");
     }
@@ -82,7 +84,6 @@ sealed class ScreenCapturer : IDisposable
 
         if (hr.Code == DXGI_ERROR_ACCESS_LOST)
         {
-            // e.g. screen locked, fullscreen app, RDP reconnect
             TryReinitDuplication();
             return null;
         }
@@ -99,7 +100,8 @@ sealed class ScreenCapturer : IDisposable
             _dup.ReleaseFrame();
         }
 
-        var mapped = _context.Map(_staging, 0, MapMode.Read, MapFlags.None);
+        // 3.5.0: qualify MapFlags to avoid ambiguity with Vortice.DXGI.MapFlags
+        var mapped = _context.Map(_staging, 0, MapMode.Read, D3D11MapFlags.None);
         try
         {
             return EncodeJpeg(mapped.DataPointer, mapped.RowPitch, Width, Height);
@@ -128,17 +130,18 @@ sealed class ScreenCapturer : IDisposable
 
             using var dxgiDev = _device.QueryInterface<IDXGIDevice1>();
             using var adapter = dxgiDev.GetParent<IDXGIAdapter1>();
-            using var output  = adapter.EnumOutputs(0);
-            using var out1    = output.QueryInterface<IDXGIOutput1>();
-            _dup = out1.DuplicateOutput(_device);
-            _staging = _device.CreateTexture2D(new Texture2DDescription
+            adapter.EnumOutputs(0, out IDXGIOutput output).CheckError();
+            using (output)
             {
-                Width = Width, Height = Height, MipLevels = 1, ArraySize = 1,
-                Format = Format.B8G8R8A8_UNorm,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
-                CpuAccessFlags = CpuAccessFlags.Read, MiscFlags = ResourceOptionFlags.None,
-            });
+                using var out1 = output.QueryInterface<IDXGIOutput1>();
+                _dup = out1.DuplicateOutput(_device);
+            }
+            _staging = _device.CreateTexture2D(
+                Format.B8G8R8A8_UNorm, Width, Height,
+                usage:          ResourceUsage.Staging,
+                bindFlags:      BindFlags.None,
+                cpuAccessFlags: CpuAccessFlags.Read
+            );
             Console.WriteLine("[Capturer] DXGI duplication reinitialised");
         }
         catch (Exception ex)

@@ -92,9 +92,15 @@ PLIST
 echo "✅ Built: $APP_DIR"
 
 # ── 嵌入 Web 客户端（可选）────────────────────────────────────────────────
-WEB_DIST="$PKG_DIR/../Remoter-Client/dist-web"
+# 优先读 Remoter-Server/public（build:web 的默认输出），兼容旧路径 dist-web
+WEB_DIST=""
+if [ -d "$PKG_DIR/../Remoter-Server/public" ]; then
+    WEB_DIST="$PKG_DIR/../Remoter-Server/public"
+elif [ -d "$PKG_DIR/../Remoter-Client/dist-web" ]; then
+    WEB_DIST="$PKG_DIR/../Remoter-Client/dist-web"
+fi
 RESOURCES_DIR="$APP_DIR/Contents/Resources"
-if [ -d "$WEB_DIST" ]; then
+if [ -n "$WEB_DIST" ]; then
     echo ""
     echo "▶ 嵌入 Web 客户端…"
     mkdir -p "$RESOURCES_DIR"

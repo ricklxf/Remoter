@@ -95,7 +95,7 @@ RemoterWin.exe --pin 123456        # 指定 PIN
 RemoterWin.exe --port 7789         # 指定端口
 ```
 
-启动后控制台打印 PIN 码和局域网地址：
+启动后控制台打印 PIN 码和局域网地址（日志同时写入 `remoter.log`）：
 
 ```
 ╔══════════════════════════════════╗
@@ -104,7 +104,12 @@ RemoterWin.exe --port 7789         # 指定端口
   PIN : 481623
   Port: 7788
   LAN : ws://192.168.1.100:7788
+  Admin: http://localhost:7790
 ```
+
+**管理控制台**：浏览器访问 `http://localhost:7790`（端口 = 主端口 + 2），可查看实时日志、修改 PIN、查看连接状态。
+
+**日志文件**：运行目录下 `remoter.log`，超过 10MB 自动轮转为 `remoter.log.bak`。
 
 ### 注意事项
 
@@ -145,13 +150,13 @@ npm run dev           # 开发模式
 
 同一套代码也能构建为网页，在 Chrome / Edge / Safari 等浏览器中直接打开。
 
-**推荐方式：内嵌到 Mac app（一步到位）**
+**方式一：内嵌到 Mac app（局域网直连，一步到位）**
 
 ```bash
-# 1. 构建 web 产物
+# 1. 构建 web 产物（输出到 Remoter-Server/public/）
 cd Remoter-Client
 npm install
-npm run build:web          # 输出到 Remoter-Client/dist-web/
+npm run build:web
 
 # 2. 打包 Mac app（自动将 web 产物嵌入 bundle）
 cd ../Remoter-Mac
@@ -160,6 +165,17 @@ bash scripts/build-app.sh
 
 启动 Mac app 后，菜单栏会显示 Web 客户端地址（如 `http://192.168.1.144:7799`）。用其他设备的浏览器打开该地址即可连接。
 
+**方式二：通过中继服务器托管（跨网络访问）**
+
+```bash
+cd Remoter-Server
+npm install
+npm run build:all   # 同时构建 web 客户端和服务端
+npm start           # 默认端口 7789，访问 http://your-server:7789
+```
+
+构建后 `Remoter-Server/public/` 目录包含完整 web 客户端，访问中继服务器地址即可打开。支持 HTTPS 部署（设置 `TLS_CERT` / `TLS_KEY` 环境变量后 `crypto.subtle` E2E 加密生效）。
+
 **开发/调试模式**
 
 ```bash
@@ -167,15 +183,9 @@ cd Remoter-Client
 npm run dev:web        # 在 http://localhost:5174 启动本地开发服务器
 ```
 
-**独立部署**
-
-```bash
-cd Remoter-Client
-npm run build:web
-npx serve dist-web -p 7799
-```
-
 > **浏览器兼容性**：Chrome 94+ / Edge 94+ / Safari 15.4+，推荐 Chrome（WebCodecs 支持最完整）。
+>
+> **E2E 加密**：`crypto.subtle` 仅在 HTTPS 或 localhost 下可用，HTTP 访问下 E2E 自动降级为明文传输，控制消息依然经 PIN 验证。
 
 ---
 

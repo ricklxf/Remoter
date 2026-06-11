@@ -40,14 +40,14 @@ var sessions    = new Dictionary<WsConn, Session>();
 var server      = new WebSocketServer();
 var admin       = new AdminServer(port, pin);
 
-// Unified log: both console and admin SSE stream
-void Log(string msg) { Console.WriteLine(msg); admin.Log(msg); }
+// Route all AppLog entries to the admin SSE stream
+AppLog.OnLog += admin.Log;
 
 // PIN hot-change from admin UI
 admin.OnPinChange = newPin =>
 {
     pin = newPin;
-    Log($"[Agent] PIN updated to {newPin}");
+    AppLog.Write($"[Agent] PIN updated to {newPin}");
 };
 
 server.OnConnect = (conn) =>
@@ -55,7 +55,7 @@ server.OnConnect = (conn) =>
     var s = new Session(conn, pin);
     lock (sessions) sessions[conn] = s;
     s.Start();
-    Log($"[Agent] {conn.RemoteAddr} connected ({sessions.Count} active)");
+    AppLog.Write($"[Agent] {conn.RemoteAddr} connected ({sessions.Count} active)");
     admin.SetConnCount(sessions.Count);
 };
 
@@ -82,7 +82,7 @@ server.OnDisconnect = (conn) =>
         sessions.Remove(conn);
     }
     s?.Close();
-    Log($"[Agent] {conn.RemoteAddr} disconnected ({sessions.Count} active)");
+    AppLog.Write($"[Agent] {conn.RemoteAddr} disconnected ({sessions.Count} active)");
     admin.SetConnCount(sessions.Count);
 };
 
@@ -90,15 +90,15 @@ server.Start(port);
 admin.Start();
 
 var ips = GetLocalIPs();
-Log("╔══════════════════════════════════╗");
-Log("║      Remoter Windows Agent        ║");
-Log("╚══════════════════════════════════╝");
-Log($"  PIN : {pin}");
-Log($"  Port: {port}");
+AppLog.Write("╔══════════════════════════════════╗");
+AppLog.Write("║      Remoter Windows Agent        ║");
+AppLog.Write("╚══════════════════════════════════╝");
+AppLog.Write($"  PIN : {pin}");
+AppLog.Write($"  Port: {port}");
 foreach (var ip in ips)
-    Log($"  LAN : ws://{ip}:{port}");
-Log($"  Admin: http://localhost:{port + 2}/");
-Log("\nReady. Waiting for connections…\n");
+    AppLog.Write($"  LAN : ws://{ip}:{port}");
+AppLog.Write($"  Admin: http://localhost:{port + 2}/");
+AppLog.Write("Ready. Waiting for connections…");
 
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; server.Stop(); admin.Stop(); };
 await Task.Delay(Timeout.Infinite);

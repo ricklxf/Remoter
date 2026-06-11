@@ -75,7 +75,7 @@ sealed class InputController
         if (KeyCodeToVk.TryGetValue(code, out var vk))
             SendKey(vk, down);
         else
-            Console.WriteLine($"[Input] Unknown key code: {code}");
+            AppLog.Write($"[Input] Unknown key code: {code}");
 
         if (!down)
         {

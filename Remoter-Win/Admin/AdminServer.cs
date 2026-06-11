@@ -50,7 +50,7 @@ sealed class AdminServer
         try
         {
             _http.Start();
-            Console.WriteLine($"[Admin] Console at http://localhost:{adminPort}/");
+            AppLog.Write($"[Admin] Console at http://localhost:{adminPort}/");
             _ = AcceptLoopAsync();
         }
         catch (HttpListenerException)
@@ -62,12 +62,12 @@ sealed class AdminServer
             try
             {
                 fallback.Start();
-                Console.WriteLine($"[Admin] Console at http://localhost:{adminPort}/ (localhost only)");
+                AppLog.Write($"[Admin] Console at http://localhost:{adminPort}/ (localhost only)");
                 _ = AcceptLoopAsync(fallback);
             }
             catch (Exception ex2)
             {
-                Console.WriteLine($"[Admin] Could not start admin server: {ex2.Message}");
+                AppLog.Write($"[Admin] Could not start admin server: {ex2.Message}");
             }
         }
     }

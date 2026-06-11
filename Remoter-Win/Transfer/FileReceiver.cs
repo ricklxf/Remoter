@@ -16,9 +16,9 @@ sealed class FileReceiver
             var path = Path.Combine(_destDir, SanitizeName(name));
             var fs   = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
             _transfers[id] = new Transfer(name, size, fs);
-            Console.WriteLine($"[FileReceiver] Receiving {name} ({size} bytes) → {path}");
+            AppLog.Write($"[FileReceiver] Receiving {name} ({size} bytes) → {path}");
         }
-        catch (Exception ex) { Console.WriteLine($"[FileReceiver] Start error: {ex.Message}"); }
+        catch (Exception ex) { AppLog.Write($"[FileReceiver] Start error: {ex.Message}"); }
     }
 
     public void Receive(string id, long offset, byte[] chunk)
@@ -34,7 +34,7 @@ sealed class FileReceiver
         _transfers.Remove(id);
         t.Stream.Flush();
         t.Stream.Dispose();
-        Console.WriteLine($"[FileReceiver] Completed {t.Name}");
+        AppLog.Write($"[FileReceiver] Completed {t.Name}");
     }
 
     private static string SanitizeName(string name)

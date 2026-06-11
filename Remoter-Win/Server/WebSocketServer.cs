@@ -20,7 +20,7 @@ sealed class WebSocketServer
     {
         _listener = new TcpListener(IPAddress.Any, port);
         _listener.Start();
-        Console.WriteLine($"[Server] Listening on :{port}");
+        AppLog.Write($"[Server] Listening on :{port}");
         _ = AcceptLoopAsync();
     }
 

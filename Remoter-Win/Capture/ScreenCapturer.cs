@@ -70,7 +70,7 @@ sealed class ScreenCapturer : IDisposable
             cpuAccessFlags: CpuAccessFlags.Read
         );
 
-        Console.WriteLine($"[Capturer] {Width}x{Height} DXGI Desktop Duplication ready");
+        AppLog.Write($"[Capturer] {Width}x{Height} DXGI Desktop Duplication ready");
     }
 
     // Returns JPEG bytes, or null if no new frame was available within timeoutMs.
@@ -142,11 +142,11 @@ sealed class ScreenCapturer : IDisposable
                 bindFlags:      BindFlags.None,
                 cpuAccessFlags: CpuAccessFlags.Read
             );
-            Console.WriteLine("[Capturer] DXGI duplication reinitialised");
+            AppLog.Write("[Capturer] DXGI duplication reinitialised");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Capturer] Reinit failed: {ex.Message}");
+            AppLog.Write($"[Capturer] Reinit failed: {ex.Message}");
             Thread.Sleep(500);
         }
     }

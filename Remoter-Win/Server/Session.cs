@@ -34,7 +34,7 @@ sealed class Session
 
     public void Start()
     {
-        Console.WriteLine($"[Session] {_conn.RemoteAddr} connected");
+        AppLog.Write($"[Session] {_conn.RemoteAddr} connected");
         // Send hello with our E2E public key so client initiates ECDH
         SendRaw(new { type = "hello", version = "1.0", os = "Windows",
                       pubkey = _crypto.PublicKeyBase64() });
@@ -47,7 +47,7 @@ sealed class Session
             var doc = JsonDocument.Parse(text);
             Route(ClientMsg.Parse(doc.RootElement));
         }
-        catch (Exception ex) { Console.WriteLine($"[Session] ParseError: {ex.Message}"); }
+        catch (Exception ex) { AppLog.Write($"[Session] ParseError: {ex.Message}"); }
     }
 
     public void HandleBinary(byte[] data)
@@ -63,7 +63,7 @@ sealed class Session
                 var doc   = JsonDocument.Parse(plain);
                 Route(ClientMsg.Parse(doc.RootElement));
             }
-            catch (Exception ex) { Console.WriteLine($"[Session] Decrypt error: {ex.Message}"); }
+            catch (Exception ex) { AppLog.Write($"[Session] Decrypt error: {ex.Message}"); }
             return;
         }
 
@@ -110,7 +110,7 @@ sealed class Session
             // if (auth.Pin != _pin) { Send(new { type = "error", code = "bad_pin" }); return; }
             _ = auth;
             _authed = true;
-            Console.WriteLine($"[Session] {_conn.RemoteAddr} authenticated");
+            AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated");
             Send(new { type = "auth_ok" });
             _ = BeginCaptureAsync();
             return;
@@ -213,7 +213,7 @@ sealed class Session
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Session] Capture error: {ex.Message}");
+            AppLog.Write($"[Session] Capture error: {ex.Message}");
             try { Send(new { type = "error", code = "capture_failed", message = ex.Message }); } catch { }
         }
         finally
@@ -335,7 +335,7 @@ sealed class Session
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Session] Clipboard poll error: {ex.Message}");
+                AppLog.Write($"[Session] Clipboard poll error: {ex.Message}");
             }
         }, null, 500, 500);
     }

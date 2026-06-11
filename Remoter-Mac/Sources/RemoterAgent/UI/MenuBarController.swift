@@ -8,6 +8,7 @@ struct AgentStatus {
     var pin: String
     var sessionId: String?
     var localIPs: [String]
+    var vpnIPs: [String] = []   // Tailscale (100.x.x.x) / ZeroTier (zt*)
     var connectedClients: Int
     var webEnabled: Bool = false
 }
@@ -136,6 +137,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             header.isEnabled = false
             menu.addItem(header)
             for ip in status.localIPs {
+                let item = NSMenuItem(title: "  ws://\(ip):7788",
+                                      action: #selector(copyIP(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = ip
+                menu.addItem(item)
+            }
+        }
+
+        // ── VPN 地址（Tailscale / ZeroTier）─────────────────────
+        if !status.vpnIPs.isEmpty {
+            menu.addItem(.separator())
+            let vpnHeader = NSMenuItem(title: "VPN 地址 (Tailscale/ZeroTier)", action: nil, keyEquivalent: "")
+            vpnHeader.isEnabled = false
+            menu.addItem(vpnHeader)
+            for ip in status.vpnIPs {
                 let item = NSMenuItem(title: "  ws://\(ip):7788",
                                       action: #selector(copyIP(_:)),
                                       keyEquivalent: "")

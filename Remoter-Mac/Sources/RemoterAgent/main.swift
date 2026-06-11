@@ -58,15 +58,18 @@ final class RemoterAgent {
         try wsServer.start(port: config.port)
         httpServer.start(port: 7799)
 
-        let ips = getLocalIPs()
+        let ips    = getLocalIPs()
+        let vpnIPs = getVPNIPs()
         print("╔══════════════════════════════════╗")
         print("║        Remoter Mac Agent          ║")
         print("╚══════════════════════════════════╝")
         print("  PIN : \(pin)")
         print("  Port: \(config.port)")
-        ips.forEach { print("  LAN : ws://\($0):\(config.port)") }
+        ips.forEach    { print("  LAN : ws://\($0):\(config.port)") }
+        vpnIPs.forEach { print("  VPN : ws://\($0):\(config.port)") }
         if httpServer.isEnabled {
-            ips.forEach { print("  Web : http://\($0):7799") }
+            ips.forEach    { print("  Web : http://\($0):7799") }
+            vpnIPs.forEach { print("  Web : http://\($0):7799") }
         }
 
         if !config.relayURL.isEmpty, let url = URL(string: config.relayURL) {
@@ -132,6 +135,7 @@ final class RemoterAgent {
             pin: pin,
             sessionId: relaySessionId,
             localIPs: getLocalIPs(),
+            vpnIPs: getVPNIPs(),
             connectedClients: sessions.count,
             webEnabled: httpServer.isEnabled
         )
@@ -147,8 +151,9 @@ final class RemoterAgent {
 
 // MARK: - Helpers
 
-func getLocalIPs() -> [String] {
-    var addresses: [String] = []
+// Returns all non-loopback IPv4 addresses with their interface name.
+func getIfaceAddresses() -> [(ifname: String, ip: String)] {
+    var result: [(String, String)] = []
     var ifaddr: UnsafeMutablePointer<ifaddrs>?
     guard getifaddrs(&ifaddr) == 0 else { return [] }
     defer { freeifaddrs(ifaddr) }
@@ -156,16 +161,31 @@ func getLocalIPs() -> [String] {
     while let p = ptr {
         let fa = p.pointee
         if fa.ifa_addr.pointee.sa_family == UInt8(AF_INET) {
+            let name = String(cString: fa.ifa_name)
             var addr = fa.ifa_addr.pointee
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             getnameinfo(&addr, socklen_t(fa.ifa_addr.pointee.sa_len),
                         &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
             let ip = String(cString: host)
-            if ip != "127.0.0.1" { addresses.append(ip) }
+            if ip != "127.0.0.1" { result.append((name, ip)) }
         }
         ptr = fa.ifa_next
     }
-    return addresses
+    return result
+}
+
+// Tailscale uses the CGNAT range 100.64.0.0/10 (100.64–100.127).
+// ZeroTier interface names start with "zt".
+func isVPNIface(_ ifname: String, _ ip: String) -> Bool {
+    ip.hasPrefix("100.") || ifname.hasPrefix("zt")
+}
+
+func getLocalIPs() -> [String] {
+    getIfaceAddresses().filter { !isVPNIface($0.ifname, $0.ip) }.map { $0.ip }
+}
+
+func getVPNIPs() -> [String] {
+    getIfaceAddresses().filter { isVPNIface($0.ifname, $0.ip) }.map { $0.ip }
 }
 
 // MARK: - Entry point

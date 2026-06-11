@@ -239,17 +239,63 @@ npm run dev:web        # http://localhost:5174
 
 ## 跨网络连接
 
-### WireGuard / VPN（推荐）
+### 方案一：Tailscale / ZeroTier（推荐，零配置）
 
-两端接入同一 WireGuard 网络后，直接填 WireGuard 虚拟 IP 连接：
+两台设备安装同一 VPN 客户端后，Remoter 无需任何改动，直接用虚拟 IP 直连：
+
+| VPN | 免费额度 | 安装 |
+|-----|---------|------|
+| **Tailscale** | 个人免费，最多 3 台设备，无带宽限制 | [tailscale.com](https://tailscale.com/download) |
+| **ZeroTier** | 个人免费，最多 25 台设备 | [zerotier.com](https://www.zerotier.com/download) |
+
+安装并登录同一账号后，Mac 菜单栏「VPN 地址」节会自动显示虚拟 IP：
 
 ```
-客户端 (10.0.0.2) ──── WireGuard ──── 被控端 (10.0.0.3)
+VPN 地址 (Tailscale/ZeroTier)
+  ws://100.95.x.x:7788   ← 点击复制
 ```
 
-### 中继服务器（可选）
+控制端连接地址直接填这个 IP 即可，流量走 P2P，不过任何服务器。
 
-适用于无法使用 VPN 的场景，部署到任意 Node.js 环境：
+---
+
+### 方案二：Cloudflare Tunnel（免费公网域名，无需账号）
+
+不安装 VPN 时，用 cloudflared 把被控端端口临时暴露到公网，自动获得 HTTPS/WSS 域名：
+
+**Mac 被控端**
+
+```bash
+# 安装 cloudflared
+brew install cloudflare/cloudflare/cloudflared
+
+# 启动隧道（先启动 RemoterAgent，再运行此脚本）
+bash Remoter-Mac/scripts/cloudflare-tunnel.sh
+```
+
+**Win 被控端**
+
+```powershell
+# 下载 cloudflared-windows-amd64.exe → 改名 cloudflared.exe → 放到 PATH
+# https://github.com/cloudflare/cloudflared/releases/latest
+
+# 启动隧道（先启动 RemoterWin.exe，再运行此脚本）
+.\Remoter-Win\scripts\cloudflare-tunnel.ps1
+```
+
+脚本运行后会打印类似：
+
+```
+https://abc-def-ghi.trycloudflare.com
+```
+
+把 `https://` 换成 `wss://` 填入控制端「直连地址」即可。每次重启隧道域名会变化；WSS 连接意味着 E2E 加密自动生效。
+
+---
+
+### 方案三：自建中继服务器
+
+适用于需要固定地址或多人共享的场景，部署到任意 Node.js 环境：
 
 ```bash
 cd Remoter-Server
@@ -269,6 +315,16 @@ RemoterWin.exe --relay ws://your-server:7789
 ```
 
 控制端填写中继服务器地址（`ws://your-server:7789`）和被控端 PIN 即可跨网络连接。
+
+---
+
+### 方案四：WireGuard / 其他 VPN
+
+两端接入同一 WireGuard 网络后，直接填虚拟 IP 连接，原理与 Tailscale 相同：
+
+```
+客户端 (10.0.0.2) ──── WireGuard ──── 被控端 (10.0.0.3)
+```
 
 ---
 

@@ -1,6 +1,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  --bar-bg:   #0fb8ab;
   --bg:       #f0f4f8;
   --bg2:      #ffffff;
   --bg3:      #f1f5f9;
@@ -26,6 +27,7 @@
 }
 
 [data-theme="dark"] {
+  --bar-bg: #1a1a2e;
   --bg:     #0f0f1a;
   --bg2:    #1a1a2e;
   --bg3:    #16213e;

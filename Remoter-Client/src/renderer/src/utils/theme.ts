@@ -15,10 +15,18 @@ export function getTheme(): Theme {
   return (localStorage.getItem(KEY) as Theme) ?? 'system'
 }
 
+const OVERLAY_COLORS: Record<'light' | 'dark', { color: string; symbolColor: string }> = {
+  light: { color: '#0fb8ab', symbolColor: '#ffffff' },
+  dark:  { color: '#0f0f1a', symbolColor: '#eaeaea' },
+}
+
 export function applyTheme(t: Theme): void {
-  document.documentElement.setAttribute('data-theme', resolved(t))
+  const r = resolved(t)
+  document.documentElement.setAttribute('data-theme', r)
   localStorage.setItem(KEY, t)
   window.dispatchEvent(new Event(CHANGE_EVENT))
+  const ov = OVERLAY_COLORS[r]
+  window.remoterAPI?.setTitleBarOverlay?.(ov.color, ov.symbolColor)
 }
 
 export function initTheme(): void {

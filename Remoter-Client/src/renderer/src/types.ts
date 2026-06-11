@@ -51,6 +51,7 @@ declare global {
       homeDir: () => Promise<string>
       listDir: (path: string) => Promise<{ path: string; entries: DirEntry[] }>
       readFile: (path: string) => Promise<Uint8Array>
+      setTitleBarOverlay?: (color: string, symbolColor: string) => void
     }
   }
 }

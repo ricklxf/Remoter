@@ -12,6 +12,8 @@ const api = {
   listDir:          (path: string): Promise<{ path: string; entries: Array<{ name: string; size: number; isDir: boolean; modified: number }> }> =>
     ipcRenderer.invoke('list-dir', path),
   readFile:         (path: string): Promise<Uint8Array> => ipcRenderer.invoke('read-file', path),
+  setTitleBarOverlay: (color: string, symbolColor: string): void =>
+    ipcRenderer.send('set-title-bar-overlay', color, symbolColor),
 }
 
 if (process.contextIsolated) {

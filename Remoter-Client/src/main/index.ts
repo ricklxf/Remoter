@@ -35,7 +35,8 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: '#f0f4f8',
+    // Windows: teal matches the tab bar so there's no color gap before React renders
+    backgroundColor: isWin ? '#0fb8ab' : '#f0f4f8',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isWin ? {
       titleBarOverlay: {
@@ -50,6 +51,14 @@ function createWindow(): void {
       sandbox: false,
       contextIsolation: true
     }
+  })
+
+  // Grant clipboard-read permission so navigator.clipboard.readText() works in the renderer
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'clipboard-read' || permission === 'clipboard-sanitized-write')
+  })
+  mainWindow.webContents.session.setPermissionCheckHandler((_wc, permission) => {
+    return permission === 'clipboard-read' || permission === 'clipboard-sanitized-write'
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -89,6 +98,12 @@ app.whenReady().then(() => {
   // Window controls
   ipcMain.on('toggle-fullscreen', () => {
     if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen())
+  })
+
+  ipcMain.on('set-title-bar-overlay', (_e, color: string, symbolColor: string) => {
+    if (mainWindow && process.platform === 'win32') {
+      mainWindow.setTitleBarOverlay({ color, symbolColor, height: 36 })
+    }
   })
   ipcMain.on('maximize', () => {
     if (mainWindow) mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize()

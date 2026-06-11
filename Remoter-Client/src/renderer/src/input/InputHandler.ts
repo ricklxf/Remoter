@@ -166,18 +166,9 @@ export class InputHandler {
     }
   }
 
-  // object-fit: contain 会在 canvas 周围加 letterbox 黑边
-  // 这里算出实际内容区域，供坐标归一化使用
+  // canvas uses object-fit: fill — content occupies the full element rect
   private contentRect(rect: DOMRect): { left: number; top: number; width: number; height: number } {
-    const ra = this.remoteW / this.remoteH
-    const ca = rect.width  / rect.height
-    if (ca > ra) {
-      const w = rect.height * ra
-      return { left: rect.left + (rect.width - w) / 2, top: rect.top, width: w, height: rect.height }
-    } else {
-      const h = rect.width / ra
-      return { left: rect.left, top: rect.top + (rect.height - h) / 2, width: rect.width, height: h }
-    }
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
   }
 }
 

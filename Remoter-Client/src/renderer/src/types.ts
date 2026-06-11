@@ -42,7 +42,12 @@ export interface FileTransfer {
 declare global {
   interface Window {
     remoterAPI?: {
+      platform: string
       toggleFullscreen: () => void
+      enterFullscreen: () => void
+      exitFullscreen: () => void
+      isFullscreen: () => Promise<boolean>
+      onFullscreenChange: (cb: (isFS: boolean) => void) => () => void
       saveFileDialog: (name: string) => Promise<string | null>
       saveFile: (path: string, data: Uint8Array) => Promise<void>
       homeDir: () => Promise<string>

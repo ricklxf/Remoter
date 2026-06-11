@@ -7,6 +7,9 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
+  const isWin = process.platform === 'win32'
+  const isMac = process.platform === 'darwin'
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -14,18 +17,31 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     backgroundColor: '#1a1a2e',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+    ...(isWin ? {
+      titleBarOverlay: {
+        color: '#1a1a2e',
+        symbolColor: '#eaeaea',
+        height: 36,
+      }
+    } : {}),
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      // Allow WebCodecs API (H.264 decoding)
       contextIsolation: true
     }
   })
 
   mainWindow.on('ready-to-show', () => {
     mainWindow!.show()
+  })
+
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow?.webContents.send('fullscreen-changed', true)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow?.webContents.send('fullscreen-changed', false)
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -47,10 +63,17 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(win)
   })
 
-  // Full-screen toggle for remote desktop
+  // Full-screen controls
   ipcMain.on('toggle-fullscreen', () => {
     if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen())
   })
+  ipcMain.on('enter-fullscreen', () => {
+    if (mainWindow && !mainWindow.isFullScreen()) mainWindow.setFullScreen(true)
+  })
+  ipcMain.on('exit-fullscreen', () => {
+    if (mainWindow && mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+  })
+  ipcMain.handle('is-fullscreen', () => mainWindow?.isFullScreen() ?? false)
 
   // File save dialog for received files
   ipcMain.handle('save-file-dialog', async (_, name: string) => {

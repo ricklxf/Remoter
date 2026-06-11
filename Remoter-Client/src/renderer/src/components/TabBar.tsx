@@ -20,10 +20,12 @@ interface Props {
   onAdd: () => void
 }
 
+const isMac = window.remoterAPI?.platform === 'darwin'
+
 export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd }: Props) {
   return (
     <div style={styles.bar}>
-      <div style={styles.trafficSpacer} />
+      {isMac && <div style={styles.trafficSpacer} />}
 
       {tabs.map(tab => (
         <TabItem

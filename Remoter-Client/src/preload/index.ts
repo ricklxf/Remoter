@@ -2,7 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
-  toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
+  platform:          process.platform,
+  toggleFullscreen:  () => ipcRenderer.send('toggle-fullscreen'),
+  enterFullscreen:   () => ipcRenderer.send('enter-fullscreen'),
+  exitFullscreen:    () => ipcRenderer.send('exit-fullscreen'),
+  isFullscreen:      (): Promise<boolean> => ipcRenderer.invoke('is-fullscreen'),
+  onFullscreenChange:(cb: (isFS: boolean) => void) => {
+    const handler = (_: unknown, isFS: boolean) => cb(isFS)
+    ipcRenderer.on('fullscreen-changed', handler)
+    return () => ipcRenderer.off('fullscreen-changed', handler)
+  },
   saveFileDialog:   (name: string): Promise<string | null> => ipcRenderer.invoke('save-file-dialog', name),
   saveFile:         (path: string, data: Uint8Array): Promise<void> => ipcRenderer.invoke('save-file', path, data),
   homeDir:          (): Promise<string> => ipcRenderer.invoke('home-dir'),

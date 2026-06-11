@@ -112,5 +112,7 @@ if (relay != null)
     AppLog.Write($"  Relay: {relayUrl} (session ID printed on connect)");
 AppLog.Write("Ready. Waiting for connections…");
 
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; server.Stop(); admin.Stop(); webFiles.Stop(); };
+// WinExe: no console window, no Ctrl+C. Cleanup on process exit.
+// To stop the server gracefully, use the admin console → "停止服务".
+AppDomain.CurrentDomain.ProcessExit += (_, _) => { server.Stop(); admin.Stop(); webFiles.Stop(); };
 await Task.Delay(Timeout.Infinite);

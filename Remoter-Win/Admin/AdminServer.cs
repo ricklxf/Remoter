@@ -139,6 +139,15 @@ sealed class AdminServer
                     }
                     break;
 
+                case "/stop":
+                    if (req.HttpMethod == "POST")
+                    {
+                        Log("[Admin] Shutdown requested via admin console");
+                        Serve(resp, "application/json", "{\"ok\":true}"u8.ToArray());
+                        _ = Task.Delay(300).ContinueWith(_ => Environment.Exit(0));
+                    }
+                    break;
+
                 default:
                     resp.StatusCode = 404;
                     resp.Close();
@@ -220,6 +229,8 @@ header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
 .pin-input{background:#0f0f1a;border:1px solid #333344;color:#eaeaea;border-radius:6px;padding:6px 10px;font-size:14px;font-family:monospace;width:100px}
 .pin-btn{background:#0d9488;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer}
 .pin-btn:hover{opacity:.85}
+.stop-btn{background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;margin-left:auto}
+.stop-btn:hover{background:#991b1b}
 #logs{flex:1;overflow-y:auto;padding:12px 24px;font-family:'Menlo','Consolas',monospace;font-size:12px;line-height:1.7}
 .log-line{padding:1px 0;border-bottom:1px solid rgba(255,255,255,.04)}
 .log-line:last-child{border-bottom:none}
@@ -230,6 +241,7 @@ footer{padding:8px 24px;font-size:11px;color:#555;background:#1a1a2e;border-top:
 <header>
   <h1>Remoter Agent</h1>
   <span class="badge" id="connBadge">0 连接</span>
+  <button class="stop-btn" onclick="stopAgent()">停止服务</button>
 </header>
 <div class="cards">
   <div class="card">

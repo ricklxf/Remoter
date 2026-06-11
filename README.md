@@ -14,6 +14,23 @@
 
 ---
 
+## 一键构建
+
+```bash
+# Mac 被控端（含嵌入 Web 客户端）— 在 macOS 上运行
+bash scripts/build-mac.sh              # debug 包
+bash scripts/build-mac.sh --release    # release 包
+
+# Win 被控端（含嵌入 Web 客户端）— 在 Windows 上运行
+powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
+```
+
+产物：
+- Mac：`Remoter-Mac/build/RemoterAgent.app`
+- Win：`Remoter-Win/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe`（含 `web/` 子目录）
+
+---
+
 ## 架构
 
 ```

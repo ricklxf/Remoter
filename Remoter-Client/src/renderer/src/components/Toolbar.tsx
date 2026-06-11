@@ -1,5 +1,6 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Connection } from '../network/Connection'
+import { Theme, getTheme, applyTheme } from '../utils/theme'
 
 interface Props {
   conn: Connection
@@ -13,6 +14,8 @@ interface Props {
   transferCount: number
   onToggleTransfers: () => void
   showTransfers: boolean
+  onMouseEnter?: () => void
+  onMouseLeave?: () => void
 }
 
 const QUALITY_PRESETS = [
@@ -22,14 +25,27 @@ const QUALITY_PRESETS = [
   { label: '流畅优先',    fps: 30, bitrate:  2_000_000 },
 ]
 
+const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
+const THEME_ICON: Record<Theme, string> = { system: '💻', light: '☀️', dark: '🌙' }
+const THEME_LABEL: Record<Theme, string> = { system: '跟随系统', light: '浅色', dark: '深色' }
+
 export function Toolbar({
   conn, onHide, onToggleFullscreen,
   fps, bitrate, onQualityChange,
   showStats, onToggleStats,
   transferCount, onToggleTransfers, showTransfers,
+  onMouseEnter, onMouseLeave,
 }: Props) {
+  const [theme, setTheme] = useState<Theme>(getTheme)
+
+  function cycleTheme() {
+    const next = THEME_NEXT[theme]
+    applyTheme(next)
+    setTheme(next)
+  }
+
   return (
-    <div style={s.bar}>
+    <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
       <select
         style={s.select}
         value={`${fps}:${bitrate}`}
@@ -51,7 +67,9 @@ export function Toolbar({
         badge={transferCount > 0 ? transferCount : undefined} />
       <ToolBtn icon="📊" title={showStats ? '隐藏网络状态' : '显示网络状态'}
         onClick={onToggleStats} active={showStats} />
-      <ToolBtn icon="⛶"  title="全屏" onClick={onToggleFullscreen} />
+      <ToolBtn icon={THEME_ICON[theme]} title={`主题: ${THEME_LABEL[theme]}`}
+        onClick={cycleTheme} />
+      <ToolBtn icon="⛶" title="全屏" onClick={onToggleFullscreen} />
 
       <div style={s.sep} />
 

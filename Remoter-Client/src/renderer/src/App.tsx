@@ -1,5 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react'
+import { initTheme } from './utils/theme'
 import { ConnectPage } from './pages/ConnectPage'
+
+initTheme()
 import { DesktopPage } from './pages/DesktopPage'
 import { Connection, ConnStats, ConnEvent } from './network/Connection'
 import { ConnectParams, ConnectionState, StreamInfo, FileTransfer } from './types'

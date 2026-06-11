@@ -8,8 +8,19 @@
   --primary:  #0d9488;
   --text:     #1a1a2e;
   --text2:    #64748b;
+  --border:   #d1d5db;
   --radius:   8px;
   --shadow:   0 4px 24px rgba(0,0,0,0.08);
+}
+
+[data-theme="dark"] {
+  --bg:     #0f0f1a;
+  --bg2:    #1a1a2e;
+  --bg3:    #16213e;
+  --text:   #eaeaea;
+  --text2:  #a0a0b0;
+  --border: #333344;
+  --shadow: 0 4px 24px rgba(0,0,0,0.5);
 }
 
 html, body, #root { height: 100%; width: 100%; overflow: hidden; }
@@ -34,7 +45,7 @@ input {
   font-family: inherit;
   outline: none;
   background: var(--bg3);
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius);
   padding: 10px 14px;

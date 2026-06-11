@@ -126,7 +126,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   hint: {
     marginTop: 24, fontSize: 12, color: 'var(--text2)',
-    lineHeight: 1.6, borderTop: '1px solid #e2e8f0', paddingTop: 16
+    lineHeight: 1.6, borderTop: '1px solid var(--border)', paddingTop: 16
   },
   code: {
     background: 'var(--bg)', padding: '2px 6px', borderRadius: 4,

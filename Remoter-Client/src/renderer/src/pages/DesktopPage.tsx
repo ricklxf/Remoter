@@ -23,6 +23,18 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
   const [showStats, setShowStats]         = useState(false)
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
+
+  // Cancel hide timer on unmount
+  useEffect(() => () => clearTimeout(hideTimerRef.current), [])
+
+  const startHideTimer = useCallback(() => {
+    hideTimerRef.current = setTimeout(() => setToolbarVisible(false), 3000)
+  }, [])
+
+  const cancelHideTimer = useCallback(() => {
+    clearTimeout(hideTimerRef.current)
+  }, [])
 
   // Auto-show transfers panel when a new transfer starts
   const prevTransfersLen = useRef(0)
@@ -85,6 +97,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
             transferCount={transfers.filter(t => !t.done).length}
             onToggleTransfers={() => setShowTransfers(v => !v)}
             showTransfers={showTransfers}
+            onMouseEnter={cancelHideTimer}
+            onMouseLeave={startHideTimer}
           />
         </div>
       )}

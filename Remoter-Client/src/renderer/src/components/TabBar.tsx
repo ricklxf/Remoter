@@ -125,7 +125,10 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
 export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd }: Props) {
   return (
     <div style={s.bar}>
-      {isMac && <div style={s.trafficSpacer} />}
+      {isMac
+        ? <div style={s.trafficSpacer} />
+        : <div style={s.winSpacer} />
+      }
 
       {tabs.map(tab => (
         <TabItem
@@ -174,6 +177,10 @@ const s: Record<string, React.CSSProperties> = {
     width: 72,
     flexShrink: 0,
     height: '100%',
+  },
+  winSpacer: {
+    width: 8,
+    flexShrink: 0,
   },
   tab: {
     display: 'flex',

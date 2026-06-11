@@ -35,19 +35,12 @@ function upsertTransfer(list: FileTransfer[], t: FileTransfer): FileTransfer[] {
 // ─── App ────────────────────────────────────────────────────────────
 
 export default function App() {
-  const connMapRef   = useRef(new Map<string, Connection>())
-  const setTabsRef   = useRef<React.Dispatch<React.SetStateAction<TabDisplay[]>>>()
+  const connMapRef = useRef(new Map<string, Connection>())
+  const setTabsRef = useRef<React.Dispatch<React.SetStateAction<TabDisplay[]>>>()
 
   const [tabs, setTabs]         = useState<TabDisplay[]>(() => [makeTab('tab-init')])
   const [activeId, setActiveId] = useState('tab-init')
-  const [isFullscreen, setIsFullscreen] = useState(false)
   setTabsRef.current = setTabs
-
-  // Track fullscreen state changes from main process
-  useEffect(() => {
-    const unsub = window.remoterAPI?.onFullscreenChange(setIsFullscreen)
-    return () => unsub?.()
-  }, [])
 
   // Wire a Connection's onEvent to update a specific tab's display state
   const wireTab = useCallback((id: string, conn: Connection) => {
@@ -58,7 +51,7 @@ export default function App() {
           case 'state':
             return { ...t, state: e.state, ...(e.state !== 'error' && { errorMsg: '' }) }
           case 'stream_started':
-            window.remoterAPI?.enterFullscreen()
+            window.remoterAPI?.maximize()
             return { ...t, state: 'streaming', streamInfo: e.info, codec: e.codec ?? 'jpeg' }
           case 'error':
             return { ...t, errorMsg: e.message }
@@ -138,13 +131,8 @@ export default function App() {
   function handleDisconnect(tabId: string) {
     const conn = connMapRef.current.get(tabId)
     conn?.disconnect()
-    setTabs(prev => {
-      const next = prev.map(t => t.id === tabId
-        ? { ...t, state: 'idle' as const, streamInfo: null, stats: DEFAULT_STATS } : t)
-      const stillStreaming = next.some(t => t.state === 'streaming')
-      if (!stillStreaming) window.remoterAPI?.exitFullscreen()
-      return next
-    })
+    setTabs(prev => prev.map(t => t.id === tabId
+      ? { ...t, state: 'idle' as const, streamInfo: null, stats: DEFAULT_STATS } : t))
   }
 
   const activeTab  = tabs.find(t => t.id === activeId) ?? tabs[0]
@@ -152,7 +140,7 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {!isFullscreen && <TabBar
+      <TabBar
         tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats, muted: t.muted }))}
         activeId={activeId}
         onSelect={setActiveId}
@@ -160,7 +148,7 @@ export default function App() {
         onDisconnect={handleDisconnect}
         onToggleMute={handleToggleMute}
         onAdd={addTab}
-      />}
+      />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab && (
           activeTab.state === 'streaming' && activeTab.streamInfo && activeConn ? (

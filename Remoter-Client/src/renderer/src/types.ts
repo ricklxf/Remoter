@@ -44,10 +44,8 @@ declare global {
     remoterAPI?: {
       platform: string
       toggleFullscreen: () => void
-      enterFullscreen: () => void
-      exitFullscreen: () => void
-      isFullscreen: () => Promise<boolean>
-      onFullscreenChange: (cb: (isFS: boolean) => void) => () => void
+      maximize: () => void
+      unmaximize: () => void
       saveFileDialog: (name: string) => Promise<string | null>
       saveFile: (path: string, data: Uint8Array) => Promise<void>
       homeDir: () => Promise<string>

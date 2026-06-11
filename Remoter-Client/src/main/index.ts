@@ -20,8 +20,8 @@ function createWindow(): void {
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isWin ? {
       titleBarOverlay: {
-        color: '#1a1a2e',
-        symbolColor: '#eaeaea',
+        color: '#5790d5',
+        symbolColor: '#ffffff',
         height: 36,
       }
     } : {}),
@@ -37,12 +37,6 @@ function createWindow(): void {
     mainWindow!.show()
   })
 
-  mainWindow.on('enter-full-screen', () => {
-    mainWindow?.webContents.send('fullscreen-changed', true)
-  })
-  mainWindow.on('leave-full-screen', () => {
-    mainWindow?.webContents.send('fullscreen-changed', false)
-  })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -63,17 +57,16 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(win)
   })
 
-  // Full-screen controls
+  // Window controls
   ipcMain.on('toggle-fullscreen', () => {
     if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen())
   })
-  ipcMain.on('enter-fullscreen', () => {
-    if (mainWindow && !mainWindow.isFullScreen()) mainWindow.setFullScreen(true)
+  ipcMain.on('maximize', () => {
+    if (mainWindow) mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize()
   })
-  ipcMain.on('exit-fullscreen', () => {
-    if (mainWindow && mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+  ipcMain.on('unmaximize', () => {
+    if (mainWindow?.isMaximized()) mainWindow.unmaximize()
   })
-  ipcMain.handle('is-fullscreen', () => mainWindow?.isFullScreen() ?? false)
 
   // File save dialog for received files
   ipcMain.handle('save-file-dialog', async (_, name: string) => {

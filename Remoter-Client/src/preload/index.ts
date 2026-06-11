@@ -3,10 +3,12 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
-  saveFileDialog: (name: string): Promise<string | null> =>
-    ipcRenderer.invoke('save-file-dialog', name),
-  saveFile: (path: string, data: Uint8Array): Promise<void> =>
-    ipcRenderer.invoke('save-file', path, data)
+  saveFileDialog:   (name: string): Promise<string | null> => ipcRenderer.invoke('save-file-dialog', name),
+  saveFile:         (path: string, data: Uint8Array): Promise<void> => ipcRenderer.invoke('save-file', path, data),
+  homeDir:          (): Promise<string> => ipcRenderer.invoke('home-dir'),
+  listDir:          (path: string): Promise<{ path: string; entries: Array<{ name: string; size: number; isDir: boolean; modified: number }> }> =>
+    ipcRenderer.invoke('list-dir', path),
+  readFile:         (path: string): Promise<Uint8Array> => ipcRenderer.invoke('read-file', path),
 }
 
 if (process.contextIsolated) {

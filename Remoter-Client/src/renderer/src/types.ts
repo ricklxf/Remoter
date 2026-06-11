@@ -21,6 +21,13 @@ export type ConnectionState =
   | 'disconnected'
   | 'error'
 
+export interface DirEntry {
+  name: string
+  size: number
+  isDir: boolean
+  modified: number  // ms timestamp
+}
+
 export interface FileTransfer {
   id: string
   name: string
@@ -38,6 +45,9 @@ declare global {
       toggleFullscreen: () => void
       saveFileDialog: (name: string) => Promise<string | null>
       saveFile: (path: string, data: Uint8Array) => Promise<void>
+      homeDir: () => Promise<string>
+      listDir: (path: string) => Promise<{ path: string; entries: DirEntry[] }>
+      readFile: (path: string) => Promise<Uint8Array>
     }
   }
 }

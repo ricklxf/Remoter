@@ -23,6 +23,9 @@ enum ClientMessage {
     case clientStats(fps: Double, rttMs: Int)
     case setCodec(codec: String)
     case cryptoHello(pubkey: String)
+    case listDir(path: String)
+    case requestFile(path: String)
+    case setMuted(muted: Bool)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -83,6 +86,12 @@ enum ClientMessage {
             return .setCodec(codec: json["codec"] as? String ?? "h264")
         case "crypto_hello":
             return .cryptoHello(pubkey: json["pubkey"] as? String ?? "")
+        case "list_dir":
+            return .listDir(path: json["path"] as? String ?? "~")
+        case "request_file":
+            return .requestFile(path: json["path"] as? String ?? "")
+        case "set_muted":
+            return .setMuted(muted: json["muted"] as? Bool ?? false)
         default:
             return .unknown
         }

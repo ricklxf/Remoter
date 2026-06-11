@@ -7,6 +7,7 @@ export interface TabInfo {
   label: string
   state: ConnectionState
   stats: ConnStats
+  muted: boolean
 }
 
 interface Props {
@@ -15,10 +16,11 @@ interface Props {
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onDisconnect: (id: string) => void
+  onToggleMute: (id: string) => void
   onAdd: () => void
 }
 
-export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onAdd }: Props) {
+export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd }: Props) {
   return (
     <div style={styles.bar}>
       <div style={styles.trafficSpacer} />
@@ -32,6 +34,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onAdd 
           onSelect={() => onSelect(tab.id)}
           onClose={() => onClose(tab.id)}
           onDisconnect={() => onDisconnect(tab.id)}
+          onToggleMute={() => onToggleMute(tab.id)}
         />
       ))}
 
@@ -48,18 +51,18 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onAdd 
   )
 }
 
-function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect }: {
+function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onToggleMute }: {
   tab: TabInfo
   active: boolean
   canClose: boolean
   onSelect: () => void
   onClose: () => void
   onDisconnect: () => void
+  onToggleMute: () => void
 }) {
   const streaming = tab.state === 'streaming'
-  const mbps = (tab.stats.bitrateKbps / 1000).toFixed(1)
+  const rtt = tab.stats.rttMs
 
-  // 只有一个 tab 时 × = 断开连接；多个 tab 时 × = 关闭（含断开）
   const handleX = canClose ? onClose : onDisconnect
   const xTitle  = canClose ? '关闭标签页' : '断开连接'
 
@@ -72,9 +75,23 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect }: {
     >
       <StatusDot state={tab.state} />
       <span style={styles.tabLabel}>{tab.label}</span>
-      {streaming && (
-        <span style={styles.speed}>{mbps}M</span>
+
+      {streaming && rtt > 0 && (
+        <span style={styles.rtt}>{rtt}ms</span>
       )}
+
+      {streaming && (
+        <button
+          style={styles.iconBtn}
+          onClick={e => { e.stopPropagation(); onToggleMute() }}
+          title={tab.muted ? '取消静音' : '静音远端'}
+          // @ts-ignore
+          WebkitAppRegion="no-drag"
+        >
+          {tab.muted ? '🔇' : '🔊'}
+        </button>
+      )}
+
       <button
         style={styles.closeBtn}
         onClick={e => { e.stopPropagation(); handleX() }}
@@ -88,9 +105,9 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect }: {
 
 function StatusDot({ state }: { state: ConnectionState }) {
   const color =
-    state === 'streaming'                                        ? '#4caf50' :
-    state === 'connecting' || state === 'authenticating'         ? '#ff9800' :
-    state === 'error'                                            ? '#f44336' : '#444'
+    state === 'streaming'                                     ? '#4caf50' :
+    state === 'connecting' || state === 'authenticating'      ? '#ff9800' :
+    state === 'error'                                         ? '#f44336' : '#444'
   return (
     <span style={{
       width: 6, height: 6, borderRadius: '50%',
@@ -120,11 +137,11 @@ const styles: Record<string, React.CSSProperties> = {
   tab: {
     display: 'flex',
     alignItems: 'center',
-    gap: 6,
-    padding: '0 6px 0 10px',
+    gap: 5,
+    padding: '0 5px 0 10px',
     height: '100%',
     minWidth: 120,
-    maxWidth: 240,
+    maxWidth: 260,
     cursor: 'pointer',
     fontSize: 12,
     color: 'var(--text2)',
@@ -143,11 +160,23 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  speed: {
+  rtt: {
     fontSize: 10,
     color: '#4caf50',
     fontVariantNumeric: 'tabular-nums',
     flexShrink: 0,
+  },
+  iconBtn: {
+    background: 'transparent',
+    padding: '1px 2px',
+    fontSize: 12,
+    lineHeight: '1',
+    borderRadius: 3,
+    flexShrink: 0,
+    opacity: 0.8,
+    cursor: 'pointer',
+    // @ts-ignore
+    WebkitAppRegion: 'no-drag',
   },
   closeBtn: {
     background: 'transparent',

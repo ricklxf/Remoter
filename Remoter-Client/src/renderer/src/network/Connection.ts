@@ -1,4 +1,4 @@
-import { ConnectParams, ConnectionState, StreamInfo, FileTransfer } from '../types'
+import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry } from '../types'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
@@ -18,6 +18,7 @@ export type ConnEvent =
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
+  | { type: 'dir_listing'; path: string; entries: DirEntry[] }
 
 const VIDEO_FRAME   = 0x01
 const FILE_CHUNK    = 0x02
@@ -133,6 +134,18 @@ export class Connection {
   }
   sendQuality(fps: number, bitrate: number): void {
     this.sendJson({ type: 'quality', fps, bitrate })
+  }
+
+  sendMute(muted: boolean): void {
+    this.sendJson({ type: 'set_muted', muted })
+  }
+
+  sendListDir(path: string): void {
+    this.sendJson({ type: 'list_dir', path })
+  }
+
+  sendRequestFile(path: string): void {
+    this.sendJson({ type: 'request_file', path })
   }
 
   sendJson(obj: object): void {
@@ -399,6 +412,10 @@ export class Connection {
         void this.finishDownload(id)
         break
       }
+
+      case 'dir_listing':
+        this.emit({ type: 'dir_listing', path: msg.path as string, entries: msg.entries as DirEntry[] })
+        break
 
       case 'host_disconnected':
         this.emit({ type: 'state', state: 'disconnected' })

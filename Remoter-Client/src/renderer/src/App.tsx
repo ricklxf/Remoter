@@ -19,10 +19,11 @@ interface TabDisplay {
   errorMsg: string
   stats: ConnStats
   transfers: FileTransfer[]
+  muted: boolean
 }
 
 function makeTab(id: string): TabDisplay {
-  return { id, label: '新连接', state: 'idle', streamInfo: null, codec: 'jpeg', errorMsg: '', stats: DEFAULT_STATS, transfers: [] }
+  return { id, label: '新连接', state: 'idle', streamInfo: null, codec: 'jpeg', errorMsg: '', stats: DEFAULT_STATS, transfers: [], muted: false }
 }
 
 function upsertTransfer(list: FileTransfer[], t: FileTransfer): FileTransfer[] {
@@ -114,6 +115,18 @@ export default function App() {
     conn.connect(params)
   }
 
+  // Toggle remote mute
+  function handleToggleMute(tabId: string) {
+    const conn = connMapRef.current.get(tabId)
+    if (!conn) return
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId) return t
+      const next = !t.muted
+      conn.sendMute(next)
+      return { ...t, muted: next }
+    }))
+  }
+
   // Disconnect active tab
   function handleDisconnect(tabId: string) {
     const conn = connMapRef.current.get(tabId)
@@ -128,11 +141,12 @@ export default function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <TabBar
-        tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats }))}
+        tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats, muted: t.muted }))}
         activeId={activeId}
         onSelect={setActiveId}
         onClose={closeTab}
         onDisconnect={handleDisconnect}
+        onToggleMute={handleToggleMute}
         onAdd={addTab}
       />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>

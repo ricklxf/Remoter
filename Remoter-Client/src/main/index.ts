@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
-import { writeFile } from 'fs/promises'
+import { writeFile, readdir, stat, readFile as fsReadFile } from 'fs/promises'
 import { join } from 'path'
+import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 
 let mainWindow: BrowserWindow | null = null
@@ -63,6 +64,33 @@ app.whenReady().then(() => {
   // Write file to disk (used after save-file-dialog returns a path)
   ipcMain.handle('save-file', async (_, filePath: string, data: Uint8Array) => {
     await writeFile(filePath, Buffer.from(data))
+  })
+
+  // Home directory
+  ipcMain.handle('home-dir', () => homedir())
+
+  // List directory contents
+  ipcMain.handle('list-dir', async (_, dirPath: string) => {
+    const expanded = dirPath.startsWith('~') ? join(homedir(), dirPath.slice(1)) : dirPath
+    const names = await readdir(expanded)
+    const entries = await Promise.all(names.map(async (name) => {
+      try {
+        const s = await stat(join(expanded, name))
+        return { name, size: s.isDirectory() ? 0 : s.size, isDir: s.isDirectory(), modified: s.mtimeMs }
+      } catch {
+        return { name, size: 0, isDir: false, modified: 0 }
+      }
+    }))
+    entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    return { path: expanded, entries }
+  })
+
+  // Read local file for upload
+  ipcMain.handle('read-file', async (_, filePath: string) => {
+    return fsReadFile(filePath)
   })
 
   createWindow()

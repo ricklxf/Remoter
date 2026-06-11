@@ -184,6 +184,16 @@ final class Session {
         case .setCodec:
             break  // JPEG 模式下不支持切换
 
+        case .listDir(let path):
+            handleListDir(path)
+
+        case .requestFile(let path):
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            sendFile(url)
+
+        case .setMuted(let muted):
+            setSystemMuted(muted)
+
         default:
             break
         }
@@ -292,6 +302,40 @@ final class Session {
         server.sendText(text, to: connection)
     }
 
+    // MARK: - 目录列表
+
+    private func handleListDir(_ path: String) {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: expandedPath)
+        let fm  = FileManager.default
+
+        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey, .contentModificationDateKey]
+        guard let contents = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: []) else {
+            sendJson(["type": "dir_listing", "path": expandedPath, "entries": [] as [[String: Any]]])
+            return
+        }
+
+        var entries: [[String: Any]] = contents.compactMap { item in
+            guard let res = try? item.resourceValues(forKeys: Set(keys)) else { return nil }
+            let isDir = res.isDirectory ?? false
+            return [
+                "name":     item.lastPathComponent,
+                "size":     isDir ? 0 : (res.fileSize ?? 0),
+                "isDir":    isDir,
+                "modified": (res.contentModificationDate?.timeIntervalSince1970 ?? 0) * 1000
+            ]
+        }
+
+        entries.sort {
+            let ad = $0["isDir"] as? Bool ?? false
+            let bd = $1["isDir"] as? Bool ?? false
+            if ad != bd { return ad }
+            return ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "")
+        }
+
+        sendJson(["type": "dir_listing", "path": expandedPath, "entries": entries])
+    }
+
     // MARK: - 剪贴板监控（双向自动同步）
 
     private func startClipboardMonitor() {
@@ -313,6 +357,18 @@ final class Session {
     private func stopClipboardMonitor() {
         clipboardTimer?.cancel()
         clipboardTimer = nil
+    }
+
+    // MARK: - 系统静音控制
+
+    private func setSystemMuted(_ muted: Bool) {
+        let script = muted
+            ? "set volume output muted true"
+            : "set volume output muted false"
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+        }
     }
 
     // MARK: - 文件发送（Mac → 客户端）

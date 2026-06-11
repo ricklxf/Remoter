@@ -351,12 +351,18 @@ export class Connection {
 
       case 'hello': {
         const macPubkey = msg.pubkey as string | undefined
-        if (macPubkey) {
+        // crypto.subtle requires a secure context (HTTPS / localhost).
+        // On plain HTTP, skip E2E and stay in plaintext mode.
+        if (macPubkey && typeof crypto !== 'undefined' && crypto.subtle) {
           this.sendQueue = this.sendQueue.then(async () => {
-            await this.e2e.generateKeyPair()
-            await this.e2e.deriveSharedKey(macPubkey)
-            const myPub = await this.e2e.getPublicKeyBase64()
-            this.ws?.send(JSON.stringify({ type: 'crypto_hello', pubkey: myPub }))
+            try {
+              await this.e2e.generateKeyPair()
+              await this.e2e.deriveSharedKey(macPubkey)
+              const myPub = await this.e2e.getPublicKeyBase64()
+              this.ws?.send(JSON.stringify({ type: 'crypto_hello', pubkey: myPub }))
+            } catch (e) {
+              console.warn('[Conn] E2E skipped (no secure context):', e)
+            }
           })
         }
         break

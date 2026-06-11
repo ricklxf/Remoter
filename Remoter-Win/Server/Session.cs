@@ -78,9 +78,10 @@ sealed class Session
 
     public void Close()
     {
-        _cts?.Cancel();
-        _clipTimer?.Dispose();
-        _capturer?.Dispose();
+        _cts?.Cancel();       // signals CaptureLoopAsync to stop
+        _clipTimer?.Dispose(); // stops clipboard polling
+        // _capturer is disposed in BeginCaptureAsync's finally block;
+        // disposing here races with the capture loop still running
     }
 
     // ── Message routing ─────────────────────────────────────────────────
@@ -213,8 +214,13 @@ sealed class Session
         catch (Exception ex)
         {
             Console.WriteLine($"[Session] Capture error: {ex.Message}");
-            Send(new { type = "error", code = "capture_failed", message = ex.Message });
+            try { Send(new { type = "error", code = "capture_failed", message = ex.Message }); } catch { }
+        }
+        finally
+        {
+            // Always dispose here — Close() only cancels the token, never disposes directly
             c.Dispose();
+            _capturer = null;
         }
     }
 
@@ -317,12 +323,19 @@ sealed class Session
         _lastClip = GetClipboard();
         _clipTimer = new System.Threading.Timer(_ =>
         {
-            if (!_clipSync) return;
-            var text = GetClipboard();
-            if (!string.IsNullOrEmpty(text) && text != _lastClip)
+            try
             {
-                _lastClip = text;
-                Send(new { type = "clipboard", text });
+                if (!_clipSync) return;
+                var text = GetClipboard();
+                if (!string.IsNullOrEmpty(text) && text != _lastClip)
+                {
+                    _lastClip = text;
+                    Send(new { type = "clipboard", text });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Session] Clipboard poll error: {ex.Message}");
             }
         }, null, 500, 500);
     }

@@ -218,15 +218,27 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
         <div style={s.dragFill} />
       </div>
 
-      {/* Connector strip — sibling of bar so it's not clipped by bar's overflow:hidden.
-          Active-tab slot shows content-area background; rest stays teal.
-          When streaming: #000 (matches DesktopPage video area); else var(--bg) (matches ConnectPage). */}
-      <div style={{ height: 2, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
+      {/* Connector strip with curved junctions at active-tab corners.
+          Sibling of bar so it's not clipped by bar's overflow:hidden. */}
+      <div style={{ height: CURVE, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
+        {/* Active tab slot */}
         <div style={{
           position: 'absolute', top: 0, left: connLeft,
-          width: 240, height: 2,
+          width: 240, height: CURVE,
           background: connectorBg,
         }} />
+        {/* Left arc: fills the lower-right quarter of the CURVE×CURVE square with --bg */}
+        <svg style={{ position: 'absolute', top: 0, left: connLeft - CURVE, display: 'block' }}
+          width={CURVE} height={CURVE} viewBox={`0 0 ${CURVE} ${CURVE}`}>
+          <path d={`M ${CURVE} 0 A ${CURVE} ${CURVE} 0 0 0 0 ${CURVE} L ${CURVE} ${CURVE} Z`}
+            fill="var(--bg)" />
+        </svg>
+        {/* Right arc: fills the lower-left quarter */}
+        <svg style={{ position: 'absolute', top: 0, left: connLeft + 240, display: 'block' }}
+          width={CURVE} height={CURVE} viewBox={`0 0 ${CURVE} ${CURVE}`}>
+          <path d={`M 0 0 A ${CURVE} ${CURVE} 0 0 1 ${CURVE} ${CURVE} L 0 ${CURVE} Z`}
+            fill="var(--bg)" />
+        </svg>
       </div>
 
       {hoveredTab && popupPos && <StatsPopup tab={hoveredTab} pos={popupPos} />}
@@ -238,6 +250,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
 
 const TEAL_DARK = '#0d9488'
 const BAR_BG = 'var(--bar-bg)'
+const CURVE = 6  // px — radius of the arc at active-tab bottom corners
 
 const s: Record<string, React.CSSProperties> = {
   bar: {

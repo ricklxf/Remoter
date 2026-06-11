@@ -218,13 +218,14 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
         <div style={s.dragFill} />
       </div>
 
-      {/* Connector strip — bridges active-tab bottom edge to content area */}
+      {/* Connector strip — active-tab slot + concave corner curves via border-radius */}
       <div style={{ height: CURVE, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
-        <div style={{
-          position: 'absolute', top: 0, left: connLeft,
-          width: 240, height: CURVE,
-          background: connectorBg,
-        }} />
+        <div style={{ position: 'absolute', top: 0, left: connLeft - CURVE,
+          width: CURVE, height: CURVE, background: connectorBg, borderTopRightRadius: CURVE }} />
+        <div style={{ position: 'absolute', top: 0, left: connLeft,
+          width: 240, height: CURVE, background: connectorBg }} />
+        <div style={{ position: 'absolute', top: 0, left: connLeft + 240,
+          width: CURVE, height: CURVE, background: connectorBg, borderTopLeftRadius: CURVE }} />
       </div>
 
       {hoveredTab && popupPos && <StatsPopup tab={hoveredTab} pos={popupPos} />}
@@ -236,7 +237,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
 
 const TEAL_DARK = '#0d9488'
 const BAR_BG = 'var(--bar-bg)'
-const CURVE = 6  // px — radius of the arc at active-tab bottom corners
+const CURVE = 8  // px — radius of the concave arc at active-tab bottom corners
 
 const s: Record<string, React.CSSProperties> = {
   bar: {

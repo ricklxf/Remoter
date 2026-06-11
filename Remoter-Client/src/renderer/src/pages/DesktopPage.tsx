@@ -73,7 +73,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         onClick={toggleToolbar}
         title="显示工具栏"
       >
-        <span style={{ fontSize: 18, lineHeight: 1 }}>▼</span>
+        <span style={{ fontSize: 11, lineHeight: 1 }}>▼</span>
         {transfers.filter(t => !t.done).length > 0 && (
           <span style={styles.floatBadge}>{transfers.filter(t => !t.done).length}</span>
         )}
@@ -111,21 +111,21 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 120,
     display: 'flex',
     alignItems: 'center',
-    gap: 4,
-    padding: '5px 16px 7px',
+    gap: 3,
+    padding: '2px 10px 4px',
     background: 'var(--ov-bg)',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
     border: '1px solid var(--ov-border)',
     borderTop: 'none',
-    borderRadius: '0 0 8px 8px',
+    borderRadius: '0 0 6px 6px',
     color: 'var(--ov-text)',
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 11,
     userSelect: 'none',
     pointerEvents: 'auto',
     whiteSpace: 'nowrap',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+    boxShadow: '0 3px 8px rgba(0,0,0,0.10)',
   },
   floatBadge: {
     fontSize: 10,

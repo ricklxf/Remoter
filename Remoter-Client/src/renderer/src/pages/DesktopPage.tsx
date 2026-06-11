@@ -73,7 +73,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         onClick={toggleToolbar}
         title="显示工具栏"
       >
-        <span style={{ fontSize: 18, lineHeight: 1 }}>↓</span>
+        <span style={{ fontSize: 18, lineHeight: 1 }}>▼</span>
         {transfers.filter(t => !t.done).length > 0 && (
           <span style={styles.floatBadge}>{transfers.filter(t => !t.done).length}</span>
         )}

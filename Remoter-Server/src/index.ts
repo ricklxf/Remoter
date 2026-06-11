@@ -3,6 +3,7 @@ import { createServer as createHttp, IncomingMessage } from 'http'
 import { createServer as createHttps } from 'https'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
+import * as path from 'path'
 
 const PORT = parseInt(process.env.PORT ?? '7789')
 
@@ -44,14 +45,56 @@ function parseQuery(url: string): Record<string, string> {
   return out
 }
 
-// Request handler (health check)
+const PUBLIC = path.resolve(__dirname, '../public')
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'application/javascript',
+  '.css':  'text/css',
+  '.svg':  'image/svg+xml',
+  '.png':  'image/png',
+  '.ico':  'image/x-icon',
+  '.woff2':'font/woff2',
+  '.woff': 'font/woff',
+  '.json': 'application/json',
+}
+
+function serveStatic(url: string, res: { writeHead: Function; end: Function }): boolean {
+  // Strip query string
+  const pathname = url.split('?')[0]
+
+  // /health stays as API
+  if (pathname === '/health') return false
+
+  // Map URL to file; SPA fallback: unknown paths → index.html
+  let filePath = path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname)
+  if (!fs.existsSync(filePath)) filePath = path.join(PUBLIC, 'index.html')
+
+  const ext = path.extname(filePath)
+  const ct  = MIME[ext] ?? 'application/octet-stream'
+  try {
+    const data = fs.readFileSync(filePath)
+    res.writeHead(200, { 'Content-Type': ct })
+    res.end(data)
+  } catch {
+    res.writeHead(404).end()
+  }
+  return true
+}
+
+// Request handler (static files + health check)
 function requestHandler(req: IncomingMessage, res: { writeHead: Function; end: Function }) {
-  if (req.url === '/health') {
+  const url = req.url ?? '/'
+  if (url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, tls: useTLS, sessions: sessions.size }))
     return
   }
-  res.writeHead(404).end()
+  // Serve web client if public/ exists, otherwise 404
+  if (fs.existsSync(PUBLIC)) {
+    serveStatic(url, res)
+  } else {
+    res.writeHead(404).end()
+  }
 }
 
 // Create HTTP or HTTPS server based on env

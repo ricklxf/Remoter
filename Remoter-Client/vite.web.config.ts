@@ -13,7 +13,9 @@ export default defineConfig({
     alias: { '@': resolve(__dirname, 'src/renderer/src') }
   },
   build: {
-    outDir: resolve(__dirname, 'dist-web'),
+    // Output directly into the relay server's public directory so a single
+    // `build:all` produces one deployable artifact.
+    outDir: resolve(__dirname, '../Remoter-Server/public'),
     emptyOutDir: true,
   },
   server: {

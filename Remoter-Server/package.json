@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "ts-node src/index.ts",
+    "build:web": "npm --prefix ../Remoter-Client run build:web",
     "build": "tsc",
+    "build:all": "npm run build:web && npm run build",
     "start": "node dist/index.js"
   },
   "dependencies": {

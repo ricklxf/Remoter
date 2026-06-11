@@ -17,6 +17,8 @@ Remoter-Mac/build/
 Remoter-Client/dist/
 Remoter-Client/out/
 Remoter-Client/dist-web/
+Remoter-Server/public/
+Remoter-Server/dist/
 
 # Env
 .env

@@ -113,7 +113,7 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'background 0.1s',
   },
-  btnActive: { background: 'rgba(87,144,213,0.15)', color: '#3b74c4' },
+  btnActive: { background: 'rgba(13,148,136,0.13)', color: '#0d9488' },
   badge: {
     position: 'absolute',
     top: 2, right: 2,

@@ -26,7 +26,7 @@ const isMac = window.remoterAPI?.platform === 'darwin'
 
 function SignalBars({ rttMs }: { rttMs: number }) {
   const level = rttMs <= 0 ? 0 : rttMs < 50 ? 4 : rttMs < 120 ? 3 : rttMs < 250 ? 2 : 1
-  const barColor = level >= 3 ? '#1a7f1a' : level === 2 ? '#e06e00' : '#cc2222'
+  const barColor = level >= 3 ? TEAL_DARK : level === 2 ? '#d97706' : '#dc2626'
   const heights = [5, 8, 11, 14]
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
@@ -82,7 +82,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
       {streaming && (
         <>
           {rtt > 0 && <SignalBars rttMs={rtt} />}
-          {rtt > 0 && <span style={{ ...s.rttText, color: active ? '#1a6e1a' : 'rgba(255,255,255,0.8)' }}>{rtt}ms</span>}
+          {rtt > 0 && <span style={{ ...s.rttText, color: active ? TEAL_DARK : 'rgba(255,255,255,0.9)' }}>{rtt}ms</span>}
 
           {/* Encrypted indicator */}
           <svg width="10" height="12" viewBox="0 0 10 12" style={{ flexShrink: 0, opacity: 0.7 }}>
@@ -91,7 +91,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
           </svg>
 
           {/* HD badge */}
-          <span style={{ ...s.hdBadge, background: active ? '#1a1a2e' : 'rgba(255,255,255,0.25)', color: active ? '#fff' : '#fff' }}>
+          <span style={{ ...s.hdBadge, background: active ? TEAL_DARK : 'rgba(255,255,255,0.25)', color: '#fff' }}>
             HD
           </span>
 
@@ -158,7 +158,8 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
 
 // ─── Styles ─────────────────────────────────────────────────────────
 
-const BAR_BG = 'linear-gradient(180deg, #6da4e2 0%, #5790d5 100%)'
+const TEAL_DARK = '#0d9488'
+const BAR_BG = 'linear-gradient(180deg, #2dd4bf 0%, #0fb8ab 100%)'
 
 const s: Record<string, React.CSSProperties> = {
   bar: {
@@ -200,8 +201,8 @@ const s: Record<string, React.CSSProperties> = {
     WebkitAppRegion: 'no-drag',
   },
   tabActive: {
-    background: '#f0f4fa',
-    boxShadow: '0 1px 0 #f0f4fa',
+    background: '#f0faf9',
+    boxShadow: `0 1px 0 #f0faf9`,
   },
   tabInactive: {
     background: 'rgba(255,255,255,0.14)',

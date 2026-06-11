@@ -403,7 +403,7 @@ const w: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center',
     padding: '0 12px',
     height: 40,
-    background: 'linear-gradient(180deg, #6da4e2 0%, #5790d5 100%)',
+    background: 'linear-gradient(180deg, #2dd4bf 0%, #0fb8ab 100%)',
     flexShrink: 0,
   },
   headerSide: { display: 'flex', alignItems: 'center', gap: 6, flex: 1 },
@@ -429,11 +429,11 @@ const w: Record<string, React.CSSProperties> = {
   },
   sendBtn: {
     padding: '4px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-    background: '#5790d5', color: '#fff', cursor: 'pointer',
+    background: '#0d9488', color: '#fff', cursor: 'pointer',
   },
   recvBtn: {
     padding: '4px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-    background: '#e8f0fb', color: '#3b74c4', border: '1px solid #c4d9f5', cursor: 'pointer',
+    background: '#e6faf8', color: '#0d9488', border: '1px solid #99e0d8', cursor: 'pointer',
   },
   loading: {
     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -452,7 +452,7 @@ const w: Record<string, React.CSSProperties> = {
   },
   tabBtnActive: {
     color: '#1a1a2e', fontWeight: 600,
-    borderBottom: '2px solid #5790d5', background: '#fff',
+    borderBottom: '2px solid #0d9488', background: '#fff',
   },
   tabContent: { flex: 1, overflowY: 'auto', background: '#fff' },
 }

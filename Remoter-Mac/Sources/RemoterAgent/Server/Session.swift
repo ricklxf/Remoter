@@ -256,9 +256,16 @@ final class Session {
                 let fid = self.frameId
                 self.frameId &+= 1
                 self.bytesSent += Int64(jpeg.count)
-                let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
-                let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
-                self.server.sendBinary(pkt, to: self.connection)
+
+                // Prefer UDP DataChannel (low latency, no HOL blocking)
+                // Fall back to TCP WebSocket while DataChannel is establishing
+                if let rtc = self.webrtc, rtc.isVideoChannelOpen {
+                    rtc.sendVideoFrame(jpeg, isKeyframe: true, frameId: fid)
+                } else {
+                    let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
+                    let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
+                    self.server.sendBinary(pkt, to: self.connection)
+                }
             }
         } catch {
             let msg = "\(error)"

@@ -39,7 +39,7 @@ function createWindow(): void {
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isWin ? {
       titleBarOverlay: {
-        color: '#5790d5',
+        color: '#0fb8ab',
         symbolColor: '#ffffff',
         height: 36,
       }

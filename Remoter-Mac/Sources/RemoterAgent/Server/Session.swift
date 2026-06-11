@@ -23,6 +23,7 @@ final class Session {
 
     private var authenticated = false
     private var frameId: UInt32 = 0
+    private var inputEnabled = true
 
     // For disconnection logging
     private var connectTime: Date?
@@ -137,6 +138,7 @@ final class Session {
 
         // ── 输入事件 ───────────────────────────────────────────
         case .mouseMove(let x, let y):
+            guard inputEnabled else { break }
             if !loggedFirstInput {
                 loggedFirstInput = true
                 ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "first_input",
@@ -145,12 +147,15 @@ final class Session {
             input?.mouseMove(x: x, y: y)
 
         case .mouseButton(let btn, let down, let x, let y):
+            guard inputEnabled else { break }
             input?.mouseButton(button: btn, down: down, x: x, y: y)
 
         case .mouseScroll(let dx, let dy):
+            guard inputEnabled else { break }
             input?.mouseScroll(dx: dx, dy: dy)
 
         case .key(let code, let down, let mods):
+            guard inputEnabled else { break }
             NSLog("[Session] keyEvent code=%@ down=%d input=%d", code, down ? 1 : 0, input != nil ? 1 : 0)
             input?.keyEvent(code: code, down: down, modifiers: mods)
 
@@ -193,6 +198,30 @@ final class Session {
 
         case .setMuted(let muted):
             setSystemMuted(muted)
+
+        case .ctrlAltDel:
+            input?.keyEvent(code: "Delete", down: true,  modifiers: ["ctrl", "alt"])
+            input?.keyEvent(code: "Delete", down: false, modifiers: ["ctrl", "alt"])
+
+        case .setClipboardSync(let enabled):
+            if enabled { startClipboardMonitor() } else { stopClipboardMonitor() }
+
+        case .setInputEnabled(let enabled):
+            inputEnabled = enabled
+
+        case .lockScreen:
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession")
+            task.arguments = ["-suspend"]
+            try? task.run()
+
+        case .logout:
+            let script = "tell application \"System Events\" to log out"
+            NSAppleScript(source: script)?.executeAndReturnError(nil)
+
+        case .restart:
+            let script = "tell application \"System Events\" to restart"
+            NSAppleScript(source: script)?.executeAndReturnError(nil)
 
         default:
             break

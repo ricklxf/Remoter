@@ -140,6 +140,30 @@ export class Connection {
     this.sendJson({ type: 'set_muted', muted })
   }
 
+  sendCtrlAltDel(): void {
+    this.sendJson({ type: 'ctrl_alt_del' })
+  }
+
+  sendSetClipboardSync(enabled: boolean): void {
+    this.sendJson({ type: 'set_clipboard_sync', enabled })
+  }
+
+  sendSetInputEnabled(enabled: boolean): void {
+    this.sendJson({ type: 'set_input_enabled', enabled })
+  }
+
+  sendLockScreen(): void {
+    this.sendJson({ type: 'lock_screen' })
+  }
+
+  sendLogout(): void {
+    this.sendJson({ type: 'logout' })
+  }
+
+  sendRestart(): void {
+    this.sendJson({ type: 'restart' })
+  }
+
   sendListDir(path: string): void {
     this.sendJson({ type: 'list_dir', path })
   }

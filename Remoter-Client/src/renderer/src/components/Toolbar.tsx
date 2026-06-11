@@ -50,6 +50,8 @@ export function Toolbar({
         }}
       />
 
+      <ControlMenu conn={conn} />
+
       <div style={s.sep} />
 
       <ToolBtn icon="📁" title={showTransfers ? '关闭文件管理器' : '文件管理器'}
@@ -66,7 +68,116 @@ export function Toolbar({
   )
 }
 
-// ─── Custom quality dropdown ─────────────────────────────────────────
+// ─── Control menu ─────────────────────────────────────────────────────
+
+function ControlMenu({ conn }: { conn: Connection }) {
+  const [open, setOpen] = useState(false)
+  const [clipSync, setClipSync]     = useState(true)
+  const [inputEnabled, setInput]    = useState(true)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  function toggleClip() {
+    const next = !clipSync
+    setClipSync(next)
+    conn.sendSetClipboardSync(next)
+  }
+
+  function toggleInput() {
+    const next = !inputEnabled
+    setInput(next)
+    conn.sendSetInputEnabled(next)
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, gap: 5 }} onClick={() => setOpen(v => !v)}>
+        <span>控制</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{ ...s.dropdown, minWidth: 200 }}>
+          {/* Ctrl+Alt+Delete */}
+          <button style={s.ctrlItem} onClick={() => { conn.sendCtrlAltDel(); setOpen(false) }}>
+            <span style={s.ctrlItemIcon}>⌨</span>
+            <span style={{ flex: 1 }}>Ctrl + Alt + Delete</span>
+            <span style={s.shortcut}>发送</span>
+          </button>
+
+          <div style={s.menuSep} />
+
+          {/* Clipboard sync toggle */}
+          <div style={s.ctrlItem}>
+            <span style={s.ctrlItemIcon}>📋</span>
+            <span style={{ flex: 1 }}>同步剪贴板</span>
+            <Toggle checked={clipSync} onToggle={toggleClip} />
+          </div>
+
+          {/* Input enabled toggle */}
+          <div style={s.ctrlItem}>
+            <span style={s.ctrlItemIcon}>🖱</span>
+            <span style={{ flex: 1 }}>禁用被控端键鼠</span>
+            <Toggle checked={!inputEnabled} onToggle={toggleInput} />
+          </div>
+
+          <div style={s.menuSep} />
+
+          {/* Lock screen */}
+          <button style={s.ctrlItem} onClick={() => { conn.sendLockScreen(); setOpen(false) }}>
+            <span style={s.ctrlItemIcon}>🔒</span>
+            <span>锁定计算机</span>
+          </button>
+
+          {/* Logout */}
+          <button style={{ ...s.ctrlItem, color: '#d97706' }} onClick={() => { conn.sendLogout(); setOpen(false) }}>
+            <span style={s.ctrlItemIcon}>👤</span>
+            <span>注销计算机</span>
+          </button>
+
+          {/* Restart */}
+          <button style={{ ...s.ctrlItem, color: '#dc2626' }} onClick={() => { conn.sendRestart(); setOpen(false) }}>
+            <span style={s.ctrlItemIcon}>🔄</span>
+            <span>重启计算机</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Toggle switch ────────────────────────────────────────────────────
+
+function Toggle({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
+  return (
+    <div
+      onClick={e => { e.stopPropagation(); onToggle() }}
+      style={{
+        width: 32, height: 18, borderRadius: 9, flexShrink: 0,
+        background: checked ? '#0fb8ab' : 'var(--ov-sep)',
+        position: 'relative', cursor: 'pointer',
+        transition: 'background 0.2s',
+      }}
+    >
+      <div style={{
+        width: 14, height: 14, borderRadius: '50%', background: '#fff',
+        position: 'absolute', top: 2, left: checked ? 16 : 2,
+        transition: 'left 0.15s',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+      }} />
+    </div>
+  )
+}
+
+// ─── Custom quality dropdown ──────────────────────────────────────────
 
 function QualitySelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false)
@@ -110,7 +221,7 @@ function QualitySelect({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
-// ─── Icon button ─────────────────────────────────────────────────────
+// ─── Icon button ──────────────────────────────────────────────────────
 
 function ToolBtn({ icon, title, onClick, active, badge }: {
   icon: string; title: string; onClick: () => void
@@ -130,7 +241,7 @@ function ToolBtn({ icon, title, onClick, active, badge }: {
   )
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
   bar: {
@@ -175,47 +286,34 @@ const s: Record<string, React.CSSProperties> = {
     minWidth: 130,
   },
   dropItem: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    padding: '9px 16px',
-    fontSize: 13,
-    color: 'var(--ov-text)',
-    background: 'transparent',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    gap: 12,
-    fontFamily: 'inherit',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    width: '100%', padding: '9px 16px', fontSize: 13,
+    color: 'var(--ov-text)', background: 'transparent',
+    cursor: 'pointer', whiteSpace: 'nowrap', gap: 12, fontFamily: 'inherit',
   },
-  dropItemActive: {
-    color: '#0d9488',
-    fontWeight: 600,
-    background: 'rgba(13,148,136,0.07)',
+  dropItemActive: { color: '#0d9488', fontWeight: 600, background: 'rgba(13,148,136,0.07)' },
+  // control menu items
+  ctrlItem: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    width: '100%', padding: '9px 14px', fontSize: 13,
+    color: 'var(--ov-text)', background: 'transparent',
+    cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
   },
+  ctrlItemIcon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
+  shortcut: { fontSize: 11, color: 'var(--ov-text2)', flexShrink: 0 },
+  menuSep: { height: 1, background: 'var(--ov-sep)', margin: '3px 0' },
+  // shared
   sep: { width: 1, height: 18, background: 'var(--ov-sep)', margin: '0 4px', flexShrink: 0 },
   btn: {
-    position: 'relative',
-    background: 'transparent',
-    color: 'var(--ov-text)',
-    padding: '5px 8px',
-    borderRadius: 8,
-    fontSize: 16,
-    cursor: 'pointer',
-    transition: 'background 0.1s',
+    position: 'relative', background: 'transparent', color: 'var(--ov-text)',
+    padding: '5px 8px', borderRadius: 8, fontSize: 16,
+    cursor: 'pointer', transition: 'background 0.1s',
   },
   btnActive: { background: 'rgba(13,148,136,0.13)', color: '#0d9488' },
   badge: {
-    position: 'absolute',
-    top: 2, right: 2,
-    background: '#e94560',
-    color: '#fff',
-    fontSize: 9,
-    fontWeight: 700,
-    borderRadius: 8,
-    padding: '0 3px',
-    minWidth: 14,
-    textAlign: 'center',
-    lineHeight: '14px',
+    position: 'absolute', top: 2, right: 2,
+    background: '#e94560', color: '#fff',
+    fontSize: 9, fontWeight: 700, borderRadius: 8,
+    padding: '0 3px', minWidth: 14, textAlign: 'center', lineHeight: '14px',
   },
 }

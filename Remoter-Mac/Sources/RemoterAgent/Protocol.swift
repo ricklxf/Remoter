@@ -26,6 +26,12 @@ enum ClientMessage {
     case listDir(path: String)
     case requestFile(path: String)
     case setMuted(muted: Bool)
+    case ctrlAltDel
+    case setClipboardSync(enabled: Bool)
+    case setInputEnabled(enabled: Bool)
+    case lockScreen
+    case logout
+    case restart
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -92,6 +98,18 @@ enum ClientMessage {
             return .requestFile(path: json["path"] as? String ?? "")
         case "set_muted":
             return .setMuted(muted: json["muted"] as? Bool ?? false)
+        case "ctrl_alt_del":
+            return .ctrlAltDel
+        case "set_clipboard_sync":
+            return .setClipboardSync(enabled: json["enabled"] as? Bool ?? true)
+        case "set_input_enabled":
+            return .setInputEnabled(enabled: json["enabled"] as? Bool ?? true)
+        case "lock_screen":
+            return .lockScreen
+        case "logout":
+            return .logout
+        case "restart":
+            return .restart
         default:
             return .unknown
         }

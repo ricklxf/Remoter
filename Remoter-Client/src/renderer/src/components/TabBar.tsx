@@ -126,11 +126,15 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
   const rtt = tab.stats.rttMs
   const handleX = canClose ? onClose : onDisconnect
   const xTitle  = canClose ? '关闭标签页' : '断开连接'
-  const textColor = active ? 'var(--text)' : 'rgba(255,255,255,0.88)'
+  // When streaming, active tab sits directly above the black video area → use black bg + white text
+  const activeBg  = streaming ? '#000' : 'var(--bg)'
+  const textColor = active
+    ? (streaming ? 'rgba(255,255,255,0.9)' : 'var(--text)')
+    : 'rgba(255,255,255,0.88)'
 
   return (
     <div
-      style={{ ...s.tab, ...(active ? s.tabActive : s.tabInactive) }}
+      style={{ ...s.tab, background: active ? activeBg : 'rgba(255,255,255,0.14)' }}
       onClick={onSelect}
       onMouseEnter={onHover}
       onMouseLeave={onHoverEnd}
@@ -162,7 +166,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
       )}
 
       <button
-        style={{ ...s.closeBtn, color: active ? 'var(--text2)' : 'rgba(255,255,255,0.7)' }}
+        style={{ ...s.closeBtn, color: active ? (streaming ? 'rgba(255,255,255,0.7)' : 'var(--text2)') : 'rgba(255,255,255,0.7)' }}
         onClick={e => { e.stopPropagation(); handleX() }}
         title={xTitle}
         // @ts-ignore
@@ -179,10 +183,12 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
   const [popupPos, setPopupPos]   = useState<{ left: number; top: number } | null>(null)
   const hoveredTab = hoveredId ? (tabs.find(t => t.id === hoveredId) ?? null) : null
 
-  // Position of the active-tab connector strip
-  const spacerW   = isMac ? 72 : 8
-  const activeIdx = Math.max(0, tabs.findIndex(t => t.id === activeId))
-  const connLeft  = spacerW + activeIdx * 241   // 240px tab + 1px marginRight
+  // Position and color of the active-tab connector strip
+  const spacerW       = isMac ? 72 : 8
+  const activeIdx     = Math.max(0, tabs.findIndex(t => t.id === activeId))
+  const connLeft      = spacerW + activeIdx * 241   // 240px tab + 1px marginRight
+  const activeState   = tabs.find(t => t.id === activeId)?.state
+  const connectorBg   = activeState === 'streaming' ? '#000' : 'var(--bg)'
 
   return (
     <>
@@ -217,12 +223,13 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
       </div>
 
       {/* Connector strip — sibling of bar so it's not clipped by bar's overflow:hidden.
-          Active-tab slot shows content-area background; rest stays teal. */}
+          Active-tab slot shows content-area background; rest stays teal.
+          When streaming: #000 (matches DesktopPage video area); else var(--bg) (matches ConnectPage). */}
       <div style={{ height: 2, background: BAR_BG, flexShrink: 0, position: 'relative' }}>
         <div style={{
           position: 'absolute', top: 0, left: connLeft,
           width: 240, height: 2,
-          background: 'var(--bg)',
+          background: connectorBg,
         }} />
       </div>
 
@@ -268,8 +275,8 @@ const s: Record<string, React.CSSProperties> = {
     // @ts-ignore
     WebkitAppRegion: 'no-drag',
   },
-  tabActive:   { background: 'var(--bg)' },
-  tabInactive: { background: 'rgba(255,255,255,0.14)' },
+  tabActive:   {},
+  tabInactive: {},
   favicon:  { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
   tabLabel: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 },
   rttText:  { fontSize: 10, fontVariantNumeric: 'tabular-nums', flexShrink: 0 },

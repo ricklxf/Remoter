@@ -7,12 +7,27 @@ interface Props {
   errorMsg: string
 }
 
+function inferInitial(): { mode: ConnectMode; directUrl: string; relayUrl: string } {
+  const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
+  if (!isWeb) {
+    return { mode: 'direct', directUrl: 'ws://192.168.1.144:7788', relayUrl: 'ws://your-relay-server:7789' }
+  }
+  const { hostname, port, protocol } = window.location
+  const scheme = protocol === 'https:' ? 'wss' : 'ws'
+  if (port === '7799') return { mode: 'direct', directUrl: `${scheme}://${hostname}:7788`,  relayUrl: 'ws://your-relay-server:7789' }
+  if (port === '7789') return { mode: 'relay',  directUrl: 'ws://192.168.1.144:7788',       relayUrl: `${scheme}://${hostname}:7789` }
+  if (port === '7788') return { mode: 'direct', directUrl: `${scheme}://${hostname}:7788`,  relayUrl: 'ws://your-relay-server:7789' }
+  if (port === '')     return { mode: 'direct', directUrl: `${scheme}://${hostname}`,        relayUrl: 'ws://your-relay-server:7789' }
+  return               { mode: 'direct', directUrl: 'ws://192.168.1.144:7788',              relayUrl: 'ws://your-relay-server:7789' }
+}
+
 export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
-  const [mode, setMode]       = useState<ConnectMode>('direct')
-  const [directUrl, setDirectUrl] = useState('ws://192.168.1.144:7788')
-  const [relayUrl, setRelayUrl]   = useState('ws://your-relay-server:7789')
+  const init = inferInitial()
+  const [mode, setMode]           = useState<ConnectMode>(init.mode)
+  const [directUrl, setDirectUrl] = useState(init.directUrl)
+  const [relayUrl, setRelayUrl]   = useState(init.relayUrl)
   const [sessionId, setSessionId] = useState('')
-  const [pin, setPin]         = useState('')
+  const [pin, setPin]             = useState('')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -44,7 +59,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
         <form onSubmit={handleSubmit} style={styles.form}>
           {mode === 'direct' ? (
             <label style={styles.label}>
-              <span>Mac 地址</span>
+              <span>被控端地址</span>
               <input
                 value={directUrl}
                 onChange={e => setDirectUrl(e.target.value)}

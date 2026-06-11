@@ -4,7 +4,6 @@ import { StreamInfo, FileTransfer } from '../types'
 import { ConnStats } from '../network/Connection'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
-import { StatsHUD } from '../components/StatsHUD'
 import { FileTransferWindow } from '../components/FileTransferWindow'
 import { VideoCodec } from '../video/Decoder'
 
@@ -20,7 +19,6 @@ interface Props {
 export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, transfers, onDisconnect }: Props) {
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
-  const [showStats, setShowStats]         = useState(false)
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -61,8 +59,6 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         showCursor={true}
       />
 
-      {showStats && <StatsHUD stats={stats} visible={showStats} />}
-
       {showTransfers && (
         <FileTransferWindow
           conn={conn}
@@ -92,8 +88,6 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
             fps={fps}
             bitrate={bitrate}
             onQualityChange={handleQualityChange}
-            showStats={showStats}
-            onToggleStats={() => setShowStats(v => !v)}
             transferCount={transfers.filter(t => !t.done).length}
             onToggleTransfers={() => setShowTransfers(v => !v)}
             showTransfers={showTransfers}
@@ -111,26 +105,27 @@ const styles: Record<string, React.CSSProperties> = {
   toolbarWrap: { pointerEvents: 'auto' },
   floatTrigger: {
     position: 'absolute',
-    top: 10,
+    top: 0,
     left: '50%',
     transform: 'translateX(-50%)',
     zIndex: 120,
     display: 'flex',
     alignItems: 'center',
     gap: 4,
-    padding: '5px 14px',
-    background: 'rgba(255,255,255,0.88)',
+    padding: '5px 16px 7px',
+    background: 'rgba(255,255,255,0.92)',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
     border: '1px solid rgba(0,0,0,0.09)',
-    borderRadius: 20,
+    borderTop: 'none',
+    borderRadius: '0 0 8px 8px',
     color: '#1a1a2e',
     cursor: 'pointer',
     fontSize: 13,
     userSelect: 'none',
     pointerEvents: 'auto',
     whiteSpace: 'nowrap',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.15), 0 1px 4px rgba(0,0,0,0.08)',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
   },
   floatBadge: {
     fontSize: 10,

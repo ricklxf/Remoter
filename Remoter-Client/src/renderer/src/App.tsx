@@ -146,6 +146,8 @@ export default function App() {
   const activeTabRef = useRef(activeTab)
   activeTabRef.current = activeTab
 
+  const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
+
   useEffect(() => {
     if (activeTab?.state !== 'streaming') {
       document.title = 'Remoter'
@@ -162,7 +164,7 @@ export default function App() {
         ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
         : `${m}:${String(s).padStart(2, '0')}`
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
-      document.title = `Remoter — ${dur} · ${fps}fps · ${(bitrateKbps / 1000).toFixed(1)}M · ${transport} · ${rttMs}ms`
+      document.title = `${tab.label} — ${dur} · ${fps}fps · ${(bitrateKbps / 1000).toFixed(1)}M · ${transport} · ${rttMs}ms`
     }
     tick()
     const timer = setInterval(tick, 1000)
@@ -171,15 +173,17 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      <TabBar
-        tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats, muted: t.muted }))}
-        activeId={activeId}
-        onSelect={setActiveId}
-        onClose={closeTab}
-        onDisconnect={handleDisconnect}
-        onToggleMute={handleToggleMute}
-        onAdd={addTab}
-      />
+      {!isWeb && (
+        <TabBar
+          tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats, muted: t.muted }))}
+          activeId={activeId}
+          onSelect={setActiveId}
+          onClose={closeTab}
+          onDisconnect={handleDisconnect}
+          onToggleMute={handleToggleMute}
+          onAdd={addTab}
+        />
+      )}
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab && (
           activeTab.state === 'streaming' && activeTab.streamInfo && activeConn ? (

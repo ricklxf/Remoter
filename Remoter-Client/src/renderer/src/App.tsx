@@ -149,7 +149,13 @@ export default function App() {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
 
   useEffect(() => {
-    if (activeTab?.state !== 'streaming') {
+    const state = activeTab?.state
+    const label = activeTab?.label ?? 'Remoter'
+    if (state === 'connecting' || state === 'authenticating') {
+      document.title = `${label} 连接中…`
+      return
+    }
+    if (state !== 'streaming') {
       document.title = 'Remoter'
       return
     }
@@ -164,12 +170,13 @@ export default function App() {
         ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
         : `${m}:${String(s).padStart(2, '0')}`
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
-      document.title = `${tab.label} — ${dur} · ${fps}fps · ${(bitrateKbps / 1000).toFixed(1)}M · ${transport} · ${rttMs}ms`
+      const mbps = (bitrateKbps / 1000).toFixed(1)
+      document.title = `${tab.label} 串流中 · 延迟 ${rttMs}ms · 帧率 ${fps}fps · 码率 ${mbps}Mbps · 传输 ${transport} · ${dur}`
     }
     tick()
     const timer = setInterval(tick, 1000)
     return () => { clearInterval(timer); document.title = 'Remoter' }
-  }, [activeTab?.state, activeTab?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTab?.state, activeTab?.id, activeTab?.label]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>

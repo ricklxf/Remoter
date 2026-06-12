@@ -23,10 +23,11 @@ interface TabDisplay {
   stats: ConnStats
   transfers: FileTransfer[]
   muted: boolean
+  streamStartTime: number | null
 }
 
 function makeTab(id: string): TabDisplay {
-  return { id, label: '新连接', state: 'idle', streamInfo: null, codec: 'jpeg', errorMsg: '', stats: DEFAULT_STATS, transfers: [], muted: false }
+  return { id, label: '新连接', state: 'idle', streamInfo: null, codec: 'jpeg', errorMsg: '', stats: DEFAULT_STATS, transfers: [], muted: false, streamStartTime: null }
 }
 
 function upsertTransfer(list: FileTransfer[], t: FileTransfer): FileTransfer[] {
@@ -55,7 +56,7 @@ export default function App() {
             return { ...t, state: e.state, ...(e.state !== 'error' && { errorMsg: '' }) }
           case 'stream_started':
             window.remoterAPI?.maximize()
-            return { ...t, state: 'streaming', streamInfo: e.info, codec: e.codec ?? 'jpeg' }
+            return { ...t, state: 'streaming', streamInfo: e.info, codec: e.codec ?? 'jpeg', streamStartTime: Date.now() }
           case 'error':
             return { ...t, errorMsg: e.message }
           case 'stats':
@@ -140,6 +141,33 @@ export default function App() {
 
   const activeTab  = tabs.find(t => t.id === activeId) ?? tabs[0]
   const activeConn = connMapRef.current.get(activeTab?.id ?? '')
+
+  // Keep a ref so the title interval always reads the latest stats without re-creating the timer.
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
+
+  useEffect(() => {
+    if (activeTab?.state !== 'streaming') {
+      document.title = 'Remoter'
+      return
+    }
+    function tick() {
+      const tab = activeTabRef.current
+      if (!tab || tab.state !== 'streaming') return
+      const secs = tab.streamStartTime ? Math.floor((Date.now() - tab.streamStartTime) / 1000) : 0
+      const h = Math.floor(secs / 3600)
+      const m = Math.floor((secs % 3600) / 60)
+      const s = secs % 60
+      const dur = h > 0
+        ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${m}:${String(s).padStart(2, '0')}`
+      const { fps, bitrateKbps, transport, rttMs } = tab.stats
+      document.title = `Remoter — ${dur} · ${fps}fps · ${(bitrateKbps / 1000).toFixed(1)}M · ${transport} · ${rttMs}ms`
+    }
+    tick()
+    const timer = setInterval(tick, 1000)
+    return () => { clearInterval(timer); document.title = 'Remoter' }
+  }, [activeTab?.state, activeTab?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>

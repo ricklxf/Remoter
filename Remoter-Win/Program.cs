@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -41,7 +42,6 @@ var (pin, port, relayUrl) = ParseArgs(args);
 var sessions    = new Dictionary<IWsConn, Session>();
 var server      = new WebSocketServer();
 var admin       = new AdminServer(port, pin);
-var webFiles    = new WebFileServer();
 RelayClient? relay = string.IsNullOrEmpty(relayUrl) ? null : new RelayClient(relayUrl, pin);
 
 // Route all AppLog entries to the admin SSE stream
@@ -93,7 +93,6 @@ server.OnDisconnect = (conn) =>
 
 server.Start(port);
 admin.Start();
-webFiles.Start();
 relay?.Start();
 
 var ips = GetLocalIPs();
@@ -105,14 +104,15 @@ AppLog.Write($"  Port: {port}");
 foreach (var ip in ips)
     AppLog.Write($"  LAN : ws://{ip}:{port}");
 AppLog.Write($"  Admin: http://localhost:{port + 2}/");
-if (webFiles.IsEnabled)
+var webDir = Path.Combine(AppContext.BaseDirectory, "web");
+if (Directory.Exists(webDir))
     foreach (var ip in ips)
-        AppLog.Write($"  Web : http://{ip}:{port}/  (or :{WebFileServer.Port})");
+        AppLog.Write($"  Web : http://{ip}:{port}/");
 if (relay != null)
     AppLog.Write($"  Relay: {relayUrl} (session ID printed on connect)");
 AppLog.Write("Ready. Waiting for connections…");
 
 // WinExe: no console window, no Ctrl+C. Cleanup on process exit.
 // To stop the server gracefully, use the admin console → "停止服务".
-AppDomain.CurrentDomain.ProcessExit += (_, _) => { server.Stop(); admin.Stop(); webFiles.Stop(); };
+AppDomain.CurrentDomain.ProcessExit += (_, _) => { server.Stop(); admin.Stop(); };
 await Task.Delay(Timeout.Infinite);

@@ -134,11 +134,27 @@ final class WebSocketServer {
             conn.send(content: Data(r.utf8), completion: .contentProcessed { _ in conn.cancel() })
             return
         }
-        let mime   = HTTPFileServer.mimeType(for: fileURL.pathExtension)
+        let mime   = Self.mimeType(for: fileURL.pathExtension)
         let header = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         var response = Data(header.utf8)
         response.append(body)
         conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+    }
+
+    private static func mimeType(for ext: String) -> String {
+        switch ext.lowercased() {
+        case "html":         return "text/html; charset=utf-8"
+        case "js", "mjs":    return "application/javascript"
+        case "css":          return "text/css"
+        case "ico":          return "image/x-icon"
+        case "png":          return "image/png"
+        case "jpg", "jpeg":  return "image/jpeg"
+        case "svg":          return "image/svg+xml"
+        case "woff2":        return "font/woff2"
+        case "woff":         return "font/woff"
+        case "json":         return "application/json"
+        default:             return "application/octet-stream"
+        }
     }
 
     // MARK: - Helpers

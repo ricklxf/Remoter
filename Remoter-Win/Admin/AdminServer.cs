@@ -239,7 +239,7 @@ footer{padding:8px 24px;font-size:11px;color:#555;background:#1a1a2e;border-top:
 </head>
 <body>
 <header>
-  <h1>Remoter Agent</h1>
+  <h1>Remoter Agent <span style="font-size:12px;font-weight:400;opacity:.5">v{{AppVersion.Current}}</span></h1>
   <span class="badge" id="connBadge">0 连接</span>
   <button class="stop-btn" onclick="stopAgent()">停止服务</button>
 </header>

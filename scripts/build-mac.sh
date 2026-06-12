@@ -13,6 +13,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ── Step 0: 同步版本号 ────────────────────────────────────────────────────
+VERSION=$(node -p "require('$ROOT/Remoter-Client/package.json').version")
+echo "let kAppVersion = \"$VERSION\"" > "$ROOT/Remoter-Mac/Sources/RemoterAgent/AppVersion.swift"
+echo "  ✓ AppVersion.swift → $VERSION"
+
 # ── Step 1: Web 客户端 ─────────────────────────────────────────────────────
 echo "▶ [1/2] Building web client…"
 cd "$ROOT/Remoter-Client"

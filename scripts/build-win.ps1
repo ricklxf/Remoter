@@ -10,6 +10,12 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot   # scripts/ 的父目录，即项目根
 
+# ── Step 0: 同步版本号 ────────────────────────────────────────────────────
+$version = (Get-Content "$root\Remoter-Client\package.json" | ConvertFrom-Json).version
+"namespace RemoterWin;`nstatic class AppVersion { public const string Current = `"$version`"; }" |
+    Set-Content "$root\Remoter-Win\AppVersion.cs"
+Write-Host "  ✓ AppVersion.cs → $version" -ForegroundColor Green
+
 # ── Step 1: Web 客户端 ─────────────────────────────────────────────────────
 Write-Host "▶ [1/3] Building web client…" -ForegroundColor Cyan
 Set-Location "$root\Remoter-Client"

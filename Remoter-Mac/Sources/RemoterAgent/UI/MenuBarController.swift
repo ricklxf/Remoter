@@ -11,6 +11,7 @@ struct AgentStatus {
     var vpnIPs: [String] = []   // Tailscale (100.x.x.x) / ZeroTier (zt*)
     var connectedClients: Int
     var webEnabled: Bool = false
+    var port: UInt16 = 7788
 }
 
 // MARK: - MenuBarController
@@ -169,11 +170,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             webHeader.isEnabled = false
             menu.addItem(webHeader)
             for ip in status.localIPs {
-                let item = NSMenuItem(title: "  http://\(ip):7799",
+                let item = NSMenuItem(title: "  http://\(ip):\(status.port)/",
                                       action: #selector(copyWebURL(_:)),
                                       keyEquivalent: "")
                 item.target = self
-                item.representedObject = ip
+                item.representedObject = "\(ip):\(status.port)"
                 menu.addItem(item)
             }
         }
@@ -208,6 +209,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                                  keyEquivalent: "")
         logItem.target = self
         menu.addItem(logItem)
+
+        menu.addItem(.separator())
+        let versionItem = NSMenuItem(title: "Remoter v\(kAppVersion)", action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出 Remoter",

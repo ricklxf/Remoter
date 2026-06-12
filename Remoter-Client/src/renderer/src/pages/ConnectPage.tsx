@@ -104,6 +104,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
         <div style={styles.hint}>
           Mac 端运行：<code style={styles.code}>swift run RemoterAgent --pin 123456</code>
         </div>
+        <div style={styles.version}>v{__APP_VERSION__}</div>
       </div>
     </div>
   )
@@ -146,5 +147,8 @@ const styles: Record<string, React.CSSProperties> = {
   code: {
     background: 'var(--bg)', padding: '2px 6px', borderRadius: 4,
     fontFamily: 'monospace', fontSize: 11, color: 'var(--text)'
+  },
+  version: {
+    marginTop: 12, fontSize: 11, color: 'var(--text2)', textAlign: 'center' as const, opacity: 0.6
   }
 }

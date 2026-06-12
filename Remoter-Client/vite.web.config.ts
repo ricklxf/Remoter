@@ -1,6 +1,9 @@
 import { resolve } from 'path'
+import { createRequire } from 'module'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+
+const { version } = createRequire(import.meta.url)('./package.json') as { version: string }
 
 // Standalone web build — no Electron, outputs to dist-web/
 // Usage:
@@ -9,6 +12,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   plugins: [react()],
+  define: { __APP_VERSION__: JSON.stringify(version) },
   resolve: {
     alias: { '@': resolve(__dirname, 'src/renderer/src') }
   },

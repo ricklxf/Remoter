@@ -141,7 +141,8 @@ final class RemoterAgent {
             localIPs: getLocalIPs(),
             vpnIPs: getVPNIPs(),
             connectedClients: sessions.count,
-            webEnabled: webDir != nil
+            webEnabled: webDir != nil,
+            port: config.port
         )
         DispatchQueue.main.async { [weak self] in
             self?.onStatusUpdate?(status)

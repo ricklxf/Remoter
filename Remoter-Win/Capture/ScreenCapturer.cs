@@ -140,8 +140,9 @@ sealed class ScreenCapturer : IDisposable
         }
         catch (Exception ex)
         {
-            AppLog.Write($"[Capturer] Reinit failed: {ex.Message}");
-            Thread.Sleep(500);
+            AppLog.Write($"[Capturer] DXGI reinit failed: {ex.Message}, switching to GDI");
+            try { InitializeGdi(); }
+            catch (Exception gex) { AppLog.Write($"[Capturer] GDI fallback failed: {gex.Message}"); }
         }
     }
 

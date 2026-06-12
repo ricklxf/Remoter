@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Connection } from '../network/Connection'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
@@ -17,8 +17,26 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
   const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())
   const inputRef    = useRef<InputHandler>(new InputHandler(conn))
-  // For JPEG mode: 2D context
   const ctx2dRef    = useRef<CanvasRenderingContext2D | null>(null)
+  const wrapRef     = useRef<HTMLDivElement>(null)
+  const [cssSize, setCssSize] = useState<{ w: number; h: number } | null>(null)
+
+  // Recompute canvas CSS size when container or stream dimensions change
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const update = () => {
+      const cw = el.clientWidth, ch = el.clientHeight
+      if (!cw || !ch) return
+      const ar = streamInfo.width / streamInfo.height
+      if (cw / ch > ar) setCssSize({ w: ch * ar, h: ch })
+      else              setCssSize({ w: cw, h: cw / ar })
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [streamInfo.width, streamInfo.height])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -89,18 +107,18 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
   }, [conn, streamInfo, initialCodec])
 
   return (
-    <canvas
-      ref={canvasRef}
-      tabIndex={0}
-      style={{
-        display: 'block',
-        width: '100%',
-        height: '100%',
-        objectFit: 'fill',
-        cursor: 'default',
-        outline: 'none',
-        background: '#000'
-      }}
-    />
+    <div ref={wrapRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <canvas
+        ref={canvasRef}
+        tabIndex={0}
+        style={{
+          display: 'block',
+          width:  cssSize ? cssSize.w : '100%',
+          height: cssSize ? cssSize.h : '100%',
+          cursor: 'default',
+          outline: 'none',
+        }}
+      />
+    </div>
   )
 }

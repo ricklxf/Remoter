@@ -111,8 +111,11 @@ sealed class InputController
     // Converts [0,1] normalised coordinate to MOUSEEVENTF_ABSOLUTE range [0, 65535]
     private static int Norm(double v) => (int)Math.Clamp(v * 65535.0, 0, 65535);
 
-    private static void SendInput1(INPUT input) =>
-        SendInput(1, [input], Marshal.SizeOf<INPUT>());
+    private static void SendInput1(INPUT input)
+    {
+        if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
+            AppLog.Write($"[Input] SendInput failed: 0x{Marshal.GetLastWin32Error():X8}");
+    }
 
     // ── P/Invoke ─────────────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ interface Props {
 }
 
 export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, transfers, onDisconnect }: Props) {
+  const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
   const [showTransfers, setShowTransfers] = useState(false)
@@ -65,6 +66,13 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
           transfers={transfers}
           onClose={() => setShowTransfers(false)}
         />
+      )}
+
+      {/* Web-only: disconnect button */}
+      {isWeb && (
+        <button style={styles.webDisconnect} onClick={onDisconnect} title="断开连接">
+          ✕ 断开
+        </button>
       )}
 
       {/* Floating trigger — only visible when toolbar is hidden */}
@@ -126,6 +134,23 @@ const styles: Record<string, React.CSSProperties> = {
     pointerEvents: 'auto',
     whiteSpace: 'nowrap',
     boxShadow: '0 3px 8px rgba(0,0,0,0.10)',
+  },
+  webDisconnect: {
+    position: 'absolute' as const,
+    top: 8,
+    right: 8,
+    zIndex: 150,
+    padding: '4px 10px',
+    background: 'rgba(0,0,0,0.55)',
+    backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
+    border: '1px solid rgba(255,255,255,0.18)',
+    borderRadius: 6,
+    color: '#fff',
+    cursor: 'pointer',
+    fontSize: 12,
+    userSelect: 'none' as const,
+    pointerEvents: 'auto' as const,
   },
   floatBadge: {
     fontSize: 10,

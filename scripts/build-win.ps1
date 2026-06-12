@@ -46,4 +46,4 @@ Write-Host "  ✓ Web → $webDst\" -ForegroundColor Green
 Write-Host ""
 Write-Host "✅ All done." -ForegroundColor Green
 Write-Host "   Exe  : $publishDir\RemoterWin.exe"
-Write-Host "   Web  : embedded → http://<LAN-IP>:7799"
+Write-Host "   Web  : embedded → http://<LAN-IP>:7788"

@@ -55,6 +55,8 @@ final class RemoterAgent {
             self?.removeSession(for: conn)
         }
 
+        // Serve web client on the main WS port (single port forward) and on 7799 (backward compat).
+        wsServer.webDir = httpServer.webDir
         try wsServer.start(port: config.port)
         httpServer.start(port: 7799)
 
@@ -68,8 +70,8 @@ final class RemoterAgent {
         ips.forEach    { print("  LAN : ws://\($0):\(config.port)") }
         vpnIPs.forEach { print("  VPN : ws://\($0):\(config.port)") }
         if httpServer.isEnabled {
-            ips.forEach    { print("  Web : http://\($0):7799") }
-            vpnIPs.forEach { print("  Web : http://\($0):7799") }
+            ips.forEach    { print("  Web : http://\($0):\(config.port)/  (or :7799)") }
+            vpnIPs.forEach { print("  Web : http://\($0):\(config.port)/  (or :7799)") }
         }
 
         if !config.relayURL.isEmpty, let url = URL(string: config.relayURL) {

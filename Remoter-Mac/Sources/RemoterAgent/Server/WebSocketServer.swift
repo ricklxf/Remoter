@@ -1,38 +1,35 @@
 import Foundation
 import Network
+import CryptoKit
 
-typealias MessageHandler = (NWConnection, String) -> Void
-typealias BinaryHandler  = (NWConnection, Data) -> Void
-typealias DisconnectHandler = (NWConnection) -> Void
+typealias MessageHandler    = (NWConnection, String) -> Void
+typealias BinaryHandler     = (NWConnection, Data)   -> Void
+typealias DisconnectHandler = (NWConnection)          -> Void
 
 final class WebSocketServer {
     var onText:       MessageHandler?
     var onBinary:     BinaryHandler?
     var onDisconnect: DisconnectHandler?
 
+    /// When set, plain HTTP GET requests on this port are served from this directory.
+    var webDir: URL?
+
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "remoter.server", qos: .userInteractive)
 
     func start(port: UInt16) throws {
-        let params = NWParameters.tcp
-        let wsOpts = NWProtocolWebSocket.Options()
-        wsOpts.autoReplyPing = true
-        params.defaultProtocolStack.applicationProtocols.insert(wsOpts, at: 0)
-
         let p = NWEndpoint.Port(rawValue: port)!
-        let l = try NWListener(using: params, on: p)
+        let l = try NWListener(using: .tcp, on: p)
         l.stateUpdateHandler = { state in
             switch state {
-            case .ready:   print("[Server] Listening on :\(port)")
+            case .ready:        print("[Server] Listening on :\(port)")
             case .failed(let e): print("[Server] Failed: \(e)")
             default: break
             }
         }
-        l.newConnectionHandler = { [weak self] conn in
-            self?.accept(conn)
-        }
+        l.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
         l.start(queue: queue)
-        self.listener = l
+        listener = l
     }
 
     func stop() {
@@ -42,48 +39,158 @@ final class WebSocketServer {
 
     func sendText(_ text: String, to conn: NWConnection) {
         guard let data = text.data(using: .utf8) else { return }
-        let meta = NWProtocolWebSocket.Metadata(opcode: .text)
-        let ctx = NWConnection.ContentContext(identifier: "ws-text", metadata: [meta])
-        conn.send(content: data, contentContext: ctx, isComplete: true, completion: .idempotent)
+        sendFrame(opcode: 0x01, payload: data, to: conn)
     }
 
     func sendBinary(_ data: Data, to conn: NWConnection) {
-        let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
-        let ctx = NWConnection.ContentContext(identifier: "ws-bin", metadata: [meta])
-        conn.send(content: data, contentContext: ctx, isComplete: true, completion: .idempotent)
+        sendFrame(opcode: 0x02, payload: data, to: conn)
     }
 
-    // MARK: - Private
+    // MARK: - Accept + HTTP/WS dispatch
 
     private func accept(_ conn: NWConnection) {
         conn.start(queue: queue)
-        receive(from: conn)
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, error in
+            guard let self, let data, !data.isEmpty, error == nil else { conn.cancel(); return }
+            let request = String(data: data.prefix(4096), encoding: .ascii) ?? ""
+            if let wsKey = Self.extractHeader(request, "Sec-WebSocket-Key") {
+                self.upgradeWS(conn: conn, key: wsKey)
+            } else {
+                self.serveHTTP(request: request, conn: conn)
+            }
+        }
     }
 
-    private func receive(from conn: NWConnection) {
-        conn.receiveMessage { [weak self] content, ctx, _, error in
-            if let error {
-                if case .posix(let code) = error, code == .ECONNRESET { } else {
-                    print("[Server] Receive error: \(error)")
-                }
-                self?.onDisconnect?(conn)
-                return
-            }
+    // MARK: - WebSocket upgrade + frame loop
 
-            if let meta = ctx?.protocolMetadata(definition: NWProtocolWebSocket.definition)
-                as? NWProtocolWebSocket.Metadata {
-                if meta.opcode == .text, let data = content, let text = String(data: data, encoding: .utf8) {
-                    self?.onText?(conn, text)
-                } else if meta.opcode == .binary, let data = content {
-                    self?.onBinary?(conn, data)
-                } else if meta.opcode == .close {
-                    self?.onDisconnect?(conn)
-                    conn.cancel()
-                    return
+    private func upgradeWS(conn: NWConnection, key: String) {
+        let combined = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        let accept   = Data(Insecure.SHA1.hash(data: Data(combined.utf8))).base64EncodedString()
+        let resp     = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
+        conn.send(content: Data(resp.utf8), completion: .contentProcessed { [weak self] _ in
+            self?.recvFrames(conn: conn, reader: WsFrameReader())
+        })
+    }
+
+    private func recvFrames(conn: NWConnection, reader: WsFrameReader) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
+            guard let self else { return }
+            guard let data, !data.isEmpty, error == nil else {
+                self.onDisconnect?(conn); return
+            }
+            var close = false
+            reader.feed(data) { opcode, payload in
+                switch opcode {
+                case 0x01:
+                    if let text = String(data: payload, encoding: .utf8) { self.onText?(conn, text) }
+                case 0x02:
+                    self.onBinary?(conn, payload)
+                case 0x08:
+                    close = true
+                case 0x09: // ping → pong
+                    self.sendFrame(opcode: 0x0A, payload: payload, to: conn)
+                default: break
                 }
             }
-
-            self?.receive(from: conn)
+            if close { self.onDisconnect?(conn); conn.cancel() }
+            else      { self.recvFrames(conn: conn, reader: reader) }
         }
+    }
+
+    private func sendFrame(opcode: UInt8, payload: Data, to conn: NWConnection) {
+        var frame = Data()
+        frame.append(0x80 | opcode)
+        let len = payload.count
+        if len < 126 {
+            frame.append(UInt8(len))
+        } else if len < 65536 {
+            frame.append(126)
+            frame.append(UInt8((len >> 8) & 0xFF))
+            frame.append(UInt8( len       & 0xFF))
+        } else {
+            frame.append(127)
+            for i in (0..<8).reversed() { frame.append(UInt8((len >> (i * 8)) & 0xFF)) }
+        }
+        frame.append(contentsOf: payload)
+        conn.send(content: frame, completion: .idempotent)
+    }
+
+    // MARK: - HTTP file serving
+
+    private func serveHTTP(request: String, conn: NWConnection) {
+        guard let webDir else { conn.cancel(); return }
+        let firstLine = request.components(separatedBy: "\r\n").first ?? ""
+        let parts     = firstLine.components(separatedBy: " ")
+        guard parts.count >= 2, parts[0] == "GET" else { conn.cancel(); return }
+
+        let rawPath = parts[1].components(separatedBy: "?").first ?? "/"
+        let rel     = rawPath == "/" ? "index.html" : String(rawPath.drop(while: { $0 == "/" }))
+        var fileURL = webDir.appendingPathComponent(rel)
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            fileURL = webDir.appendingPathComponent("index.html")
+        }
+        guard let body = try? Data(contentsOf: fileURL) else {
+            let r = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+            conn.send(content: Data(r.utf8), completion: .contentProcessed { _ in conn.cancel() })
+            return
+        }
+        let mime   = HTTPFileServer.mimeType(for: fileURL.pathExtension)
+        let header = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+        var response = Data(header.utf8)
+        response.append(body)
+        conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+    }
+
+    // MARK: - Helpers
+
+    private static func extractHeader(_ request: String, _ name: String) -> String? {
+        let prefix = name.lowercased() + ": "
+        for line in request.components(separatedBy: "\r\n") {
+            if line.lowercased().hasPrefix(prefix) {
+                return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - WebSocket frame accumulator (handles fragmented TCP reads)
+
+final class WsFrameReader {
+    private var buf = Data()
+
+    func feed(_ data: Data, handler: (UInt8, Data) -> Void) {
+        buf.append(data)
+        while tryParse(handler: handler) { }
+    }
+
+    private func tryParse(handler: (UInt8, Data) -> Void) -> Bool {
+        guard buf.count >= 2 else { return false }
+        let masked     = (buf[1] & 0x80) != 0
+        var headerLen  = 2
+        var payloadLen = Int(buf[1] & 0x7F)
+        if payloadLen == 126 {
+            guard buf.count >= 4 else { return false }
+            payloadLen = (Int(buf[2]) << 8) | Int(buf[3])
+            headerLen  = 4
+        } else if payloadLen == 127 {
+            guard buf.count >= 10 else { return false }
+            payloadLen = 0
+            for i in 2..<10 { payloadLen = (payloadLen << 8) | Int(buf[i]) }
+            headerLen  = 10
+        }
+        let maskLen = masked ? 4 : 0
+        let total   = headerLen + maskLen + payloadLen
+        guard buf.count >= total else { return false }
+
+        let opcode     = buf[0] & 0x0F
+        let maskStart  = headerLen
+        var payload    = Data(buf[(maskStart + maskLen) ..< total])
+        if masked {
+            for i in 0..<payload.count { payload[i] ^= buf[maskStart + (i % 4)] }
+        }
+        buf = Data(buf[total...])
+        handler(opcode, payload)
+        return true
     }
 }

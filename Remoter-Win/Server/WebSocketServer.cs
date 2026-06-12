@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -74,7 +75,12 @@ sealed class WebSocketServer
 
         var request = Encoding.ASCII.GetString(buf, 0, read);
         var key = ExtractHeader(request, "Sec-WebSocket-Key");
-        if (key == null) return null;
+        if (key == null)
+        {
+            // Not a WebSocket upgrade — serve as HTTP GET if possible
+            await ServeFileAsync(stream, request);
+            return null;
+        }
 
         var accept = Convert.ToBase64String(
             SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
@@ -170,6 +176,53 @@ sealed class WebSocketServer
         }
         return buf;
     }
+
+    private static async Task ServeFileAsync(NetworkStream stream, string request)
+    {
+        try
+        {
+            var firstLine = request.Split("\r\n")[0];
+            var parts     = firstLine.Split(' ');
+            if (parts.Length < 2 || parts[0] != "GET") return;
+
+            var rawPath = parts[1].Split('?')[0];
+            var webRoot = Path.Combine(AppContext.BaseDirectory, "web");
+            if (!Directory.Exists(webRoot)) return;
+
+            var rel      = rawPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+            var filePath = string.IsNullOrEmpty(rel)
+                ? Path.Combine(webRoot, "index.html")
+                : Path.Combine(webRoot, rel);
+
+            if (!File.Exists(filePath))
+                filePath = Path.Combine(webRoot, "index.html");
+            if (!File.Exists(filePath)) return;
+
+            var ext  = Path.GetExtension(filePath);
+            var mime = GetMime(ext);
+            var data = await File.ReadAllBytesAsync(filePath);
+
+            var header = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {data.Length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(header);
+            await stream.WriteAsync(data);
+        }
+        catch { /* ignore broken connections */ }
+    }
+
+    private static string GetMime(string ext) => ext.ToLowerInvariant() switch
+    {
+        ".html"  => "text/html; charset=utf-8",
+        ".js"    => "application/javascript",
+        ".css"   => "text/css",
+        ".svg"   => "image/svg+xml",
+        ".png"   => "image/png",
+        ".ico"   => "image/x-icon",
+        ".woff2" => "font/woff2",
+        ".woff"  => "font/woff",
+        ".json"  => "application/json",
+        _        => "application/octet-stream",
+    };
 
     private static string? ExtractHeader(string request, string name)
     {

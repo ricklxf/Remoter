@@ -107,7 +107,7 @@ foreach (var ip in ips)
 AppLog.Write($"  Admin: http://localhost:{port + 2}/");
 if (webFiles.IsEnabled)
     foreach (var ip in ips)
-        AppLog.Write($"  Web : http://{ip}:{WebFileServer.Port}/");
+        AppLog.Write($"  Web : http://{ip}:{port}/  (or :{WebFileServer.Port})");
 if (relay != null)
     AppLog.Write($"  Relay: {relayUrl} (session ID printed on connect)");
 AppLog.Write("Ready. Waiting for connections…");

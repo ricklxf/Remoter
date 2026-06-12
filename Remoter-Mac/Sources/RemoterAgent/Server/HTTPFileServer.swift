@@ -101,7 +101,7 @@ final class HTTPFileServer {
                   completion: .contentProcessed { _ in conn.cancel() })
     }
 
-    private static func mimeType(for ext: String) -> String {
+    static func mimeType(for ext: String) -> String {
         switch ext.lowercased() {
         case "html":         return "text/html; charset=utf-8"
         case "js", "mjs":    return "application/javascript"

@@ -34,6 +34,7 @@ sealed class ScreenCapturer : IDisposable
 
     private const int DXGI_ERROR_WAIT_TIMEOUT = unchecked((int)0x887A0027);
     private const int DXGI_ERROR_ACCESS_LOST  = unchecked((int)0x887A0026);
+    private const int ERROR_INVALID_HANDLE    = unchecked((int)0x80070006);
 
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int n);
 
@@ -92,7 +93,8 @@ sealed class ScreenCapturer : IDisposable
 
         var hr = _dup.AcquireNextFrame(timeoutMs, out _, out var resource);
         if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT) return null;
-        if (hr.Code == DXGI_ERROR_ACCESS_LOST) { TryReinitDuplication(); return null; }
+        if (hr.Code == DXGI_ERROR_ACCESS_LOST ||
+            hr.Code == ERROR_INVALID_HANDLE) { TryReinitDuplication(); return null; }
         hr.CheckError();
 
         try

@@ -29,6 +29,11 @@ nsis:
   createDesktopShortcut: always
 
 mac:
+  # identity: null → skip codesign; avoids "cannot be opened" when no Developer ID cert.
+  # To enable signing: set identity to your "Developer ID Application: ..." fingerprint
+  # and configure notarization via APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD env vars.
+  identity: null
+  entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.

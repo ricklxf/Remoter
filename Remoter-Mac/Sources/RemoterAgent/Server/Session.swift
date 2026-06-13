@@ -1,8 +1,8 @@
 import Foundation
 import Network
 import AppKit
-import OpenDirectory
 import CoreGraphics
+import PamAuthHelper
 import ImageIO
 import UniformTypeIdentifiers
 import ApplicationServices
@@ -270,20 +270,14 @@ final class Session {
         }
     }
 
-    // MARK: - OS 凭据验证
+    // MARK: - OS 凭据验证（PAM — 与系统登录/sudo 使用相同机制）
 
     private func validateOsCredentials(username: String, password: String) -> Bool {
-        do {
-            let session = ODSession.default()
-            let node    = try ODNode(session: session, type: ODNodeType(kODNodeTypeLocalNodes))
-            let record  = try node.record(withRecordType: kODRecordTypeUsers,
-                                          name: username, attributes: nil)
-            try record.verifyPassword(password)
-            return true
-        } catch {
-            NSLog("[Auth] Credential check failed for %@: %@", username, "\(error)")
-            return false
+        let result = pam_verify_password(username, password)
+        if result != 0 {
+            NSLog("[Auth] PAM auth failed for %@ (code %d)", username, result)
         }
+        return result == 0
     }
 
     // MARK: - WebRTC 信令设置

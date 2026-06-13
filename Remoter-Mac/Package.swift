@@ -11,10 +11,17 @@ let package = Package(
         .package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "114.0.0"))
     ],
     targets: [
+        .target(
+            name: "PamAuthHelper",
+            path: "Sources/PamAuthHelper",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("pam")]
+        ),
         .executableTarget(
             name: "RemoterAgent",
             dependencies: [
-                .product(name: "WebRTC", package: "WebRTC")
+                .product(name: "WebRTC", package: "WebRTC"),
+                "PamAuthHelper"
             ],
             path: "Sources/RemoterAgent"
         )

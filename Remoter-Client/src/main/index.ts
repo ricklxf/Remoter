@@ -34,6 +34,7 @@ function createWindow(): void {
     height: 800,
     minWidth: 800,
     minHeight: 600,
+    fullscreen: false,     // 防止 macOS 恢复上次的全屏状态
     show: false,
     // Windows: teal matches the tab bar so there's no color gap before React renders
     backgroundColor: isWin ? '#0fb8ab' : '#f0f4f8',

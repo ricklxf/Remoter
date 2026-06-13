@@ -136,14 +136,20 @@ final class Session {
 
         // ── OS 账户认证 ────────────────────────────────────────
         if case .authCredentials(let username, let password) = msg {
-            if validateOsCredentials(username: username, password: password) {
-                let token = TokenStore.shared.generate(username: username)
+            let u = username.lowercased()
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                step: "cred_received", detail: "user=\(u) pwd_len=\(password.count)")
+            if validateOsCredentials(username: u, password: password) {
+                let token = TokenStore.shared.generate(username: u)
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
-                sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
+                sendJsonRaw(["type": "auth_ok", "token": token, "username": u])
                 Task { await self.beginCapture() }
             } else {
-                sendJsonRaw(["type": "error", "code": "bad_credentials", "message": "用户名或密码错误（请用 macOS 登录密码，用户名在系统偏好→用户与群组中确认）"])
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                    step: "cred_failed", detail: "user=\(u)")
+                sendJsonRaw(["type": "error", "code": "bad_credentials",
+                             "message": "用户名或密码错误（请用 macOS 登录密码，用户名在系统偏好→用户与群组中确认）"])
             }
             return
         }
@@ -273,17 +279,20 @@ final class Session {
     // MARK: - OS 凭据验证（PAM checkpw → dscl 双保险，无需 root）
 
     private func validateOsCredentials(username: String, password: String) -> Bool {
-        guard !username.isEmpty, !password.isEmpty else { return false }
-        // macOS 短用户名大小写不敏感，但 PAM/dscl 实际存储的是小写，统一转小写
-        let u = username.lowercased()
+        guard !username.isEmpty, !password.isEmpty else {
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                step: "cred_empty", detail: "user=\(username) pwd_empty=\(password.isEmpty)")
+            return false
+        }
 
         // 1. PAM checkpw（最简配置：只有 pam_opendirectory.so，无需 root）
-        let pamResult = pam_verify_password(u, password)
-        NSLog("[Auth] PAM checkpw for '%@' → %d", u, pamResult)
+        let pamResult = pam_verify_password(username, password)
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+            step: "pam_result", detail: "user=\(username) code=\(pamResult)")
         if pamResult == 0 { return true }
 
         // 2. dscl 兜底（捕获 stderr 供调试）
-        return dsclAuth(username: u, password: password)
+        return dsclAuth(username: username, password: password)
     }
 
     private func dsclAuth(username: String, password: String) -> Bool {
@@ -297,12 +306,15 @@ final class Session {
             try task.run()
             task.waitUntilExit()
             let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let stderr = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let ok = task.terminationStatus == 0
-            NSLog("[Auth] dscl for '%@' → exit=%d stderr=%@", username, task.terminationStatus, errMsg)
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                step: "dscl_result", detail: "user=\(username) exit=\(task.terminationStatus) stderr=\(stderr)")
             return ok
         } catch {
-            NSLog("[Auth] dscl launch error: %@", error.localizedDescription)
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                step: "dscl_error", detail: error.localizedDescription)
             return false
         }
     }

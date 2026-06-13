@@ -147,7 +147,7 @@ export default function App() {
   activeTabRef.current = activeTab
 
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
-  const showTabBar = !isWeb && (tabs.some(t => t.state !== 'idle') || tabs.length > 1)
+  const showTabBar = !isWeb && (tabs.some(t => t.state === 'streaming') || tabs.length > 1)
 
   useEffect(() => {
     const state = activeTab?.state

@@ -24,7 +24,9 @@ int pam_verify_password(const char *username, const char *password) {
     g_password = password;
     struct pam_conv conv = { conv_fn, NULL };
     pam_handle_t *pamh = NULL;
-    int result = pam_start("login", username, &conv, &pamh);
+    /* "screensaver" uses pam_opendirectory.so without requiring root,
+       unlike "login" which fails for non-privileged processes on macOS. */
+    int result = pam_start("screensaver", username, &conv, &pamh);
     if (result == PAM_SUCCESS) {
         result = pam_authenticate(pamh, 0);
         pam_end(pamh, result);

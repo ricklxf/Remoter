@@ -231,23 +231,30 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "保存并重启")
         alert.addButton(withTitle: "取消")
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 72))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 108))
 
-        let portLabel = NSTextField(labelWithString: "端口：")
-        portLabel.frame = NSRect(x: 0, y: 46, width: 56, height: 22)
-        container.addSubview(portLabel)
+        func label(_ s: String, y: CGFloat) -> NSTextField {
+            let f = NSTextField(labelWithString: s)
+            f.frame = NSRect(x: 0, y: y, width: 56, height: 22)
+            return f
+        }
+        func field(value: String, placeholder: String = "", y: CGFloat) -> NSTextField {
+            let f = NSTextField(frame: NSRect(x: 60, y: y, width: 200, height: 22))
+            f.stringValue = value
+            f.placeholderString = placeholder
+            return f
+        }
 
-        let portField = NSTextField(frame: NSRect(x: 60, y: 46, width: 200, height: 22))
-        portField.stringValue = "\(diskCfg.port)"
+        let pinLabel   = label("PIN：",  y: 82); container.addSubview(pinLabel)
+        let pinField   = field(value: diskCfg.pin, placeholder: "留空则每次重启随机生成", y: 82)
+        container.addSubview(pinField)
+
+        let portLabel  = label("端口：", y: 46); container.addSubview(portLabel)
+        let portField  = field(value: "\(diskCfg.port)", y: 46)
         container.addSubview(portField)
 
-        let relayLabel = NSTextField(labelWithString: "中继：")
-        relayLabel.frame = NSRect(x: 0, y: 10, width: 56, height: 22)
-        container.addSubview(relayLabel)
-
-        let relayField = NSTextField(frame: NSRect(x: 60, y: 10, width: 200, height: 22))
-        relayField.stringValue = diskCfg.relayUrl
-        relayField.placeholderString = "ws://your-relay:7789（留空不用）"
+        let relayLabel = label("中继：", y: 10); container.addSubview(relayLabel)
+        let relayField = field(value: diskCfg.relayUrl, placeholder: "ws://your-relay:7789（留空不用）", y: 10)
         container.addSubview(relayField)
 
         alert.accessoryView = container
@@ -255,10 +262,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let newPort = UInt16(portField.stringValue) ?? diskCfg.port
+        let newPin   = pinField.stringValue.trimmingCharacters(in: .whitespaces)
+        let newPort  = UInt16(portField.stringValue) ?? diskCfg.port
         let newRelay = relayField.stringValue.trimmingCharacters(in: .whitespaces)
 
-        diskCfg.port = newPort
+        diskCfg.pin      = newPin   // 空字符串 → 下次启动随机生成
+        diskCfg.port     = newPort
         diskCfg.relayUrl = newRelay
         diskCfg.save()
 

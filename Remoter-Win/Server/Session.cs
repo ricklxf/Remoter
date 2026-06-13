@@ -115,17 +115,55 @@ sealed class Session
             return;
         }
 
-        // Auth
+        // PIN auth
         if (msg is ClientMsg.Auth auth)
         {
-            // PIN check (disabled during development — enable for production)
             // if (auth.Pin != _pin) { Send(new { type = "error", code = "bad_pin" }); return; }
             _ = auth;
             _authed = true;
-            AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated");
+            AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated (PIN)");
             ConnectionLogger.Shared.LogAuthSuccess(_id);
             Send(new { type = "auth_ok" });
             _ = BeginCaptureAsync();
+            return;
+        }
+
+        // OS credential auth
+        if (msg is ClientMsg.AuthCredentials creds)
+        {
+            if (ValidateOsCredentials(creds.Username, creds.Password))
+            {
+                var token = TokenStore.Generate(creds.Username);
+                _authed = true;
+                AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated as {creds.Username}");
+                ConnectionLogger.Shared.LogAuthSuccess(_id);
+                Send(new { type = "auth_ok", token, username = creds.Username });
+                _ = BeginCaptureAsync();
+            }
+            else
+            {
+                AppLog.Write($"[Session] {_conn.RemoteAddr} credential auth failed for {creds.Username}");
+                Send(new { type = "error", code = "bad_credentials", message = "用户名或密码错误" });
+            }
+            return;
+        }
+
+        // Token auth
+        if (msg is ClientMsg.AuthToken tok)
+        {
+            var username = TokenStore.Lookup(tok.Token);
+            if (username != null)
+            {
+                _authed = true;
+                AppLog.Write($"[Session] {_conn.RemoteAddr} token auth as {username}");
+                ConnectionLogger.Shared.LogAuthSuccess(_id);
+                Send(new { type = "auth_ok" });
+                _ = BeginCaptureAsync();
+            }
+            else
+            {
+                Send(new { type = "error", code = "bad_token", message = "Token 无效，请重新登录" });
+            }
             return;
         }
 
@@ -548,6 +586,17 @@ sealed class Session
     private static void SetMasterMute(bool muted) => AudioController.SetMasterMute(muted);
 
     // ── P/Invoke for system commands ──────────────────────────────────────
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string pass,
+        int logonType, int logonProvider, out nint token);
+
+    private static bool ValidateOsCredentials(string username, string password)
+    {
+        var ok = LogonUser(username, ".", password, 2 /* INTERACTIVE */, 0 /* DEFAULT */, out var token);
+        if (ok) CloseHandle(token);
+        return ok;
+    }
 
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
     [DllImport("user32.dll")] private static extern bool ExitWindowsEx(uint uFlags, uint dwReason);

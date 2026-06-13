@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import AppKit
+import OpenDirectory
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -124,12 +125,40 @@ final class Session {
             return
         }
 
-        // ── 认证 ──────────────────────────────────────────────
-        if case .auth(_) = msg { // PIN 校验已暂时禁用，测试用
+        // ── PIN 认证 ──────────────────────────────────────────
+        if case .auth(_) = msg {
             authenticated = true
             ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
             sendJsonRaw(["type": "auth_ok"])
             Task { await self.beginCapture() }
+            return
+        }
+
+        // ── OS 账户认证 ────────────────────────────────────────
+        if case .authCredentials(let username, let password) = msg {
+            if validateOsCredentials(username: username, password: password) {
+                let token = TokenStore.shared.generate(username: username)
+                authenticated = true
+                ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+                sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
+                Task { await self.beginCapture() }
+            } else {
+                sendJsonRaw(["type": "error", "code": "bad_credentials", "message": "用户名或密码错误"])
+            }
+            return
+        }
+
+        // ── Token 认证 ────────────────────────────────────────
+        if case .authToken(let token) = msg {
+            if let username = TokenStore.shared.lookup(token) {
+                authenticated = true
+                ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+                sendJsonRaw(["type": "auth_ok"])
+                NSLog("[Session] token auth as %@", username)
+                Task { await self.beginCapture() }
+            } else {
+                sendJsonRaw(["type": "error", "code": "bad_token", "message": "Token 无效，请重新登录"])
+            }
             return
         }
 
@@ -238,6 +267,22 @@ final class Session {
 
         default:
             break
+        }
+    }
+
+    // MARK: - OS 凭据验证
+
+    private func validateOsCredentials(username: String, password: String) -> Bool {
+        do {
+            let session = ODSession.default()
+            let node    = try ODNode(session: session, type: ODNodeType(kODNodeTypeLocalNodes))
+            let record  = try node.record(withRecordType: kODRecordTypeUsers,
+                                          name: username, attributes: nil)
+            try record.verifyPassword(password)
+            return true
+        } catch {
+            NSLog("[Auth] Credential check failed for %@: %@", username, "\(error)")
+            return false
         }
     }
 

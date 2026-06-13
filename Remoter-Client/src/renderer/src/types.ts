@@ -1,4 +1,5 @@
 export type ConnectMode = 'direct' | 'relay'
+export type AuthMethod = 'pin' | 'credentials' | 'token'
 
 export interface ConnectParams {
   mode: ConnectMode
@@ -6,6 +7,11 @@ export interface ConnectParams {
   relayUrl?: string
   sessionId?: string
   pin: string
+  // Auth extension
+  authMethod?: AuthMethod
+  username?: string
+  password?: string
+  token?: string
 }
 
 export interface StreamInfo {

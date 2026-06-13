@@ -31,6 +31,8 @@ public abstract record ClientMsg
     public record LockScreen : ClientMsg;
     public record Logout : ClientMsg;
     public record Restart : ClientMsg;
+    public record AuthCredentials(string Username, string Password) : ClientMsg;
+    public record AuthToken(string Token) : ClientMsg;
     public record Unknown : ClientMsg;
 
     public static ClientMsg Parse(JsonElement e)
@@ -61,9 +63,11 @@ public abstract record ClientMsg
             "set_input_enabled"       => new SetInputEnabled(e.Bool("enabled")),
             "clipboard_set_image"     => new ClipboardSetImage(e.Str("data")),
             "lock_screen"             => new LockScreen(),
-            "logout"            => new Logout(),
-            "restart"           => new Restart(),
-            _                   => new Unknown(),
+            "logout"                  => new Logout(),
+            "restart"                 => new Restart(),
+            "auth_credentials"        => new AuthCredentials(e.Str("username"), e.Str("password")),
+            "auth_token"              => new AuthToken(e.Str("token")),
+            _                         => new Unknown(),
         };
     }
 }

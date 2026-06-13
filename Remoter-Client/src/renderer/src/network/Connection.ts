@@ -1,4 +1,5 @@
 import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry } from '../types'
+import { saveAccount } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
@@ -85,7 +86,12 @@ export class Connection {
     ws.onopen = () => {
       this.emit({ type: 'state', state: 'authenticating' })
       if (params.mode === 'direct') {
-        this.sendJson({ type: 'auth', pin: params.pin })
+        const method = params.authMethod ?? 'pin'
+        // PIN is sent immediately (plaintext, low sensitivity)
+        // credentials/token are deferred until after E2E (see crypto_ok handler)
+        if (method === 'pin') {
+          this.sendJson({ type: 'auth', pin: params.pin })
+        }
       }
     }
     ws.onmessage = (ev) => {
@@ -370,14 +376,34 @@ export class Connection {
         break
       }
 
-      case 'crypto_ok':
+      case 'crypto_ok': {
+        // Send sensitive auth after E2E is ready
+        if (this.params?.mode === 'direct') {
+          const method = this.params.authMethod ?? 'pin'
+          if (method === 'credentials') {
+            this.sendJson({ type: 'auth_credentials',
+              username: this.params.username ?? '',
+              password: this.params.password ?? '' })
+          } else if (method === 'token') {
+            this.sendJson({ type: 'auth_token', token: this.params.token ?? '' })
+          }
+        }
         break
+      }
 
       case 'auth_ok':
-      case 'connected':
+      case 'connected': {
+        // Save token when server returns one (credential auth)
+        const token    = msg.token    as string | undefined
+        const username = msg.username as string | undefined
+        if (token && (username ?? this.params?.username)) {
+          const addr = this.params?.directUrl ?? ''
+          saveAccount(addr, username ?? this.params?.username ?? '', token)
+        }
         this.emit({ type: 'state', state: 'authenticating' })
         this.initiateWebRTC()
         break
+      }
 
       case 'stream_started': {
         this.streamWidth  = msg.width  as number

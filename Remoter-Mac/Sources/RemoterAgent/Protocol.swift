@@ -33,6 +33,8 @@ enum ClientMessage {
     case lockScreen
     case logout
     case restart
+    case authCredentials(username: String, password: String)
+    case authToken(token: String)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -113,6 +115,12 @@ enum ClientMessage {
             return .logout
         case "restart":
             return .restart
+        case "auth_credentials":
+            return .authCredentials(
+                username: json["username"] as? String ?? "",
+                password: json["password"] as? String ?? "")
+        case "auth_token":
+            return .authToken(token: json["token"] as? String ?? "")
         default:
             return .unknown
         }

@@ -9,16 +9,27 @@ interface Props {
 }
 
 function inferInitial(): { mode: ConnectMode; directUrl: string; relayUrl: string } {
+  const savedDirect = localStorage.getItem('remoter-direct-url')
+  const savedRelay  = localStorage.getItem('remoter-relay-url')
+
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
+  let defaults: { mode: ConnectMode; directUrl: string; relayUrl: string }
   if (!isWeb) {
-    return { mode: 'direct', directUrl: 'ws://192.168.1.144:7788', relayUrl: 'ws://your-relay-server:7789' }
+    defaults = { mode: 'direct', directUrl: 'ws://192.168.1.144:7788', relayUrl: 'ws://your-relay-server:7789' }
+  } else {
+    const { hostname, port, protocol } = window.location
+    const scheme = protocol === 'https:' ? 'wss' : 'ws'
+    if (port === '7789')      defaults = { mode: 'relay',  directUrl: 'ws://192.168.1.144:7788',      relayUrl: `${scheme}://${hostname}:7789` }
+    else if (port === '7788') defaults = { mode: 'direct', directUrl: `${scheme}://${hostname}:7788`, relayUrl: 'ws://your-relay-server:7789' }
+    else if (port === '')     defaults = { mode: 'direct', directUrl: `${scheme}://${hostname}`,      relayUrl: 'ws://your-relay-server:7789' }
+    else                      defaults = { mode: 'direct', directUrl: 'ws://192.168.1.144:7788',      relayUrl: 'ws://your-relay-server:7789' }
   }
-  const { hostname, port, protocol } = window.location
-  const scheme = protocol === 'https:' ? 'wss' : 'ws'
-  if (port === '7789') return { mode: 'relay',  directUrl: 'ws://192.168.1.144:7788',      relayUrl: `${scheme}://${hostname}:7789` }
-  if (port === '7788') return { mode: 'direct', directUrl: `${scheme}://${hostname}:7788`, relayUrl: 'ws://your-relay-server:7789' }
-  if (port === '')     return { mode: 'direct', directUrl: `${scheme}://${hostname}`,      relayUrl: 'ws://your-relay-server:7789' }
-  return               { mode: 'direct', directUrl: 'ws://192.168.1.144:7788',             relayUrl: 'ws://your-relay-server:7789' }
+
+  return {
+    mode:      defaults.mode,
+    directUrl: savedDirect ?? defaults.directUrl,
+    relayUrl:  savedRelay  ?? defaults.relayUrl,
+  }
 }
 
 export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
@@ -43,6 +54,8 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    localStorage.setItem('remoter-direct-url', directUrl)
+    localStorage.setItem('remoter-relay-url', relayUrl)
     const base = { mode, directUrl, relayUrl, sessionId: sessionId.toUpperCase(), pin }
     if (authMode === 'token' && saved) {
       onConnect({ ...base, authMethod: 'token', token: saved.token })

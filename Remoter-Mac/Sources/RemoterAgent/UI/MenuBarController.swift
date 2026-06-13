@@ -210,6 +210,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         logItem.target = self
         menu.addItem(logItem)
 
+        let settingsItem = NSMenuItem(title: "设置端口 / 中继…",
+                                      action: #selector(openSettings),
+                                      keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
         menu.addItem(.separator())
         let versionItem = NSMenuItem(title: "Remoter v\(kAppVersion)", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
@@ -221,6 +227,52 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                      keyEquivalent: "q")
 
         statusItem?.menu = menu
+    }
+
+    @objc private func openSettings() {
+        var diskCfg = AgentConfig.load()
+
+        let alert = NSAlert()
+        alert.messageText = "Remoter 设置"
+        alert.informativeText = "修改端口后服务将自动重启"
+        alert.addButton(withTitle: "保存并重启")
+        alert.addButton(withTitle: "取消")
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 72))
+
+        let portLabel = NSTextField(labelWithString: "端口：")
+        portLabel.frame = NSRect(x: 0, y: 46, width: 56, height: 22)
+        container.addSubview(portLabel)
+
+        let portField = NSTextField(frame: NSRect(x: 60, y: 46, width: 200, height: 22))
+        portField.stringValue = "\(diskCfg.port)"
+        container.addSubview(portField)
+
+        let relayLabel = NSTextField(labelWithString: "中继：")
+        relayLabel.frame = NSRect(x: 0, y: 10, width: 56, height: 22)
+        container.addSubview(relayLabel)
+
+        let relayField = NSTextField(frame: NSRect(x: 60, y: 10, width: 200, height: 22))
+        relayField.stringValue = diskCfg.relayUrl
+        relayField.placeholderString = "ws://your-relay:7789（留空不用）"
+        container.addSubview(relayField)
+
+        alert.accessoryView = container
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let newPort = UInt16(portField.stringValue) ?? diskCfg.port
+        let newRelay = relayField.stringValue.trimmingCharacters(in: .whitespaces)
+
+        diskCfg.port = newPort
+        diskCfg.relayUrl = newRelay
+        diskCfg.save()
+
+        // Restart the agent to apply changes
+        let exePath = ProcessInfo.processInfo.arguments[0]
+        _ = try? Process.run(URL(fileURLWithPath: exePath), arguments: [])
+        NSApp.terminate(nil)
     }
 
     // MARK: - Actions

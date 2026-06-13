@@ -11,18 +11,21 @@ sealed class AdminServer
     private readonly HttpListener _http = new();
     private readonly int          _agentPort;
     private string                _pin;
+    private string                _relayUrl;
     private int                   _connCount = 0;
 
     private readonly List<string>              _logBuf = new(500);
     private readonly List<StreamWriter>        _sseClients = new();
     private readonly object                    _lock = new();
 
-    public Action<string>? OnPinChange;
+    public Action<string>?  OnPinChange;
+    public Action<string>?  OnRelayChange;
 
-    public AdminServer(int agentPort, string pin)
+    public AdminServer(int agentPort, string pin, string relayUrl = "")
     {
         _agentPort = agentPort;
         _pin       = pin;
+        _relayUrl  = relayUrl;
         int adminPort = agentPort + 2;
         _http.Prefixes.Add($"http://*:{adminPort}/");
     }
@@ -106,6 +109,7 @@ sealed class AdminServer
                     {
                         pin         = _pin,
                         agentPort   = _agentPort,
+                        relayUrl    = _relayUrl,
                         connections = _connCount,
                         uptime      = Environment.TickCount64 / 1000,
                     });
@@ -133,6 +137,53 @@ sealed class AdminServer
                                 Serve(resp, "application/json", "{\"ok\":true}"u8.ToArray());
                                 break;
                             }
+                        }
+                        resp.StatusCode = 400;
+                        Serve(resp, "application/json", "{\"ok\":false}"u8.ToArray());
+                    }
+                    break;
+
+                case "/setport":
+                    if (req.HttpMethod == "POST")
+                    {
+                        using var srp = new StreamReader(req.InputStream);
+                        var bodyP = srp.ReadToEnd();
+                        var docP  = JsonDocument.Parse(bodyP);
+                        if (docP.RootElement.TryGetProperty("port", out var portProp) &&
+                            portProp.TryGetUInt16(out var newPort) && newPort >= 1024)
+                        {
+                            var c = AgentConfig.Load(); c.Port = newPort; c.Save();
+                            Log($"[Admin] Port changed to {newPort}, restarting…");
+                            Serve(resp, "application/json", "{\"ok\":true}"u8.ToArray());
+                            _ = Task.Delay(400).ContinueWith(_ =>
+                            {
+                                System.Diagnostics.Process.Start(
+                                    new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+                                    { UseShellExecute = true });
+                                Environment.Exit(0);
+                            });
+                            break;
+                        }
+                        resp.StatusCode = 400;
+                        Serve(resp, "application/json", "{\"ok\":false}"u8.ToArray());
+                    }
+                    break;
+
+                case "/setrelay":
+                    if (req.HttpMethod == "POST")
+                    {
+                        using var srr = new StreamReader(req.InputStream);
+                        var bodyR = srr.ReadToEnd();
+                        var docR  = JsonDocument.Parse(bodyR);
+                        if (docR.RootElement.TryGetProperty("url", out var urlProp))
+                        {
+                            var newRelay = urlProp.GetString() ?? "";
+                            lock (_lock) _relayUrl = newRelay;
+                            OnRelayChange?.Invoke(newRelay);
+                            var c = AgentConfig.Load(); c.RelayUrl = newRelay; c.Save();
+                            Log($"[Admin] Relay URL updated to '{newRelay}'");
+                            Serve(resp, "application/json", "{\"ok\":true}"u8.ToArray());
+                            break;
                         }
                         resp.StatusCode = 400;
                         Serve(resp, "application/json", "{\"ok\":false}"u8.ToArray());
@@ -229,6 +280,7 @@ header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
 .pin-input{background:#0f0f1a;border:1px solid #333344;color:#eaeaea;border-radius:6px;padding:6px 10px;font-size:14px;font-family:monospace;width:100px}
 .pin-btn{background:#0d9488;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer}
 .pin-btn:hover{opacity:.85}
+.relay-input{background:#0f0f1a;border:1px solid #333344;color:#eaeaea;border-radius:6px;padding:6px 10px;font-size:13px;width:240px}
 .stop-btn{background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;margin-left:auto}
 .stop-btn:hover{background:#991b1b}
 #logs{flex:1;overflow-y:auto;padding:12px 24px;font-family:'Menlo','Consolas',monospace;font-size:12px;line-height:1.7}
@@ -253,7 +305,17 @@ footer{padding:8px 24px;font-size:11px;color:#555;background:#1a1a2e;border-top:
   </div>
   <div class="card">
     <div class="card-label">端口</div>
-    <div class="card-value" id="portVal">—</div>
+    <div class="pin-row">
+      <input class="pin-input" id="portInput" type="number" min="1024" max="65535" style="width:80px">
+      <button class="pin-btn" onclick="setPort()">修改</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-label">中继服务器</div>
+    <div class="pin-row">
+      <input class="relay-input" id="relayInput" type="text" placeholder="ws://your-relay:7789 (留空不用)">
+      <button class="pin-btn" onclick="setRelay()">修改</button>
+    </div>
   </div>
   <div class="card">
     <div class="card-label">运行时间</div>
@@ -285,18 +347,38 @@ async function loadStatus() {
   try {
     const r = await fetch('/status');
     const d = await r.json();
-    document.getElementById('pinInput').value  = d.pin;
-    document.getElementById('portVal').textContent   = d.agentPort;
+    document.getElementById('pinInput').value   = d.pin;
+    document.getElementById('portInput').value  = d.agentPort;
+    if (document.getElementById('relayInput').dataset.dirty !== '1')
+      document.getElementById('relayInput').value = d.relayUrl || '';
     document.getElementById('uptimeVal').textContent = fmtUptime(d.uptime);
     document.getElementById('connBadge').textContent = d.connections + ' 连接';
   } catch {}
 }
+document.getElementById('relayInput').addEventListener('input', () => {
+  document.getElementById('relayInput').dataset.dirty = '1';
+});
 async function setPin() {
   const pin = document.getElementById('pinInput').value.trim();
   if (pin.length < 4) return alert('PIN 至少 4 位');
   const r = await fetch('/setpin', { method:'POST', body: JSON.stringify({pin}), headers:{'Content-Type':'application/json'} });
   const d = await r.json();
   if (d.ok) loadStatus(); else alert('修改失败');
+}
+async function setPort() {
+  const port = parseInt(document.getElementById('portInput').value);
+  if (isNaN(port) || port < 1024 || port > 65535) return alert('端口范围 1024-65535');
+  if (!confirm('修改端口为 ' + port + '？服务将自动重启。')) return;
+  const r = await fetch('/setport', { method:'POST', body: JSON.stringify({port}), headers:{'Content-Type':'application/json'} });
+  const d = await r.json();
+  if (d.ok) { alert('端口已更新，正在重启，请刷新页面…'); } else alert('修改失败');
+}
+async function setRelay() {
+  const url = document.getElementById('relayInput').value.trim();
+  const r = await fetch('/setrelay', { method:'POST', body: JSON.stringify({url}), headers:{'Content-Type':'application/json'} });
+  const d = await r.json();
+  document.getElementById('relayInput').dataset.dirty = '0';
+  if (d.ok) { alert(url ? '中继服务器已更新' : '中继已禁用'); } else alert('修改失败');
 }
 loadStatus();
 setInterval(loadStatus, 5000);

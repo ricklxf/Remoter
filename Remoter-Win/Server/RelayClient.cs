@@ -11,8 +11,9 @@ sealed class RelayClient
     private readonly string _relayUrl;
     private string          _pin;
 
-    private Session?   _session;
-    private RelayConn? _conn;
+    private Session?                  _session;
+    private RelayConn?                _conn;
+    private CancellationTokenSource   _cts = new();
 
     public string? SessionId { get; private set; }
 
@@ -24,26 +25,35 @@ sealed class RelayClient
 
     public void UpdatePin(string pin) { _pin = pin; }
 
-    public void Start() { _ = RunLoopAsync(); }
+    public void Start() { _ = RunLoopAsync(_cts.Token); }
+
+    public void Stop()
+    {
+        _cts.Cancel();
+        _cts = new();
+        CloseSession();
+    }
 
     // ── Connection loop ──────────────────────────────────────────────────
 
-    private async Task RunLoopAsync()
+    private async Task RunLoopAsync(CancellationToken ct)
     {
-        while (true)
+        while (!ct.IsCancellationRequested)
         {
-            try { await ConnectAsync(); }
+            try { await ConnectAsync(ct); }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex) { AppLog.Write($"[Relay] Error: {ex.Message}"); }
 
             CloseSession();
             SessionId = null;
 
             AppLog.Write("[Relay] Disconnected, retrying in 5s…");
-            await Task.Delay(5_000);
+            try { await Task.Delay(5_000, ct); }
+            catch (OperationCanceledException) { break; }
         }
     }
 
-    private async Task ConnectAsync()
+    private async Task ConnectAsync(CancellationToken ct)
     {
         var url = $"{_relayUrl.TrimEnd('/')}?role=host&pin={Uri.EscapeDataString(_pin)}";
         AppLog.Write($"[Relay] Connecting to {_relayUrl}…");
@@ -51,10 +61,10 @@ sealed class RelayClient
         var ws = new ClientWebSocket();
         try
         {
-            await ws.ConnectAsync(new Uri(url), CancellationToken.None);
+            await ws.ConnectAsync(new Uri(url), ct);
             AppLog.Write("[Relay] Connected");
             _conn = new RelayConn(ws);
-            await ReceiveLoopAsync(ws);
+            await ReceiveLoopAsync(ws, ct);
         }
         finally
         {
@@ -62,7 +72,7 @@ sealed class RelayClient
         }
     }
 
-    private async Task ReceiveLoopAsync(ClientWebSocket ws)
+    private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct)
     {
         var buf = new byte[65_536];
         while (ws.State == WebSocketState.Open)
@@ -71,7 +81,7 @@ sealed class RelayClient
             WebSocketReceiveResult result;
             do
             {
-                result = await ws.ReceiveAsync(buf, CancellationToken.None);
+                result = await ws.ReceiveAsync(buf, ct);
                 if (result.MessageType == WebSocketMessageType.Close) return;
                 ms.Write(buf, 0, result.Count);
             }

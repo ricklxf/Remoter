@@ -5,7 +5,17 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 
-const PORT = parseInt(process.env.PORT ?? '7789')
+function getPort(): number {
+  if (process.env.PORT) return parseInt(process.env.PORT)
+  try {
+    const cfgPath = path.join(process.cwd(), 'config.json')
+    const raw = fs.readFileSync(cfgPath, 'utf-8')
+    const cfg = JSON.parse(raw) as { port?: number }
+    if (typeof cfg.port === 'number') return cfg.port
+  } catch {}
+  return 7789
+}
+const PORT = getPort()
 
 // TLS: set TLS_CERT + TLS_KEY env vars to enable WSS
 // e.g.  TLS_CERT=/etc/ssl/cert.pem TLS_KEY=/etc/ssl/key.pem npm start

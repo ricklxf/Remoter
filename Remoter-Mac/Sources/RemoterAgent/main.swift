@@ -10,19 +10,24 @@ struct Config {
     var relayURL: String = ""
 }
 
-func parseArgs() -> Config {
-    var config = Config()
-    var args   = CommandLine.arguments.dropFirst()
+func parseArgs() -> (pin: String?, port: UInt16?, relayURL: String?) {
+    var pin: String?     = nil
+    var port: UInt16?    = nil
+    var relayURL: String? = nil
+    var args = CommandLine.arguments.dropFirst()
     while !args.isEmpty {
         let arg = args.removeFirst()
         switch arg {
-        case "--pin":   config.pin      = args.isEmpty ? "" : String(args.removeFirst())
-        case "--port":  config.port     = UInt16(args.isEmpty ? "7788" : String(args.removeFirst())) ?? 7788
-        case "--relay": config.relayURL = args.isEmpty ? "" : String(args.removeFirst())
+        case "--pin":
+            if !args.isEmpty { pin = String(args.removeFirst()) }
+        case "--port":
+            if !args.isEmpty, let p = UInt16(String(args.removeFirst())) { port = p }
+        case "--relay":
+            if !args.isEmpty { relayURL = String(args.removeFirst()) }
         default: break
         }
     }
-    return config
+    return (pin, port, relayURL)
 }
 
 // MARK: - RemoterAgent
@@ -46,6 +51,8 @@ final class RemoterAgent {
     // Non-blocking setup; run loop is owned by NSApplication
     func start() throws {
         pin = config.pin.isEmpty ? generatePin() : config.pin
+        // Persist the effective PIN so next launch reuses it
+        var c = AgentConfig.load(); c.pin = pin; c.save()
 
         wsServer.onText = { [weak self] conn, text in
             guard let self else { return }
@@ -195,7 +202,15 @@ func getVPNIPs() -> [String] {
 
 // MARK: - Entry point
 
-let cfg        = parseArgs()
+// CLI args override persisted config; PIN is generated later if still empty.
+let (cliPin, cliPort, cliRelay) = parseArgs()
+let diskCfg = AgentConfig.load()
+
+var cfg = Config()
+cfg.pin      = cliPin    ?? (diskCfg.pin.isEmpty ? "" : diskCfg.pin)
+cfg.port     = cliPort   ?? diskCfg.port
+cfg.relayURL = cliRelay  ?? diskCfg.relayUrl
+
 let menuBar    = MainActor.assumeIsolated { MenuBarController() }
 let agent      = RemoterAgent(config: cfg)
 

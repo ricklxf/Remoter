@@ -6,19 +6,17 @@ using RemoterWin;
 
 // ── Arg parsing ───────────────────────────────────────────────────────────
 
-static (string pin, ushort port, string relay) ParseArgs(string[] args)
+static (string? pin, ushort? port, string? relay) ParseArgs(string[] args)
 {
-    string pin   = "";
-    ushort port  = 7788;
-    string relay = "";
+    string? pin   = null;
+    ushort? port  = null;
+    string? relay = null;
     for (int i = 0; i + 1 < args.Length; i++)
     {
         if (args[i] == "--pin")   pin   = args[i + 1];
-        if (args[i] == "--port")  ushort.TryParse(args[i + 1], out port);
+        if (args[i] == "--port"  && ushort.TryParse(args[i + 1], out var p)) port = p;
         if (args[i] == "--relay") relay = args[i + 1];
     }
-    if (string.IsNullOrEmpty(pin))
-        pin = Random.Shared.Next(100_000, 999_999).ToString();
     return (pin, port, relay);
 }
 
@@ -38,21 +36,48 @@ static List<string> GetLocalIPs()
 
 // ── Agent bootstrap ───────────────────────────────────────────────────────
 
-var (pin, port, relayUrl) = ParseArgs(args);
+// CLI args override persisted config; PIN is generated if not set anywhere.
+var (cliPin, cliPort, cliRelay) = ParseArgs(args);
+var cfg     = AgentConfig.Load();
+var pin     = cliPin     ?? (cfg.Pin.Length > 0 ? cfg.Pin : null)
+                         ?? Random.Shared.Next(100_000, 999_999).ToString();
+var port    = cliPort    ?? cfg.Port;
+var relayUrl = cliRelay  ?? cfg.RelayUrl;
+
 var sessions    = new Dictionary<IWsConn, Session>();
 var server      = new WebSocketServer();
-var admin       = new AdminServer(port, pin);
+var admin       = new AdminServer(port, pin, relayUrl);
 RelayClient? relay = string.IsNullOrEmpty(relayUrl) ? null : new RelayClient(relayUrl, pin);
 
 // Route all AppLog entries to the admin SSE stream
 AppLog.OnLog += admin.Log;
 
-// PIN hot-change from admin UI
+// PIN hot-change from admin UI — also persist to config
 admin.OnPinChange = newPin =>
 {
     pin = newPin;
     relay?.UpdatePin(newPin);
+    var c = AgentConfig.Load(); c.Pin = newPin; c.Save();
     AppLog.Write($"[Agent] PIN updated to {newPin}");
+};
+
+// Relay URL hot-change from admin UI
+admin.OnRelayChange = newRelay =>
+{
+    relay?.Stop();
+    relay = null;
+    relayUrl = newRelay;
+    var c = AgentConfig.Load(); c.RelayUrl = newRelay; c.Save();
+    if (!string.IsNullOrEmpty(newRelay))
+    {
+        relay = new RelayClient(newRelay, pin);
+        relay.Start();
+        AppLog.Write($"[Agent] Relay URL updated to {newRelay}");
+    }
+    else
+    {
+        AppLog.Write("[Agent] Relay disabled");
+    }
 };
 
 server.OnConnect = (conn) =>

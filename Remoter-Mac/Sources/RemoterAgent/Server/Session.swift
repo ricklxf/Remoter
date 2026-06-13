@@ -5,6 +5,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import ApplicationServices
+import PamAuthHelper
 
 // Manages one connected client: auth → capture → encode → stream
 // Video: JPEG over WebSocket (bypasses VideoToolbox which hangs on macOS 26)
@@ -142,7 +143,7 @@ final class Session {
                 sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
             } else {
-                sendJsonRaw(["type": "error", "code": "bad_credentials", "message": "用户名或密码错误"])
+                sendJsonRaw(["type": "error", "code": "bad_credentials", "message": "用户名或密码错误（请用 macOS 登录密码，用户名在系统偏好→用户与群组中确认）"])
             }
             return
         }
@@ -269,20 +270,34 @@ final class Session {
         }
     }
 
-    // MARK: - OS 凭据验证（dscl -authonly，无需 root，兼容本地账号和 Apple ID）
+    // MARK: - OS 凭据验证（PAM checkpw → dscl 双保险，无需 root）
 
     private func validateOsCredentials(username: String, password: String) -> Bool {
         guard !username.isEmpty, !password.isEmpty else { return false }
+
+        // 1. PAM checkpw（最简配置：只有 pam_opendirectory.so，无需 root）
+        let pamResult = pam_verify_password(username, password)
+        NSLog("[Auth] PAM checkpw for '%@' → %d", username, pamResult)
+        if pamResult == 0 { return true }
+
+        // 2. dscl 兜底（捕获 stderr 供调试）
+        return dsclAuth(username: username, password: password)
+    }
+
+    private func dsclAuth(username: String, password: String) -> Bool {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/dscl")
         task.arguments = [".", "-authonly", username, password]
         task.standardOutput = Pipe()
-        task.standardError  = Pipe()
+        let stderrPipe = Pipe()
+        task.standardError = stderrPipe
         do {
             try task.run()
             task.waitUntilExit()
+            let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let ok = task.terminationStatus == 0
-            if !ok { NSLog("[Auth] dscl authonly failed for '%@' (exit=%d)", username, task.terminationStatus) }
+            NSLog("[Auth] dscl for '%@' → exit=%d stderr=%@", username, task.terminationStatus, errMsg)
             return ok
         } catch {
             NSLog("[Auth] dscl launch error: %@", error.localizedDescription)

@@ -274,14 +274,16 @@ final class Session {
 
     private func validateOsCredentials(username: String, password: String) -> Bool {
         guard !username.isEmpty, !password.isEmpty else { return false }
+        // macOS 短用户名大小写不敏感，但 PAM/dscl 实际存储的是小写，统一转小写
+        let u = username.lowercased()
 
         // 1. PAM checkpw（最简配置：只有 pam_opendirectory.so，无需 root）
-        let pamResult = pam_verify_password(username, password)
-        NSLog("[Auth] PAM checkpw for '%@' → %d", username, pamResult)
+        let pamResult = pam_verify_password(u, password)
+        NSLog("[Auth] PAM checkpw for '%@' → %d", u, pamResult)
         if pamResult == 0 { return true }
 
         // 2. dscl 兜底（捕获 stderr 供调试）
-        return dsclAuth(username: username, password: password)
+        return dsclAuth(username: u, password: password)
     }
 
     private func dsclAuth(username: String, password: String) -> Bool {

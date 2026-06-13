@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { ConnectParams, ConnectMode, AuthMethod } from '../types'
-import { getSavedAccount, removeSavedAccount, SavedAccount } from '../utils/savedAccounts'
+import { getSavedAccounts, removeSavedAccount, SavedAccount } from '../utils/savedAccounts'
 
 interface Props {
   onConnect: (params: ConnectParams) => void
@@ -41,17 +41,23 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [relayUrl, setRelayUrl]   = useState(init.relayUrl)
   const [sessionId, setSessionId] = useState('')
   const [pin, setPin]             = useState('')
-  const [authMode, setAuthMode]   = useState<AuthMethod>('pin')
-  const [username, setUsername]   = useState('')
-  const [password, setPassword]   = useState('')
-  const [saved, setSaved]         = useState<SavedAccount | null>(null)
+  const [authMode, setAuthMode]       = useState<AuthMethod>('pin')
+  const [username, setUsername]       = useState('')
+  const [password, setPassword]       = useState('')
+  const [savedList, setSavedList]     = useState<SavedAccount[]>([])
+  const [selectedSaved, setSelectedSaved] = useState<SavedAccount | null>(null)
 
-  // Check saved account whenever address changes
+  // Load saved accounts whenever address changes
   useEffect(() => {
-    if (mode !== 'direct') { setSaved(null); return }
-    const acct = getSavedAccount(directUrl)
-    setSaved(acct)
-    if (acct) setAuthMode('token')
+    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); return }
+    const accounts = getSavedAccounts(directUrl)
+    setSavedList(accounts)
+    if (accounts.length > 0) {
+      setSelectedSaved(accounts[0])
+      setAuthMode('token')
+    } else {
+      setSelectedSaved(null)
+    }
   }, [mode, directUrl])
 
   function handleSubmit(e: React.FormEvent) {
@@ -59,8 +65,8 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     localStorage.setItem('remoter-direct-url', directUrl)
     localStorage.setItem('remoter-relay-url', relayUrl)
     const base = { mode, directUrl, relayUrl, sessionId: sessionId.toUpperCase(), pin }
-    if (authMode === 'token' && saved) {
-      onConnect({ ...base, authMethod: 'token', token: saved.token })
+    if (authMode === 'token' && selectedSaved) {
+      onConnect({ ...base, authMethod: 'token', token: selectedSaved.token })
     } else if (authMode === 'credentials') {
       onConnect({ ...base, authMethod: 'credentials', username, password })
     } else {
@@ -69,9 +75,16 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   }
 
   function forgetAccount() {
-    removeSavedAccount(directUrl)
-    setSaved(null)
-    setAuthMode('pin')
+    if (!selectedSaved) return
+    removeSavedAccount(directUrl, selectedSaved.username)
+    const remaining = getSavedAccounts(directUrl)
+    setSavedList(remaining)
+    if (remaining.length > 0) {
+      setSelectedSaved(remaining[0])
+    } else {
+      setSelectedSaved(null)
+      setAuthMode('pin')
+    }
   }
 
   const serverAddr = mode === 'direct' ? directUrl : null
@@ -140,16 +153,28 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {/* Auth section (direct only) */}
           {mode === 'direct' && (
             <>
-              {/* Saved account banner */}
-              {saved && authMode === 'token' && (
+              {/* Saved accounts dropdown */}
+              {savedList.length > 0 && authMode === 'token' && (
                 <div style={s.savedBanner}>
-                  <div style={s.savedInfo}>
-                    <span style={s.savedIcon}>👤</span>
-                    <div>
-                      <div style={s.savedName}>{saved.username}</div>
-                      <div style={s.savedSub}>已记住账户，可直接连接</div>
-                    </div>
-                  </div>
+                  <span style={s.savedIcon}>👤</span>
+                  <select
+                    style={s.savedSelect}
+                    value={selectedSaved?.username ?? ''}
+                    onChange={e => {
+                      if (e.target.value === '__new__') {
+                        setSelectedSaved(null)
+                        setAuthMode('credentials')
+                      } else {
+                        const acct = savedList.find(a => a.username === e.target.value)
+                        if (acct) setSelectedSaved(acct)
+                      }
+                    }}
+                  >
+                    {savedList.map(a => (
+                      <option key={a.username} value={a.username}>{a.username}</option>
+                    ))}
+                    <option value="__new__">+ 使用其他账户…</option>
+                  </select>
                   <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
                 </div>
               )}
@@ -194,7 +219,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {errorMsg && (
             <div style={s.error}>
               {errorMsg}
-              {errorMsg.includes('Token') && serverAddr && (
+              {errorMsg.includes('Token') && serverAddr && selectedSaved && (
                 <button type="button" style={s.reloginBtn}
                   onClick={() => { forgetAccount(); setAuthMode('credentials') }}>
                   重新登录
@@ -204,7 +229,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           )}
 
           <button type="submit" style={s.btn} disabled={isConnecting}>
-            {isConnecting ? '连接中…' : (authMode === 'token' ? `连接 (${saved?.username})` : '连接')}
+            {isConnecting ? '连接中…' : (authMode === 'token' && selectedSaved ? `连接 (${selectedSaved.username})` : '连接')}
           </button>
         </form>
 
@@ -230,18 +255,20 @@ const s: Record<string, React.CSSProperties> = {
   form:    { display: 'flex', flexDirection: 'column', gap: 16 },
   label:   { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: 'var(--text2)' },
 
-  // saved account banner
+  // saved accounts dropdown row
   savedBanner: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    background: 'var(--bg3)', borderRadius: 10, padding: '10px 14px',
-    border: '1px solid var(--primary)', gap: 10,
+    display: 'flex', alignItems: 'center',
+    background: 'var(--bg3)', borderRadius: 10, padding: '8px 12px',
+    border: '1px solid var(--primary)', gap: 8,
   },
-  savedInfo: { display: 'flex', alignItems: 'center', gap: 10 },
-  savedIcon: { fontSize: 22 },
-  savedName: { fontSize: 14, fontWeight: 600, color: 'var(--text)' },
-  savedSub:  { fontSize: 11, color: 'var(--text2)', marginTop: 2 },
+  savedIcon: { fontSize: 18, flexShrink: 0 },
+  savedSelect: {
+    flex: 1, background: 'var(--bg3)', color: 'var(--text)',
+    border: 'none', outline: 'none', fontSize: 13, fontWeight: 600,
+    cursor: 'pointer', minWidth: 0,
+  },
   forgetBtn: {
-    fontSize: 12, color: 'var(--text2)', background: 'transparent',
+    fontSize: 12, color: 'var(--text2)', background: 'transparent', flexShrink: 0,
     border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
   },
 

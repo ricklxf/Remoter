@@ -6,6 +6,7 @@ const api = {
   toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
   maximize:         () => ipcRenderer.send('maximize'),
   unmaximize:       () => ipcRenderer.send('unmaximize'),
+  expandWindow:     () => ipcRenderer.send('expand-window'),
   saveFileDialog:   (name: string): Promise<string | null> => ipcRenderer.invoke('save-file-dialog', name),
   saveFile:         (path: string, data: Uint8Array): Promise<void> => ipcRenderer.invoke('save-file', path, data),
   homeDir:          (): Promise<string> => ipcRenderer.invoke('home-dir'),

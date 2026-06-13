@@ -52,6 +52,7 @@ declare global {
       toggleFullscreen: () => void
       maximize: () => void
       unmaximize: () => void
+      expandWindow?: () => void
       saveFileDialog: (name: string) => Promise<string | null>
       saveFile: (path: string, data: Uint8Array) => Promise<void>
       homeDir: () => Promise<string>

@@ -55,7 +55,7 @@ export default function App() {
           case 'state':
             return { ...t, state: e.state, ...(e.state !== 'error' && { errorMsg: '' }) }
           case 'stream_started':
-            window.remoterAPI?.maximize()
+            window.remoterAPI?.expandWindow?.()
             return { ...t, state: 'streaming', streamInfo: e.info, codec: e.codec ?? 'jpeg', streamStartTime: Date.now() }
           case 'error':
             return { ...t, errorMsg: e.message }
@@ -147,6 +147,7 @@ export default function App() {
   activeTabRef.current = activeTab
 
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
+  const showTabBar = !isWeb && (tabs.some(t => t.state !== 'idle') || tabs.length > 1)
 
   useEffect(() => {
     const state = activeTab?.state
@@ -180,9 +181,9 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {!isWeb && (
+      {showTabBar && (
         <TabBar
-          tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats, muted: t.muted }))}
+          tabs={tabs.map(t => ({ id: t.id, label: t.label, state: t.state, stats: t.stats, muted: t.muted, streamStartTime: t.streamStartTime }))}
           activeId={activeId}
           onSelect={setActiveId}
           onClose={closeTab}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { ConnectionState } from '../types'
 import { ConnStats } from '../network/Connection'
 
@@ -8,6 +8,7 @@ export interface TabInfo {
   state: ConnectionState
   stats: ConnStats
   muted: boolean
+  streamStartTime: number | null
 }
 
 interface Props {
@@ -54,10 +55,29 @@ const STATE_DOT: Record<ConnectionState, string> = {
   streaming: '#22c55e', disconnected: '#aaa', error: '#dc2626',
 }
 
+function formatDuration(startTime: number | null): string {
+  if (!startTime) return '—'
+  const secs = Math.floor((Date.now() - startTime) / 1000)
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
+}
+
 function StatsPopup({ tab, pos }: { tab: TabInfo; pos: { left: number; top: number } }) {
+  const [, setTick] = useState(0)
   const { state, stats, label } = tab
   const streaming = state === 'streaming'
-  const rttColor = stats.rttMs <= 0 ? '#aaa' : stats.rttMs < 50 ? '#15803d' : stats.rttMs < 120 ? '#d97706' : '#dc2626'
+
+  useEffect(() => {
+    if (!streaming) return
+    const timer = setInterval(() => setTick(n => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [streaming])
+
+  const rttCol = stats.rttMs <= 0 ? '#aaa' : stats.rttMs < 50 ? '#15803d' : stats.rttMs < 120 ? '#d97706' : '#dc2626'
   const fpsColor = stats.fps  <= 0 ? '#aaa' : stats.fps  > 50  ? '#15803d' : stats.fps  > 25  ? '#d97706' : '#dc2626'
   const mbps = (stats.bitrateKbps / 1000).toFixed(1)
 
@@ -94,7 +114,8 @@ function StatsPopup({ tab, pos }: { tab: TabInfo; pos: { left: number; top: numb
       </div>
       {streaming && (
         <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <StatRow label="延迟" value={`${stats.rttMs} ms`}  color={rttColor} />
+          <StatRow label="连接时长" value={formatDuration(tab.streamStartTime)} color="#4a5568" />
+          <StatRow label="延迟" value={`${stats.rttMs} ms`}  color={rttCol} />
           <StatRow label="帧率" value={`${stats.fps} fps`}   color={fpsColor} />
           <StatRow label="码率" value={`${mbps} Mbps`}       color="#4a5568" />
           <StatRow label="传输" value={stats.transport}

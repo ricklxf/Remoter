@@ -30,14 +30,14 @@ function createWindow(): void {
   const isMac = process.platform === 'darwin'
 
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
+    width: 420,
+    height: 600,
+    minWidth: 400,
+    minHeight: 480,
     fullscreen: false,     // 防止 macOS 恢复上次的全屏状态
     show: false,
-    // Windows: teal matches the tab bar so there's no color gap before React renders
-    backgroundColor: isWin ? '#0fb8ab' : '#f0f4f8',
+    // Windows: card bg before React renders; Mac: white matches card --bg2
+    backgroundColor: isWin ? '#0fb8ab' : '#ffffff',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isWin ? {
       titleBarOverlay: {
@@ -122,6 +122,12 @@ app.whenReady().then(() => {
   })
   ipcMain.on('unmaximize', () => {
     if (mainWindow?.isMaximized()) mainWindow.unmaximize()
+  })
+  ipcMain.on('expand-window', () => {
+    if (!mainWindow) return
+    mainWindow.setMinimumSize(800, 600)
+    mainWindow.setSize(1200, 800)
+    mainWindow.center()
   })
 
   // File save dialog for received files

@@ -32,6 +32,8 @@ function inferInitial(): { mode: ConnectMode; directUrl: string; relayUrl: strin
   }
 }
 
+const isDesktop = !!window.remoterAPI && window.remoterAPI.platform !== 'web'
+
 export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const init = inferInitial()
   const [mode, setMode]           = useState<ConnectMode>(init.mode)
@@ -74,9 +76,14 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
   const serverAddr = mode === 'direct' ? directUrl : null
 
+  const wrapStyle = isDesktop ? { ...s.wrap, background: 'var(--bg2)' } : s.wrap
+  const cardStyle = isDesktop
+    ? { ...s.card, width: '100%', borderRadius: 0, boxShadow: 'none' }
+    : s.card
+
   return (
-    <div style={s.wrap}>
-      <div style={s.card}>
+    <div style={wrapStyle}>
+      <div style={cardStyle}>
         <div style={s.logo}>
           <span style={s.logoIcon}>⬡</span>
           <h1 style={s.logoText}>Remoter</h1>

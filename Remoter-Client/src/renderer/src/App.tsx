@@ -181,7 +181,14 @@ export default function App() {
         : `${m}:${String(s).padStart(2, '0')}`
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
       const mbps = (bitrateKbps / 1000).toFixed(1)
-      document.title = `${tab.label} 串流中 · 延迟 ${rttMs}ms · 帧率 ${fps}fps · 码率 ${mbps}Mbps · 传输 ${transport} · ${dur}`
+      document.title = [
+        `${tab.label}  串流中`,
+        `连接时长  ${dur}`,
+        `延迟      ${rttMs} ms`,
+        `帧率      ${fps} fps`,
+        `码率      ${mbps} Mbps`,
+        `传输      ${transport}`,
+      ].join('\n')
     }
     tick()
     const timer = setInterval(tick, 1000)

@@ -149,6 +149,15 @@ export default function App() {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const showTabBar = !isWeb && (tabs.some(t => t.state === 'streaming') || tabs.length > 1)
 
+  // 串流结束（tab bar 从显示→隐藏）时把窗口缩回小尺寸
+  const prevShowTabBar = useRef(false)
+  useEffect(() => {
+    if (prevShowTabBar.current && !showTabBar) {
+      window.remoterAPI?.shrinkWindow?.()
+    }
+    prevShowTabBar.current = showTabBar
+  }, [showTabBar])
+
   useEffect(() => {
     const state = activeTab?.state
     const label = activeTab?.label ?? 'Remoter'

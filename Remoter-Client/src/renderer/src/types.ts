@@ -53,6 +53,7 @@ declare global {
       maximize: () => void
       unmaximize: () => void
       expandWindow?: () => void
+      shrinkWindow?: () => void
       saveFileDialog: (name: string) => Promise<string | null>
       saveFile: (path: string, data: Uint8Array) => Promise<void>
       homeDir: () => Promise<string>

@@ -126,7 +126,13 @@ app.whenReady().then(() => {
   ipcMain.on('expand-window', () => {
     if (!mainWindow) return
     mainWindow.setMinimumSize(800, 600)
-    mainWindow.setSize(1200, 800)
+    if (!mainWindow.isMaximized()) mainWindow.maximize()
+  })
+  ipcMain.on('shrink-window', () => {
+    if (!mainWindow) return
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    mainWindow.setMinimumSize(400, 480)
+    mainWindow.setSize(420, 600)
     mainWindow.center()
   })
 

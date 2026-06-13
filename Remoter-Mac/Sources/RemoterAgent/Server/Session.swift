@@ -2,7 +2,6 @@ import Foundation
 import Network
 import AppKit
 import CoreGraphics
-import PamAuthHelper
 import ImageIO
 import UniformTypeIdentifiers
 import ApplicationServices
@@ -270,14 +269,25 @@ final class Session {
         }
     }
 
-    // MARK: - OS 凭据验证（PAM — 与系统登录/sudo 使用相同机制）
+    // MARK: - OS 凭据验证（dscl -authonly，无需 root，兼容本地账号和 Apple ID）
 
     private func validateOsCredentials(username: String, password: String) -> Bool {
-        let result = pam_verify_password(username, password)
-        if result != 0 {
-            NSLog("[Auth] PAM auth failed for %@ (code %d)", username, result)
+        guard !username.isEmpty, !password.isEmpty else { return false }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/dscl")
+        task.arguments = [".", "-authonly", username, password]
+        task.standardOutput = Pipe()
+        task.standardError  = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let ok = task.terminationStatus == 0
+            if !ok { NSLog("[Auth] dscl authonly failed for '%@' (exit=%d)", username, task.terminationStatus) }
+            return ok
+        } catch {
+            NSLog("[Auth] dscl launch error: %@", error.localizedDescription)
+            return false
         }
-        return result == 0
     }
 
     // MARK: - WebRTC 信令设置

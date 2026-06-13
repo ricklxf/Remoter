@@ -54,6 +54,10 @@ final class RemoterAgent {
         // Persist the effective PIN so next launch reuses it
         var c = AgentConfig.load(); c.pin = pin; c.save()
 
+        wsServer.onConnect = { [weak self] conn in
+            guard let self else { return }
+            _ = self.getOrCreate(conn: conn)   // 握手完成立刻创建 Session，发送 hello
+        }
         wsServer.onText = { [weak self] conn, text in
             guard let self else { return }
             self.getOrCreate(conn: conn).handleText(text)

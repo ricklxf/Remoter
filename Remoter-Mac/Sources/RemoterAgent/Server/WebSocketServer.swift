@@ -7,6 +7,7 @@ typealias BinaryHandler     = (NWConnection, Data)   -> Void
 typealias DisconnectHandler = (NWConnection)          -> Void
 
 final class WebSocketServer {
+    var onConnect:    ((NWConnection) -> Void)?
     var onText:       MessageHandler?
     var onBinary:     BinaryHandler?
     var onDisconnect: DisconnectHandler?
@@ -68,6 +69,7 @@ final class WebSocketServer {
         let accept   = Data(Insecure.SHA1.hash(data: Data(combined.utf8))).base64EncodedString()
         let resp     = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
         conn.send(content: Data(resp.utf8), completion: .contentProcessed { [weak self] _ in
+            self?.onConnect?(conn)        // 握手完成即通知，不等第一条消息
             self?.recvFrames(conn: conn, reader: WsFrameReader())
         })
     }

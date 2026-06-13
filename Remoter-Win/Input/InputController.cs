@@ -52,6 +52,30 @@ sealed class InputController
         });
     }
 
+    public void MouseDoubleClick(string button, double xNorm, double yNorm)
+    {
+        int ax = Norm(xNorm);
+        int ay = Norm(yNorm);
+        uint downFlag = button switch
+        {
+            "right"  => MOUSEEVENTF_RIGHTDOWN,
+            "middle" => MOUSEEVENTF_MIDDLEDOWN,
+            _        => MOUSEEVENTF_LEFTDOWN,
+        };
+        uint upFlag = button switch
+        {
+            "right"  => MOUSEEVENTF_RIGHTUP,
+            "middle" => MOUSEEVENTF_MIDDLEUP,
+            _        => MOUSEEVENTF_LEFTUP,
+        };
+        uint abs = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        // Two click cycles at the same position
+        SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT { dx = ax, dy = ay, dwFlags = downFlag | abs } });
+        SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT { dx = ax, dy = ay, dwFlags = upFlag   | abs } });
+        SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT { dx = ax, dy = ay, dwFlags = downFlag | abs } });
+        SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT { dx = ax, dy = ay, dwFlags = upFlag   | abs } });
+    }
+
     public void MouseScroll(int dx, int dy)
     {
         if (dy != 0)

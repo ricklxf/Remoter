@@ -178,6 +178,9 @@ sealed class Session
             case ClientMsg.MouseButton m when _inputEnabled:
                 _input?.MouseButton(m.Button, m.Down, m.X, m.Y); break;
 
+            case ClientMsg.MouseDoubleClick m when _inputEnabled:
+                _input?.MouseDoubleClick(m.Button, m.X, m.Y); break;
+
             case ClientMsg.MouseScroll m when _inputEnabled:
                 _input?.MouseScroll(m.Dx, m.Dy); break;
 
@@ -313,13 +316,18 @@ sealed class Session
                 continue;
             }
 
-            if (jpeg == null) { await Task.Yield(); continue; }
+            if (jpeg == null) { await Task.Delay(1, ct).ConfigureAwait(false); continue; }
 
             var fid = _frameId++;
             var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
             var pkt = FrameBuilder.VideoFramePacket(jpeg, fid, pts, keyframe: true);
             _bytesSent += pkt.Length;
-            _ = _conn.SendBinaryAsync(pkt);
+            // On send failure, cancel the capture loop so the session tears down cleanly
+            _ = _conn.SendBinaryAsync(pkt).ContinueWith(
+                _ => _cts?.Cancel(),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
         }
     }
 

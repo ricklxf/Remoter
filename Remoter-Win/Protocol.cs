@@ -33,6 +33,7 @@ public abstract record ClientMsg
     public record Restart : ClientMsg;
     public record AuthCredentials(string Username, string Password) : ClientMsg;
     public record AuthToken(string Token) : ClientMsg;
+    public record MouseDoubleClick(string Button, double X, double Y) : ClientMsg;
     public record Unknown : ClientMsg;
 
     public static ClientMsg Parse(JsonElement e)
@@ -67,6 +68,7 @@ public abstract record ClientMsg
             "restart"                 => new Restart(),
             "auth_credentials"        => new AuthCredentials(e.Str("username"), e.Str("password")),
             "auth_token"              => new AuthToken(e.Str("token")),
+            "mouse_double_click"      => new MouseDoubleClick(e.Str("button"), e.Dbl("x"), e.Dbl("y")),
             _                         => new Unknown(),
         };
     }

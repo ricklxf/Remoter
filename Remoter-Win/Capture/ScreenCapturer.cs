@@ -166,11 +166,19 @@ sealed class ScreenCapturer : IDisposable
         _lastGdiTick = now;
 
         if (_gdiBmp == null) return null;
-        using var g = Graphics.FromImage(_gdiBmp);
-        g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
-        using var ms = new MemoryStream(Width * Height / 3);
-        _gdiBmp.Save(ms, _jpegCodec, _jpegParams);
-        return ms.ToArray();
+        try
+        {
+            using var g = Graphics.FromImage(_gdiBmp);
+            g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
+            using var ms = new MemoryStream(Width * Height / 3);
+            _gdiBmp.Save(ms, _jpegCodec, _jpegParams);
+            return ms.ToArray();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] GDI frame error (0x{ex.HResult:X8}): {ex.Message}");
+            return null;
+        }
     }
 
     // ── Public API ──────────────────────────────────────────────────────────

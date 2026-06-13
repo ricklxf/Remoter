@@ -243,9 +243,24 @@ sealed class Session
 
     private async Task CaptureLoopAsync(CancellationToken ct)
     {
+        int consecutiveErrors = 0;
         while (!ct.IsCancellationRequested)
         {
-            var jpeg = _capturer!.CaptureJpeg(timeoutMs: 16); // blocks ≤16ms
+            byte[]? jpeg;
+            try
+            {
+                jpeg = _capturer!.CaptureJpeg(timeoutMs: 16); // blocks ≤16ms
+                consecutiveErrors = 0;
+            }
+            catch (Exception ex)
+            {
+                consecutiveErrors++;
+                AppLog.Write($"[Session] Capture frame error ({consecutiveErrors}): {ex.Message}");
+                if (consecutiveErrors > 30) throw; // give up after ~6s of consecutive failures
+                await Task.Delay(200, ct).ConfigureAwait(false);
+                continue;
+            }
+
             if (jpeg == null) { await Task.Yield(); continue; }
 
             var fid = _frameId++;

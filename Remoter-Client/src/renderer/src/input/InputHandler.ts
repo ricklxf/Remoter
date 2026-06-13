@@ -1,5 +1,4 @@
 import { Connection } from '../network/Connection'
-import { getKeymap, mapKeyCode, mapModifiers } from '../utils/keymap'
 
 // Translates DOM mouse/keyboard events to remote input commands.
 // All coordinates are normalized [0,1] relative to the remote screen.
@@ -131,16 +130,14 @@ export class InputHandler {
     // Let Ctrl+Alt+Del / system shortcuts through
     if (ke.code === 'F11') return
     ke.preventDefault()
-    const km = getKeymap()
-    this.conn.sendKey(mapKeyCode(ke.code, km), true, mapModifiers(collectModifiers(ke), km))
+    this.conn.sendKey(ke.code, true, collectModifiers(ke))
   }
 
   private onKeyUp = (e: Event): void => {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
     ke.preventDefault()
-    const km = getKeymap()
-    this.conn.sendKey(mapKeyCode(ke.code, km), false, mapModifiers(collectModifiers(ke), km))
+    this.conn.sendKey(ke.code, false, collectModifiers(ke))
   }
 
   // MARK: - Pointer lock

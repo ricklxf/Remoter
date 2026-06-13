@@ -11,6 +11,7 @@ sealed class Session
     private readonly IWsConn         _conn;
     private readonly string         _pin;
     private readonly E2ECrypto      _crypto = new();
+    private readonly string         _id     = Guid.NewGuid().ToString();
 
     private ScreenCapturer?   _capturer;
     private InputController?  _input;
@@ -23,6 +24,8 @@ sealed class Session
     private int    _lastClipImgSize = -1;
     private uint   _frameId   = 0;
     private DateTime _connectTime;
+    private long   _bytesSent = 0;
+    private long   _bytesRecv = 0;
 
     private CancellationTokenSource? _cts;
     private System.Threading.Timer?  _clipTimer;
@@ -36,6 +39,7 @@ sealed class Session
     public void Start()
     {
         AppLog.Write($"[Session] {_conn.RemoteAddr} connected");
+        ConnectionLogger.Shared.LogClientConnected(_id, _conn.RemoteAddr);
         // Send hello with our E2E public key so client initiates ECDH
         SendRaw(new { type = "hello", version = "1.0", os = "Windows",
                       pubkey = _crypto.PublicKeyBase64() });
@@ -71,6 +75,7 @@ sealed class Session
         // File chunk: 0x02 | 16B id | 4B offset BE | data
         if (_authed && data[0] == FrameType.FileChunk && data.Length > 21)
         {
+            _bytesRecv += data.Length;
             var fid    = Encoding.UTF8.GetString(data, 1, 16).TrimEnd('\0');
             var offset = (long)((data[17] << 24) | (data[18] << 16) | (data[19] << 8) | data[20]);
             _fileRecv?.Receive(fid, offset, data[21..]);
@@ -79,10 +84,16 @@ sealed class Session
 
     public void Close()
     {
-        _cts?.Cancel();       // signals CaptureLoopAsync to stop
-        _clipTimer?.Dispose(); // stops clipboard polling
-        // _capturer is disposed in BeginCaptureAsync's finally block;
-        // disposing here races with the capture loop still running
+        _cts?.Cancel();
+        _clipTimer?.Dispose();
+        if (_connectTime != default)
+        {
+            var secs = (int)(DateTime.UtcNow - _connectTime).TotalSeconds;
+            ConnectionLogger.Shared.LogDisconnected(
+                _id, secs,
+                _bytesSent / 1_048_576.0,
+                _bytesRecv / 1_048_576.0);
+        }
     }
 
     // ── Message routing ─────────────────────────────────────────────────
@@ -112,6 +123,7 @@ sealed class Session
             _ = auth;
             _authed = true;
             AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated");
+            ConnectionLogger.Shared.LogAuthSuccess(_id);
             Send(new { type = "auth_ok" });
             _ = BeginCaptureAsync();
             return;
@@ -224,6 +236,7 @@ sealed class Session
             _cts        = new CancellationTokenSource();
 
             Send(new { type = "stream_started", width = c.Width, height = c.Height, codec = "jpeg" });
+            ConnectionLogger.Shared.LogConnected(_id, "jpeg", _crypto.IsReady);
             StartClipboard();
 
             await CaptureLoopAsync(_cts.Token);
@@ -231,6 +244,7 @@ sealed class Session
         catch (Exception ex)
         {
             AppLog.Write($"[Session] Capture error: {ex.Message}");
+            ConnectionLogger.Shared.LogCaptureError(_id, ex.Message);
             try { Send(new { type = "error", code = "capture_failed", message = ex.Message }); } catch { }
         }
         finally
@@ -266,6 +280,7 @@ sealed class Session
             var fid = _frameId++;
             var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
             var pkt = FrameBuilder.VideoFramePacket(jpeg, fid, pts, keyframe: true);
+            _bytesSent += pkt.Length;
             _ = _conn.SendBinaryAsync(pkt);
         }
     }
@@ -530,13 +545,7 @@ sealed class Session
         CloseHandle(hToken);
     }
 
-    private static void SetMasterMute(bool muted)
-    {
-        // COM-based mute via IMMDevice / IAudioEndpointVolume would be ideal.
-        // Simple approach: use nircmd or mute hotkey simulation.
-        // For now, no-op to avoid COM complexity.
-        _ = muted;
-    }
+    private static void SetMasterMute(bool muted) => AudioController.SetMasterMute(muted);
 
     // ── P/Invoke for system commands ──────────────────────────────────────
 

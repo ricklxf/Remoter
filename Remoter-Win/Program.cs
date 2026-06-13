@@ -111,6 +111,7 @@ if (Directory.Exists(webDir))
 if (relay != null)
     AppLog.Write($"  Relay: {relayUrl} (session ID printed on connect)");
 AppLog.Write("Ready. Waiting for connections…");
+ConnectionLogger.Shared.LogAgentStarted(port, string.IsNullOrEmpty(relayUrl) ? null : relayUrl);
 
 // WinExe: no console window, no Ctrl+C. Cleanup on process exit.
 // To stop the server gracefully, use the admin console → "停止服务".

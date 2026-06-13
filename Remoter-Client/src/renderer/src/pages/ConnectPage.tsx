@@ -76,9 +76,15 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
   const serverAddr = mode === 'direct' ? directUrl : null
 
-  const wrapStyle = isDesktop ? { ...s.wrap, background: 'var(--bg2)' } : s.wrap
+  const isMac = window.remoterAPI?.platform === 'darwin'
+  // 桌面模式：顶部对齐（避免内容超出时上溢）+ 可滚动
+  // Mac hiddenInset 红绿灯占 ~28px，额外加顶部间距
+  const wrapStyle = isDesktop
+    ? { ...s.wrap, background: 'var(--bg2)', alignItems: 'flex-start' as const, overflowY: 'auto' as const }
+    : s.wrap
   const cardStyle = isDesktop
-    ? { ...s.card, width: '100%', borderRadius: 0, boxShadow: 'none' }
+    ? { ...s.card, width: '100%', borderRadius: 0, boxShadow: 'none',
+        paddingTop: isMac ? '56px' : '40px' }
     : s.card
 
   return (

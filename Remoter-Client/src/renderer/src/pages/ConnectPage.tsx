@@ -90,6 +90,12 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   return (
     <div style={wrapStyle}>
       <div style={cardStyle}>
+        {/* Mac：顶部 56px padding 区域作为拖拽把手 */}
+        {isMac && isDesktop && (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 56,
+            // @ts-ignore
+            WebkitAppRegion: 'drag' }} />
+        )}
         <div style={s.logo}>
           <span style={s.logoIcon}>⬡</span>
           <h1 style={s.logoText}>Remoter</h1>
@@ -213,7 +219,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
 const s: Record<string, React.CSSProperties> = {
   wrap:    { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg)' },
-  card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px', width: 420, boxShadow: 'var(--shadow)' },
+  card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px', width: 420, boxShadow: 'var(--shadow)', position: 'relative' as const },
   logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 },
   logoIcon:{ fontSize: 32, color: 'var(--primary)' },
   logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' },

@@ -37,7 +37,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable, SCStreamOutput, SCStr
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         cfg.capturesAudio    = false
         cfg.pixelFormat      = kCVPixelFormatType_32BGRA
-        cfg.showsCursor      = true
+        cfg.showsCursor      = false
         cfg.scalesToFit      = false
 
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)

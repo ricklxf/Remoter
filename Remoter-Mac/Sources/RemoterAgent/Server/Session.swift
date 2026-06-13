@@ -186,6 +186,10 @@ final class Session {
             guard inputEnabled else { break }
             input?.mouseButton(button: btn, down: down, x: x, y: y)
 
+        case .mouseDoubleClick(let btn, let x, let y):
+            guard inputEnabled else { break }
+            input?.mouseDoubleClick(button: btn, x: x, y: y)
+
         case .mouseScroll(let dx, let dy):
             guard inputEnabled else { break }
             input?.mouseScroll(dx: dx, dy: dy)

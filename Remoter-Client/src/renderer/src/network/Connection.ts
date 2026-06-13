@@ -131,6 +131,10 @@ export class Connection {
   sendMouseButton(button: string, down: boolean, x: number, y: number): void {
     this.sendJson({ type: 'mouse_button', button, down, x, y })
   }
+
+  sendMouseDoubleClick(button: string, x: number, y: number): void {
+    this.sendJson({ type: 'mouse_double_click', button, x, y })
+  }
   sendMouseScroll(dx: number, dy: number): void {
     this.sendJson({ type: 'mouse_scroll', dx, dy })
   }
@@ -200,6 +204,18 @@ export class Connection {
 
   sendBinary(data: ArrayBuffer): void {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
+  }
+
+  private sendAuthPlaintext(): void {
+    if (!this.params || this.params.mode !== 'direct') return
+    const method = this.params.authMethod ?? 'pin'
+    if (method === 'credentials') {
+      this.ws?.send(JSON.stringify({ type: 'auth_credentials',
+        username: this.params.username ?? '',
+        password: this.params.password ?? '' }))
+    } else if (method === 'token') {
+      this.ws?.send(JSON.stringify({ type: 'auth_token', token: this.params.token ?? '' }))
+    }
   }
 
   async sendFile(file: File): Promise<void> {
@@ -369,9 +385,14 @@ export class Connection {
               const myPub = await this.e2e.getPublicKeyBase64()
               this.ws?.send(JSON.stringify({ type: 'crypto_hello', pubkey: myPub }))
             } catch (e) {
-              console.warn('[Conn] E2E skipped (no secure context):', e)
+              console.warn('[Conn] E2E failed, falling back to plaintext auth:', e)
+              // E2E 失败时直接明文发送，避免凭据认证卡死
+              this.sendAuthPlaintext()
             }
           })
+        } else {
+          // 无 crypto.subtle（非安全上下文），直接明文发送
+          this.sendAuthPlaintext()
         }
         break
       }

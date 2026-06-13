@@ -11,6 +11,7 @@ enum ClientMessage {
     case auth(pin: String)
     case mouseMove(x: Double, y: Double)
     case mouseButton(button: String, down: Bool, x: Double, y: Double)
+    case mouseDoubleClick(button: String, x: Double, y: Double)
     case mouseScroll(dx: Int, dy: Int)
     case key(code: String, down: Bool, modifiers: [String])
     case clipboardSet(text: String)
@@ -51,6 +52,12 @@ enum ClientMessage {
             return .mouseButton(
                 button: json["button"] as? String ?? "left",
                 down: json["down"] as? Bool ?? false,
+                x: json["x"] as? Double ?? 0,
+                y: json["y"] as? Double ?? 0
+            )
+        case "mouse_double_click":
+            return .mouseDoubleClick(
+                button: json["button"] as? String ?? "left",
                 x: json["x"] as? Double ?? 0,
                 y: json["y"] as? Double ?? 0
             )

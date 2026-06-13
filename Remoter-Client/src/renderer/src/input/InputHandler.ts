@@ -107,8 +107,11 @@ export class InputHandler {
   }
 
   private onDblClick = (e: Event): void => {
-    // handled by two mousedown/up pairs, nothing extra needed
-    e.preventDefault()
+    if (!this.enabled) return
+    const me = e as MouseEvent
+    me.preventDefault()
+    const { nx, ny } = this.getCoords(me)
+    this.conn.sendMouseDoubleClick(buttonName(me.button), nx, ny)
   }
 
   private onWheel = (e: Event): void => {

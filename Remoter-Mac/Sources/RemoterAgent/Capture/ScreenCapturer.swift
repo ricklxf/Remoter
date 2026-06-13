@@ -1,54 +1,79 @@
 import Foundation
+import ScreenCaptureKit
 import CoreGraphics
+import CoreImage
+import CoreMedia
 
-final class ScreenCapturer: @unchecked Sendable {
+final class ScreenCapturer: NSObject, @unchecked Sendable, SCStreamOutput, SCStreamDelegate {
     var onFrame: ((CGImage, Int, Int) -> Void)?
 
     private(set) var screenWidth:  Int = 1920
     private(set) var screenHeight: Int = 1080
 
-    private var displayID: CGDirectDisplayID = CGMainDisplayID()
-    private var captureTimer: DispatchSourceTimer?
-    private let captureQueue = DispatchQueue(label: "remoter.capture", qos: .userInitiated)
+    private var stream:  SCStream?
+    private let ciCtx = CIContext(options: [.useSoftwareRenderer: false])
 
     func start(fps: Int = 30) async throws {
-        displayID    = CGMainDisplayID()
-        screenWidth  = CGDisplayPixelsWide(displayID)
-        screenHeight = CGDisplayPixelsHigh(displayID)
+        // SCShareableContent 会触发系统「屏幕录制」会话授权弹窗
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
-        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
-            detail: "id=\(displayID) \(screenWidth)x\(screenHeight)")
-
-        // 测试帧：在当前 async 上下文调用（已知可行）
-        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "test_frame")
-        guard CGDisplayCreateImage(displayID) != nil else {
+        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+                         ?? content.displays.first else {
+            ConnectionLogger.shared.logStep(sessionId: "capturer", step: "no_display")
             throw RemoterError.captureUnavailable
         }
-        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "test_frame_ok")
 
-        // 采集循环：使用 DispatchSourceTimer（专为定时采集设计）
-        // 在 captureQueue 上触发，不占用 GCD global 线程池
-        let did = displayID, w = screenWidth, h = screenHeight
-        let intervalNs = UInt64(1_000_000_000 / fps)
+        screenWidth  = display.width
+        screenHeight = display.height
 
-        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
-        timer.schedule(deadline: .now(), repeating: .nanoseconds(Int(intervalNs)), leeway: .milliseconds(2))
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            if let img = CGDisplayCreateImage(did) {
-                self.onFrame?(img, w, h)
-            }
-        }
-        captureTimer = timer
+        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
+            detail: "id=\(display.displayID) \(screenWidth)x\(screenHeight)")
 
-        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "timer_armed")
-        timer.resume()
-        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "loop_started")
+        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+
+        let cfg = SCStreamConfiguration()
+        cfg.width            = screenWidth
+        cfg.height           = screenHeight
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+        cfg.capturesAudio    = false
+        cfg.pixelFormat      = kCVPixelFormatType_32BGRA
+        cfg.showsCursor      = true
+        cfg.scalesToFit      = false
+
+        let s = SCStream(filter: filter, configuration: cfg, delegate: self)
+        try s.addStreamOutput(self, type: .screen,
+                              sampleHandlerQueue: DispatchQueue(label: "remoter.capture", qos: .userInitiated))
+        try await s.startCapture()
+        stream = s
+
+        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "sck_stream_started",
+            detail: "\(screenWidth)x\(screenHeight) @\(fps)fps")
     }
 
     func stop() async {
-        captureTimer?.cancel()
-        captureTimer = nil
+        guard let s = stream else { return }
+        stream = nil
+        try? await s.stopCapture()
+    }
+
+    // MARK: - SCStreamOutput
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                of type: SCStreamOutputType) {
+        guard type == .screen,
+              sampleBuffer.isValid,
+              let imageBuffer = sampleBuffer.imageBuffer else { return }
+
+        let ci = CIImage(cvImageBuffer: imageBuffer)
+        guard let cg = ciCtx.createCGImage(ci, from: ci.extent) else { return }
+        onFrame?(cg, screenWidth, screenHeight)
+    }
+
+    // MARK: - SCStreamDelegate
+
+    func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "sck_error",
+            detail: error.localizedDescription)
     }
 }
 

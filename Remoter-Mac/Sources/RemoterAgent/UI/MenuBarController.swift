@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import ApplicationServices
+import ScreenCaptureKit
 
 // MARK: - Status model
 
@@ -52,34 +53,27 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         requestAccessibilityPermission()
     }
 
-    // 主动触发屏幕录制权限申请，避免在后台连接时弹框被 macOS 忽略
+    // 用 ScreenCaptureKit 触发屏幕录制权限（包含 macOS 15+ 的会话授权弹窗）
     private func requestScreenCapturePermission() {
-        // Step 1: TCC 权限检查（同步，不阻塞 UI）
-        let granted = CGRequestScreenCaptureAccess()
-        if !granted {
-            ConnectionLogger.shared.logPermission(event: "screen_capture_denied")
-            let alert = NSAlert()
-            alert.messageText = "需要屏幕录制权限"
-            alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 RemoterAgent 的开关，然后重启本 app。"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "打开系统设置")
-            alert.addButton(withTitle: "稍后")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-            }
-            return
-        }
-        ConnectionLogger.shared.logPermission(event: "screen_capture_granted")
-
-        // Step 2: macOS 26 每次 app 启动都需要一次「录制会话授权」
-        // 在 app 启动时（用户在 Mac 前）主动触发，让用户点允许。
-        // 这样后续客户端连接时不再出现弹框。
-        DispatchQueue.global(qos: .userInitiated).async {
-            if CGDisplayCreateImage(CGMainDisplayID()) != nil {
-                ConnectionLogger.shared.logPermission(event: "session_auth_ok")
-            } else {
-                ConnectionLogger.shared.logPermission(event: "session_auth_failed")
+        Task {
+            do {
+                // SCShareableContent 会弹出「屏幕与系统录音」会话授权对话框
+                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                ConnectionLogger.shared.logPermission(event: "screen_capture_granted")
+            } catch {
+                ConnectionLogger.shared.logPermission(event: "screen_capture_denied")
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = "需要屏幕录制权限"
+                    alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 RemoterAgent 的开关，然后重启本 app。"
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "打开系统设置")
+                    alert.addButton(withTitle: "稍后")
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    }
+                }
             }
         }
     }

@@ -182,7 +182,18 @@ export default function App() {
         : `${m}:${String(s).padStart(2, '0')}`
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
       const mbps = (bitrateKbps / 1000).toFixed(1)
-      document.title = `${tab.label} 串流中 · ${dur} · ${rttMs}ms · ${fps}fps · ${mbps}Mbps · ${transport}`
+      const lines = [
+        `${tab.label}  串流中`,
+        `连接时长  ${dur}`,
+        `延迟      ${rttMs} ms`,
+        `帧率      ${fps} fps`,
+        `码率      ${mbps} Mbps`,
+        `传输      ${transport}`,
+      ]
+      const title = lines.join('\n')
+      console.log('[title]', JSON.stringify(title))   // 调试：确认 \n 是否在字符串里
+      document.title = title
+      console.log('[title after set]', JSON.stringify(document.title)) // 确认 set 后是否被浏览器改掉
     }
     tick()
     const timer = setInterval(tick, 1000)

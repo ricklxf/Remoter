@@ -42,6 +42,7 @@ export class Connection {
   private params: ConnectParams | null = null
   private statsTimer: ReturnType<typeof setInterval> | null = null
   private readonly e2e = new E2ECrypto()
+  private serverOs = ''
 
   private sendQueue: Promise<void> = Promise.resolve()
 
@@ -68,6 +69,7 @@ export class Connection {
   connect(params: ConnectParams): void {
     this.params = params
     this.e2e.reset()
+    this.serverOs = ''
     this.sendQueue = Promise.resolve()
     this.emit({ type: 'state', state: 'connecting' })
 
@@ -187,6 +189,10 @@ export class Connection {
   }
 
   sendJson(obj: object): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Conn] sendJson: ws not open, state=', this.ws?.readyState)
+      return
+    }
     if (this.e2e.isReady) {
       this.sendQueue = this.sendQueue.then(async () => {
         try {
@@ -194,13 +200,17 @@ export class Connection {
           const frame = new Uint8Array(1 + ct.length)
           frame[0] = ENCRYPTED_MSG
           frame.set(ct, 1)
-          this.ws?.send(frame.buffer)
+          if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(frame.buffer)
         } catch (e) {
-          console.warn('[Conn] encrypt failed:', e)
+          console.warn('[Conn] encrypt/send failed:', e)
         }
       })
     } else {
-      this.ws?.send(JSON.stringify(obj))
+      try {
+        this.ws.send(JSON.stringify(obj))
+      } catch (e) {
+        console.warn('[Conn] send failed:', e)
+      }
     }
   }
 
@@ -377,6 +387,7 @@ export class Connection {
 
       case 'hello': {
         const macPubkey = msg.pubkey as string | undefined
+        this.serverOs = (msg.os as string | undefined) ?? ''
         // crypto.subtle requires a secure context (HTTPS / localhost).
         // On plain HTTP, skip E2E and stay in plaintext mode.
         if (macPubkey && typeof crypto !== 'undefined' && crypto.subtle) {
@@ -424,7 +435,10 @@ export class Connection {
           saveAccount(addr, username ?? this.params?.username ?? '', token)
         }
         this.emit({ type: 'state', state: 'authenticating' })
-        this.initiateWebRTC()
+        // Windows agent 不支持 WebRTC，跳过以避免 ICE candidate 占满 sendQueue
+        if (this.serverOs !== 'Windows') {
+          this.initiateWebRTC()
+        }
         break
       }
 

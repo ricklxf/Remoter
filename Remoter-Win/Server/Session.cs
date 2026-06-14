@@ -19,6 +19,8 @@ sealed class Session
 
     private bool   _authed    = false;
     private bool   _inputEnabled = true;
+    private bool   _debugInputLog = true;
+    private int    _inputLogCount = 0;
     private bool   _clipSync  = true;
     private string _lastClip  = "";
     private int    _lastClipImgSize = -1;
@@ -174,18 +176,24 @@ sealed class Session
         {
             // ── Input ──────────────────────────────────────────────────
             case ClientMsg.MouseMove m when _inputEnabled:
+                if (_debugInputLog && _inputLogCount++ < 3)
+                    AppLog.Write($"[Input] MouseMove ({m.X:F3}, {m.Y:F3}) [first {_inputLogCount}/3]");
                 _input?.MouseMove(m.X, m.Y); break;
 
             case ClientMsg.MouseButton m when _inputEnabled:
+                AppLog.Write($"[Input] MouseButton {m.Button} down={m.Down}");
                 _input?.MouseButton(m.Button, m.Down, m.X, m.Y); break;
 
             case ClientMsg.MouseDoubleClick m when _inputEnabled:
+                AppLog.Write($"[Input] MouseDblClick {m.Button}");
                 _input?.MouseDoubleClick(m.Button, m.X, m.Y); break;
 
             case ClientMsg.MouseScroll m when _inputEnabled:
+                AppLog.Write($"[Input] MouseScroll dx={m.Dx} dy={m.Dy}");
                 _input?.MouseScroll(m.Dx, m.Dy); break;
 
             case ClientMsg.KeyEvent k when _inputEnabled:
+                AppLog.Write($"[Input] Key {k.Code} down={k.Down}");
                 _input?.KeyEvent(k.Code, k.Down, k.Mods); break;
 
             case ClientMsg.ClipboardSet c:
@@ -217,6 +225,7 @@ sealed class Session
 
             // ── System commands ────────────────────────────────────────
             case ClientMsg.CtrlAltDel:
+                AppLog.Write("[Input] CtrlAltDel received");
                 SendSAS(); break;
 
             case ClientMsg.SetClipboardSync sc:
@@ -555,13 +564,16 @@ sealed class Session
 
     private static void SendSAS()
     {
-        // SendSAS() in sas.dll — may require "Software\Microsoft\Windows\CurrentVersion\Policies\System"
-        // AllowSoftwareSAS=1 registry key or running as SYSTEM.
+        // SendSAS() in sas.dll — may require AllowSoftwareSAS=1 registry key or SYSTEM privileges.
         // Fallback: inject Ctrl+Alt+Del via SendInput (works for non-UAC scenarios).
-        try { NativeSendSAS(false); }
-        catch
+        try
         {
-            // Fallback: keyboard injection (doesn't trigger SAS in secure desktops)
+            NativeSendSAS(false);
+            AppLog.Write("[Input] SendSAS via sas.dll OK");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Input] sas.dll failed ({ex.Message}), falling back to SendInput");
             var inputs = new[]
             {
                 MakeKey(0xA2, down: true),   // VK_LCONTROL
@@ -571,7 +583,8 @@ sealed class Session
                 MakeKey(0xA4, down: false),
                 MakeKey(0xA2, down: false),
             };
-            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            AppLog.Write($"[Input] SendInput CtrlAltDel sent={sent} lastErr=0x{Marshal.GetLastWin32Error():X8}");
         }
     }
 

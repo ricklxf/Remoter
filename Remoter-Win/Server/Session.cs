@@ -21,6 +21,7 @@ sealed class Session
     private bool   _inputEnabled = true;
     private bool   _debugInputLog = true;
     private int    _inputLogCount = 0;
+    private int    _routeLogCount = 0;
     private bool   _clipSync  = true;
     private string _lastClip  = "";
     private int    _lastClipImgSize = -1;
@@ -171,6 +172,10 @@ sealed class Session
         }
 
         if (!_authed) return;
+
+        // 诊断：记录前 10 条已鉴权消息的类型，确认路由正常工作
+        if (_debugInputLog && _routeLogCount++ < 10)
+            AppLog.Write($"[Route] #{_routeLogCount} {msg.GetType().Name}");
 
         switch (msg)
         {

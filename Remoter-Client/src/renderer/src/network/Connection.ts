@@ -68,6 +68,20 @@ export class Connection {
   // MARK: - 连接 / 断开
 
   connect(params: ConnectParams): void {
+    // 关闭旧连接（清空事件回调，防止 onclose 触发 disconnected 事件）
+    if (this.ws) {
+      this.ws.onopen    = null
+      this.ws.onmessage = null
+      this.ws.onclose   = null
+      this.ws.onerror   = null
+      this.ws.close()
+      this.ws = null
+    }
+    this.stopStats()
+    this.stopClipboardSync()
+    this.webrtc?.close()
+    this.webrtc = null
+
     this.params = params
     this.e2e.reset()
     this.serverOs = ''

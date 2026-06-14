@@ -134,19 +134,11 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
         <form onSubmit={handleSubmit} style={s.form}>
           {/* Address */}
           {mode === 'direct' ? (
-            <>
-              <label style={s.label}>
-                <span>被控端地址</span>
-                <input value={directUrl} onChange={e => setDirectUrl(e.target.value)}
-                  placeholder="ws://192.168.1.100:7788" required />
-              </label>
-              <label style={s.label}>
-                <span style={s.nameLabel}>机器名称<em style={s.optional}>（选填）</em></span>
-                <input value={machineName} onChange={e => setMachineName(e.target.value)}
-                  onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
-                  placeholder="办公室 PC · 家里 Mac…" />
-              </label>
-            </>
+            <label style={s.label}>
+              <span>被控端地址</span>
+              <input value={directUrl} onChange={e => setDirectUrl(e.target.value)}
+                placeholder="ws://192.168.1.100:7788" required />
+            </label>
           ) : (
             <>
               <label style={s.label}>
@@ -166,33 +158,48 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {/* Auth section (direct only) */}
           {mode === 'direct' && (
             <>
-              {/* Saved accounts dropdown */}
-              {savedList.length > 0 && (
-                <div style={s.savedBanner}>
-                  <span style={s.savedIcon}>👤</span>
-                  <select
-                    style={s.savedSelect}
-                    value={selectedSaved?.username ?? '__new__'}
-                    onChange={e => {
-                      if (e.target.value === '__new__') {
-                        setSelectedSaved(null)
-                        setAuthMode('credentials')
-                      } else {
-                        const acct = savedList.find(a => a.username === e.target.value)
-                        if (acct) { setSelectedSaved(acct); setAuthMode('token') }
-                      }
-                    }}
-                  >
-                    {savedList.map(a => (
-                      <option key={a.username} value={a.username}>
-                        {a.username === '__pin__' ? 'PIN 码（记住）' : a.username}
-                      </option>
-                    ))}
-                    <option value="__new__">+ 使用其他账户…</option>
-                  </select>
-                  <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
-                </div>
-              )}
+              {/* Connection card: machine name + saved accounts */}
+              <div style={{
+                ...s.savedBanner,
+                borderColor: savedList.length > 0 ? 'var(--primary)' : 'var(--border)',
+              }}>
+                <input
+                  style={s.machineInput}
+                  value={machineName}
+                  onChange={e => setMachineName(e.target.value)}
+                  onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
+                  placeholder="给这台机器起个名字（可选）"
+                />
+                {savedList.length > 0 && (
+                  <>
+                    <div style={s.bannerDivider} />
+                    <div style={s.accountRow}>
+                      <span style={s.savedIcon}>👤</span>
+                      <select
+                        style={s.savedSelect}
+                        value={selectedSaved?.username ?? '__new__'}
+                        onChange={e => {
+                          if (e.target.value === '__new__') {
+                            setSelectedSaved(null)
+                            setAuthMode('credentials')
+                          } else {
+                            const acct = savedList.find(a => a.username === e.target.value)
+                            if (acct) { setSelectedSaved(acct); setAuthMode('token') }
+                          }
+                        }}
+                      >
+                        {savedList.map(a => (
+                          <option key={a.username} value={a.username}>
+                            {a.username === '__pin__' ? 'PIN 码（记住）' : a.username}
+                          </option>
+                        ))}
+                        <option value="__new__">+ 使用其他账户…</option>
+                      </select>
+                      <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
+                    </div>
+                  </>
+                )}
+              </div>
 
               {/* Auth mode tabs */}
               <div style={s.authTabs}>
@@ -269,16 +276,20 @@ const s: Record<string, React.CSSProperties> = {
   tabActive:{ background: 'var(--primary)', color: '#fff' },
   form:    { display: 'flex', flexDirection: 'column', gap: 16 },
   label:   { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: 'var(--text2)' },
-  nameLabel: { display: 'flex', alignItems: 'center', gap: 4 },
-  optional:  { fontStyle: 'normal', fontSize: 11, color: 'var(--text2)', opacity: 0.6 },
-
-  // saved accounts dropdown row
+  // connection card (machine name + saved accounts)
   savedBanner: {
-    display: 'flex', alignItems: 'center',
+    display: 'flex', flexDirection: 'column',
     background: 'var(--bg3)', borderRadius: 10, padding: '8px 12px',
-    border: '1px solid var(--primary)', gap: 8,
+    border: '1px solid var(--border)',
   },
-  savedIcon: { fontSize: 18, flexShrink: 0 },
+  machineInput: {
+    background: 'transparent', border: 'none', outline: 'none',
+    fontSize: 13, fontWeight: 600, color: 'var(--text)',
+    width: '100%', padding: '2px 0',
+  },
+  bannerDivider: { height: 1, background: 'var(--border)', margin: '6px 0' },
+  accountRow:   { display: 'flex', alignItems: 'center', gap: 8 },
+  savedIcon:    { fontSize: 18, flexShrink: 0 },
   savedSelect: {
     flex: 1, background: 'var(--bg3)', color: 'var(--text)',
     border: 'none', outline: 'none', fontSize: 13, fontWeight: 600,

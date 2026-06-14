@@ -38,6 +38,21 @@ sealed class ScreenCapturer : IDisposable
 
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int n);
 
+    // Cursor overlay P/Invokes
+    [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO pci);
+    [DllImport("user32.dll")] static extern bool GetIconInfo(nint hIcon, out ICONINFO pi);
+    [DllImport("user32.dll")] static extern bool DrawIconEx(nint hdc, int x, int y, nint hIcon, int cx, int cy, int step, nint hbr, int flags);
+    [DllImport("gdi32.dll")]  static extern bool DeleteObject(nint hObj);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CURSORINFO { public int cbSize, flags; public nint hCursor; public POINT pt; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int x, y; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ICONINFO { public bool fIcon; public int xHotspot, yHotspot; public nint hbmMask, hbmColor; }
+    private const int CURSOR_SHOWING = 1;
+    private const int DI_NORMAL = 3;
+
     public ScreenCapturer(int jpegQuality = 65)
     {
         _jpegCodec  = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
@@ -157,6 +172,26 @@ sealed class ScreenCapturer : IDisposable
         AppLog.Write($"[Capturer] {Width}x{Height} GDI BitBlt ready");
     }
 
+    private void DrawCursorOnGraphics(Graphics g)
+    {
+        var ci = new CURSORINFO { cbSize = Marshal.SizeOf<CURSORINFO>() };
+        if (!GetCursorInfo(ref ci) || ci.flags != CURSOR_SHOWING || ci.hCursor == nint.Zero) return;
+
+        int drawX = ci.pt.x;
+        int drawY = ci.pt.y;
+        if (GetIconInfo(ci.hCursor, out var ii))
+        {
+            drawX -= ii.xHotspot;
+            drawY -= ii.yHotspot;
+            if (ii.hbmMask  != nint.Zero) DeleteObject(ii.hbmMask);
+            if (ii.hbmColor != nint.Zero) DeleteObject(ii.hbmColor);
+        }
+
+        var hdc = g.GetHdc();
+        try { DrawIconEx(hdc, drawX, drawY, ci.hCursor, 0, 0, 0, nint.Zero, DI_NORMAL); }
+        finally { g.ReleaseHdc(hdc); }
+    }
+
     private byte[]? CaptureGdi(int targetFps = 30)
     {
         // Throttle to targetFps
@@ -170,6 +205,7 @@ sealed class ScreenCapturer : IDisposable
         {
             using var g = Graphics.FromImage(_gdiBmp);
             g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
+            DrawCursorOnGraphics(g);
             using var ms = new MemoryStream(Width * Height / 3);
             _gdiBmp.Save(ms, _jpegCodec, _jpegParams);
             return ms.ToArray();

@@ -45,6 +45,7 @@ export class Connection {
   private serverOs = ''
 
   private sendQueue: Promise<void> = Promise.resolve()
+  private _inputLogN = 0
 
   private streamWidth  = 0
   private streamHeight = 0
@@ -71,6 +72,7 @@ export class Connection {
     this.e2e.reset()
     this.serverOs = ''
     this.sendQueue = Promise.resolve()
+    this._inputLogN = 0
     this.emit({ type: 'state', state: 'connecting' })
 
     let url: string
@@ -86,6 +88,7 @@ export class Connection {
     this.ws = ws
 
     ws.onopen = () => {
+      console.log('[Conn] WS open →', url)
       this.emit({ type: 'state', state: 'authenticating' })
       if (params.mode === 'direct') {
         const method = params.authMethod ?? 'pin'
@@ -130,6 +133,7 @@ export class Connection {
   // MARK: - 输入事件
 
   sendMouseMove(x: number, y: number): void {
+    if (this._inputLogN++ < 3) console.log('[Conn] sendMouseMove', x.toFixed(3), y.toFixed(3), 'e2e=', this.e2e.isReady)
     this.sendJson({ type: 'mouse_move', x, y })
   }
   sendMouseButton(button: string, down: boolean, x: number, y: number): void {
@@ -388,6 +392,7 @@ export class Connection {
       case 'hello': {
         const macPubkey = msg.pubkey as string | undefined
         this.serverOs = (msg.os as string | undefined) ?? ''
+        console.log('[Conn] hello, os=', this.serverOs, 'e2e-avail=', !!(typeof crypto !== 'undefined' && crypto.subtle))
         // crypto.subtle requires a secure context (HTTPS / localhost).
         // On plain HTTP, skip E2E and stay in plaintext mode.
         if (macPubkey && typeof crypto !== 'undefined' && crypto.subtle) {
@@ -434,6 +439,7 @@ export class Connection {
           const addr = this.params?.directUrl ?? ''
           saveAccount(addr, username ?? this.params?.username ?? '', token)
         }
+        console.log('[Conn] auth_ok, serverOs=', this.serverOs, 'skipWebRTC=', this.serverOs === 'Windows')
         this.emit({ type: 'state', state: 'authenticating' })
         // Windows agent 不支持 WebRTC，跳过以避免 ICE candidate 占满 sendQueue
         if (this.serverOs !== 'Windows') {

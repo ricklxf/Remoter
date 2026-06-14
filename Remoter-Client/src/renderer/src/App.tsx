@@ -9,6 +9,35 @@ import { ConnectParams, ConnectionState, StreamInfo, FileTransfer } from './type
 import { VideoCodec } from './video/Decoder'
 import { TabBar } from './components/TabBar'
 
+// ─── Tab title with fake line breaks ────────────────────────────────
+// Chrome strips \n from document.title (HTML spec). Workaround: pad each
+// "line" with spaces so it fills exactly one row of the tooltip, causing
+// the next line to wrap naturally at the space boundary.
+// TITLE_LINE_PX ≈ Chrome tooltip width on most systems (~260px). Adjust
+// if wrapping looks wrong: increase → fewer wraps; decrease → more wraps.
+const TITLE_LINE_PX = 260
+const PX_CJK   = 13   // 12px system font, CJK glyph ≈ 13px
+const PX_ASCII  = 7   // typical letter/digit
+const PX_SPACE  = 3.5 // U+0020 space
+
+function buildTooltipTitle(lines: string[]): string {
+  function lineWidthPx(s: string): number {
+    let w = 0
+    for (const ch of s) {
+      const cp = ch.codePointAt(0)!
+      if (ch === ' ') w += PX_SPACE
+      else if (cp >= 0x2E80) w += PX_CJK
+      else w += PX_ASCII
+    }
+    return w
+  }
+  return lines.map((line, i) => {
+    if (i === lines.length - 1) return line
+    const pad = Math.max(1, Math.ceil((TITLE_LINE_PX - lineWidthPx(line)) / PX_SPACE))
+    return line + ' '.repeat(pad)
+  }).join(' ')
+}
+
 // ─── Tab display state ──────────────────────────────────────────────
 
 const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP' }
@@ -182,18 +211,14 @@ export default function App() {
         : `${m}:${String(s).padStart(2, '0')}`
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
       const mbps = (bitrateKbps / 1000).toFixed(1)
-      const lines = [
+      document.title = buildTooltipTitle([
         `${tab.label}  串流中`,
         `连接时长  ${dur}`,
         `延迟      ${rttMs} ms`,
         `帧率      ${fps} fps`,
         `码率      ${mbps} Mbps`,
         `传输      ${transport}`,
-      ]
-      const title = lines.join('\n')
-      console.log('[title]', JSON.stringify(title))   // 调试：确认 \n 是否在字符串里
-      document.title = title
-      console.log('[title after set]', JSON.stringify(document.title)) // 确认 set 后是否被浏览器改掉
+      ])
     }
     tick()
     const timer = setInterval(tick, 1000)

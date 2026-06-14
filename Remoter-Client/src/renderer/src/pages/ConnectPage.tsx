@@ -154,19 +154,19 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {mode === 'direct' && (
             <>
               {/* Saved accounts dropdown */}
-              {savedList.length > 0 && authMode === 'token' && (
+              {savedList.length > 0 && (
                 <div style={s.savedBanner}>
                   <span style={s.savedIcon}>👤</span>
                   <select
                     style={s.savedSelect}
-                    value={selectedSaved?.username ?? ''}
+                    value={selectedSaved?.username ?? '__new__'}
                     onChange={e => {
                       if (e.target.value === '__new__') {
                         setSelectedSaved(null)
                         setAuthMode('credentials')
                       } else {
                         const acct = savedList.find(a => a.username === e.target.value)
-                        if (acct) setSelectedSaved(acct)
+                        if (acct) { setSelectedSaved(acct); setAuthMode('token') }
                       }
                     }}
                   >
@@ -184,7 +184,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                 {([['pin', 'PIN 码'], ['credentials', '账户密码']] as [AuthMethod, string][]).map(([m, label]) => (
                   <button key={m} type="button"
                     style={{ ...s.authTab, ...(authMode === m ? s.authTabActive : {}) }}
-                    onClick={() => setAuthMode(m)}>
+                    onClick={() => { setAuthMode(m); setSelectedSaved(null) }}>
                     {label}
                   </button>
                 ))}

@@ -68,6 +68,26 @@ final class InputController {
     }
 
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
+        // CapsLock requires special handling on macOS: must set maskAlphaShift correctly.
+        // Client already deduplicates and sends one down+up pair per toggle.
+        if code == "CapsLock" {
+            if down {
+                let src = CGEventSource(stateID: .hidSystemState)
+                // Read the current CapsLock state from the system to determine the new state.
+                let capsCurrentlyOn = NSEvent.modifierFlags.contains(.capsLock)
+                let newFlags: CGEventFlags = capsCurrentlyOn ? [] : .maskAlphaShift
+                if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: true) {
+                    e.flags = newFlags
+                    e.post(tap: .cgSessionEventTap)
+                }
+                if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: false) {
+                    e.flags = newFlags
+                    e.post(tap: .cgSessionEventTap)
+                }
+            }
+            return
+        }
+
         let src = CGEventSource(stateID: .hidSystemState)
         guard let keyCode = keyCodeMap[code] else {
             NSLog("[Input] keyEvent: unknown code=%@", code)

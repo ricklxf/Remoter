@@ -17,6 +17,9 @@ export class InputHandler {
   private curNormX = 0.5
   private curNormY = 0.5
 
+  // Track CapsLock state to detect real toggles (macOS may suppress CapsLock keydown)
+  private lastCapsLock: boolean | null = null
+
   private boundHandlers: Array<[string, EventListenerOrEventListenerObject]> = []
 
   constructor(conn: Connection) {
@@ -130,9 +133,21 @@ export class InputHandler {
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
-    // Let Ctrl+Alt+Del / system shortcuts through
     if (ke.code === 'F11') return
     ke.preventDefault()
+
+    if (ke.code === 'CapsLock') {
+      // CapsLock is a toggle key. getModifierState gives the NEW state after this press.
+      // Only send once per actual state change (macOS may fire duplicate or suppress events).
+      const capsOn = ke.getModifierState('CapsLock')
+      if (this.lastCapsLock !== capsOn) {
+        this.lastCapsLock = capsOn
+        this.conn.sendKey('CapsLock', true, [])
+        this.conn.sendKey('CapsLock', false, [])
+      }
+      return
+    }
+
     this.conn.sendKey(ke.code, true, collectModifiers(ke))
   }
 
@@ -140,6 +155,7 @@ export class InputHandler {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
     ke.preventDefault()
+    if (ke.code === 'CapsLock') return  // handled entirely in onKeyDown
     this.conn.sendKey(ke.code, false, collectModifiers(ke))
   }
 

@@ -5,6 +5,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import ApplicationServices
+import SystemConfiguration
 import PamAuthHelper
 
 // Manages one connected client: auth → capture → encode → stream
@@ -50,7 +51,22 @@ final class Session {
 
         // Include our E2E public key so client can initiate handshake
         sendJsonRaw(["type": "hello", "version": "1.0", "os": "macOS",
-                     "pubkey": crypto.publicKeyBase64])
+                     "pubkey": crypto.publicKeyBase64,
+                     "computerName": Self.computerName(),
+                     "modelId": Self.modelId()])
+    }
+
+    private static func computerName() -> String {
+        return (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? ""
+    }
+
+    private static func modelId() -> String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "" }
+        var chars = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &chars, &size, nil, 0)
+        return String(cString: chars)
     }
 
     func handleText(_ text: String) {

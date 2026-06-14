@@ -1,5 +1,5 @@
 import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry } from '../types'
-import { saveAccount } from '../utils/savedAccounts'
+import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
@@ -392,6 +392,13 @@ export class Connection {
       case 'hello': {
         const macPubkey = msg.pubkey as string | undefined
         this.serverOs = (msg.os as string | undefined) ?? ''
+        if (this.params?.mode === 'direct' && this.params.directUrl) {
+          const computerName = (msg.computerName as string | undefined) ?? ''
+          const modelId = (msg.modelId as string | undefined) ?? ''
+          if (computerName || modelId) {
+            saveMachineInfo(this.params.directUrl, { computerName, modelId })
+          }
+        }
         console.log('[Conn] hello, os=', this.serverOs, 'e2e-avail=', !!(typeof crypto !== 'undefined' && crypto.subtle))
         // crypto.subtle requires a secure context (HTTPS / localhost).
         // On plain HTTP, skip E2E and stay in plaintext mode.

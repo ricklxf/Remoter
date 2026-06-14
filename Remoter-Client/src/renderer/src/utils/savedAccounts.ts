@@ -61,3 +61,27 @@ export function saveMachineName(address: string, name: string): void {
     localStorage.setItem(NAME_KEY, JSON.stringify(map))
   } catch {}
 }
+
+// ── 机型信息（来自被控端 hello 消息，首次连接后缓存）────────────────────
+
+const INFO_KEY = 'remoter-machine-info'
+
+export interface MachineInfo {
+  computerName: string
+  modelId: string
+}
+
+export function getMachineInfo(address: string): MachineInfo | null {
+  try {
+    const map: Record<string, MachineInfo> = JSON.parse(localStorage.getItem(INFO_KEY) ?? '{}')
+    return map[address] ?? null
+  } catch { return null }
+}
+
+export function saveMachineInfo(address: string, info: MachineInfo): void {
+  try {
+    const map: Record<string, MachineInfo> = JSON.parse(localStorage.getItem(INFO_KEY) ?? '{}')
+    map[address] = info
+    localStorage.setItem(INFO_KEY, JSON.stringify(map))
+  } catch {}
+}

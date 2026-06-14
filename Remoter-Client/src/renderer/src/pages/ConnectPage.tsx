@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { ConnectParams, ConnectMode, AuthMethod } from '../types'
 import { getSavedAccounts, removeSavedAccount, SavedAccount,
-         getMachineName, saveMachineName } from '../utils/savedAccounts'
+         getMachineName, saveMachineName,
+         getMachineInfo, MachineInfo } from '../utils/savedAccounts'
 
 interface Props {
   onConnect: (params: ConnectParams) => void
@@ -48,10 +49,11 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [savedList, setSavedList]     = useState<SavedAccount[]>([])
   const [selectedSaved, setSelectedSaved] = useState<SavedAccount | null>(null)
   const [machineName, setMachineName] = useState('')
+  const [machineInfo, setMachineInfo] = useState<MachineInfo | null>(null)
 
   // Load saved accounts, PIN, and machine name whenever address changes
   useEffect(() => {
-    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); setMachineName(''); return }
+    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); setMachineName(''); setMachineInfo(null); return }
     const accounts = getSavedAccounts(directUrl)
     setSavedList(accounts)
     if (accounts.length > 0) {
@@ -61,6 +63,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
       setSelectedSaved(null)
     }
     setMachineName(getMachineName(directUrl))
+    setMachineInfo(getMachineInfo(directUrl))
   }, [mode, directUrl])
 
   function handleSubmit(e: React.FormEvent) {
@@ -170,6 +173,12 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                   onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
                   placeholder="给这台机器起个名字（可选）"
                 />
+                {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
+                  <div style={s.machineInfoRow}>
+                    <span style={s.machineInfoName}>{machineInfo.computerName}</span>
+                    {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
+                  </div>
+                )}
                 {savedList.length > 0 && (
                   <>
                     <div style={s.bannerDivider} />
@@ -286,6 +295,19 @@ const s: Record<string, React.CSSProperties> = {
     background: 'transparent', border: 'none', outline: 'none',
     fontSize: 13, fontWeight: 600, color: 'var(--text)',
     width: '100%', padding: '2px 0',
+  },
+  machineInfoRow: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    marginTop: 2, fontSize: 11, color: 'var(--text2)',
+  },
+  machineInfoName: {
+    flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+  },
+  machineInfoBadge: {
+    background: 'var(--bg)', border: '1px solid var(--border)',
+    borderRadius: 4, padding: '1px 6px',
+    fontSize: 11, color: 'var(--text2)',
+    whiteSpace: 'nowrap' as const, flexShrink: 0,
   },
   bannerDivider: { height: 1, background: 'var(--border)', margin: '6px 0' },
   accountRow:   { display: 'flex', alignItems: 'center', gap: 8 },

@@ -284,8 +284,9 @@ sealed class WsConn : IWsConn
         else
         {
             ms.WriteByte(127);
+            long len64 = payload.Length;
             for (int i = 7; i >= 0; i--)
-                ms.WriteByte((byte)(payload.Length >> (i * 8)));
+                ms.WriteByte((byte)(len64 >> (i * 8)));
         }
         ms.Write(payload);
         return ms;

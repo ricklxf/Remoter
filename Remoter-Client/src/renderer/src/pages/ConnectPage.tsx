@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { ConnectParams, ConnectMode, AuthMethod } from '../types'
 import { getSavedAccounts, removeSavedAccount, SavedAccount,
-         getSavedPin, getMachineName, saveMachineName } from '../utils/savedAccounts'
+         getMachineName, saveMachineName } from '../utils/savedAccounts'
 
 interface Props {
   onConnect: (params: ConnectParams) => void
@@ -60,8 +60,6 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     } else {
       setSelectedSaved(null)
     }
-    const savedPin = getSavedPin(directUrl)
-    if (savedPin) setPin(savedPin)
     setMachineName(getMachineName(directUrl))
   }, [mode, directUrl])
 
@@ -186,7 +184,9 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                     }}
                   >
                     {savedList.map(a => (
-                      <option key={a.username} value={a.username}>{a.username}</option>
+                      <option key={a.username} value={a.username}>
+                        {a.username === '__pin__' ? 'PIN 码（记住）' : a.username}
+                      </option>
                     ))}
                     <option value="__new__">+ 使用其他账户…</option>
                   </select>

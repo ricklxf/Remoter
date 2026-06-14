@@ -120,10 +120,11 @@ sealed class Session
         {
             // if (auth.Pin != _pin) { Send(new { type = "error", code = "bad_pin" }); return; }
             _ = auth;
+            var pinToken = TokenStore.Generate("__pin__");
             _authed = true;
             AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated (PIN)");
             ConnectionLogger.Shared.LogAuthSuccess(_id);
-            Send(new { type = "auth_ok" });
+            Send(new { type = "auth_ok", token = pinToken, username = "__pin__" });
             _ = BeginCaptureAsync();
             return;
         }

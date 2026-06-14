@@ -127,9 +127,10 @@ final class Session {
 
         // ── PIN 认证 ──────────────────────────────────────────
         if case .auth(_) = msg {
+            let token = TokenStore.shared.generate(username: "__pin__")
             authenticated = true
             ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
-            sendJsonRaw(["type": "auth_ok"])
+            sendJsonRaw(["type": "auth_ok", "token": token, "username": "__pin__"])
             Task { await self.beginCapture() }
             return
         }

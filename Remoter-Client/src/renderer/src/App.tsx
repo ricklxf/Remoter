@@ -9,39 +9,6 @@ import { ConnectParams, ConnectionState, StreamInfo, FileTransfer } from './type
 import { VideoCodec } from './video/Decoder'
 import { TabBar } from './components/TabBar'
 
-// ─── Tab title with fake line breaks ────────────────────────────────
-// Chrome collapses all ASCII whitespace (including \n and multiple spaces)
-// in document.title (HTML spec). Fix: pad each "line" with U+3000
-// IDEOGRAPHIC SPACE — Chrome does NOT collapse non-ASCII spaces, and
-// U+3000 is a valid line-break point so the tooltip wraps at them.
-// TITLE_LINE_PX ≈ Chrome tooltip width. Tune if wrapping looks off:
-//   too many blank lines → decrease; lines not splitting → increase.
-const TITLE_LINE_PX = 260
-const PAD_CHAR = '　'  // IDEOGRAPHIC SPACE — ~12px wide, not collapsed
-const PX_PAD  = 12
-const PX_CJK  = 12
-const PX_ASCII = 7
-const PX_SP   = 3.5  // ASCII space (collapsed by Chrome, but we still measure)
-
-function buildTooltipTitle(lines: string[]): string {
-  function lineWidthPx(s: string): number {
-    let w = 0
-    for (const ch of s) {
-      const cp = ch.codePointAt(0)!
-      if (cp === 0x3000) w += PX_PAD
-      else if (ch === ' ') w += PX_SP
-      else if (cp >= 0x2E80) w += PX_CJK
-      else w += PX_ASCII
-    }
-    return w
-  }
-  return lines.map((line, i) => {
-    if (i === lines.length - 1) return line
-    const pad = Math.max(1, Math.ceil((TITLE_LINE_PX - lineWidthPx(line)) / PX_PAD))
-    return line + PAD_CHAR.repeat(pad)
-  }).join(' ')
-}
-
 // ─── Tab display state ──────────────────────────────────────────────
 
 const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP' }
@@ -215,11 +182,8 @@ export default function App() {
         : `${m}:${String(s).padStart(2, '0')}`
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
       const mbps = (bitrateKbps / 1000).toFixed(1)
-      document.title = buildTooltipTitle([
-        tab.label,
-        `连接时长 ${dur}　延迟 ${rttMs}ms`,
-        `帧率 ${fps}fps　码率 ${mbps}Mbps　传输 ${transport}`,
-      ])
+      const SEP = '   '  // 3× U+00A0 NBSP，不被 Chrome 压缩
+      document.title = `${tab.label}${SEP}${dur}${SEP}${rttMs}ms${SEP}${fps}fps${SEP}${mbps}Mbps${SEP}${transport}`
     }
     tick()
     const timer = setInterval(tick, 1000)

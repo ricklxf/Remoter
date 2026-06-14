@@ -1,5 +1,5 @@
 import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry } from '../types'
-import { saveAccount } from '../utils/savedAccounts'
+import { saveAccount, savePinForAddress } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
@@ -422,6 +422,10 @@ export class Connection {
         if (token && (username ?? this.params?.username)) {
           const addr = this.params?.directUrl ?? ''
           saveAccount(addr, username ?? this.params?.username ?? '', token)
+        }
+        // Save PIN on successful PIN auth so it can be pre-filled next time
+        if (this.params?.mode === 'direct' && (this.params.authMethod ?? 'pin') === 'pin' && this.params.pin) {
+          savePinForAddress(this.params.directUrl ?? '', this.params.pin)
         }
         this.emit({ type: 'state', state: 'authenticating' })
         this.initiateWebRTC()

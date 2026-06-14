@@ -1,4 +1,6 @@
-const KEY = 'remoter-saved-accounts'
+const KEY      = 'remoter-saved-accounts'
+const PIN_KEY  = 'remoter-saved-pins'
+const NAME_KEY = 'remoter-machine-names'
 
 export interface SavedAccount {
   address: string
@@ -41,4 +43,39 @@ export function removeSavedAccount(address: string, username?: string): void {
       : all.filter(a => a.address !== address)
     localStorage.setItem(KEY, JSON.stringify(filtered))
   } catch { }
+}
+
+// ── PIN ──────────────────────────────────────────────────────────────
+
+export function getSavedPin(address: string): string {
+  try {
+    const map: Record<string, string> = JSON.parse(localStorage.getItem(PIN_KEY) ?? '{}')
+    return map[address] ?? ''
+  } catch { return '' }
+}
+
+export function savePinForAddress(address: string, pin: string): void {
+  try {
+    const map: Record<string, string> = JSON.parse(localStorage.getItem(PIN_KEY) ?? '{}')
+    if (pin) map[address] = pin; else delete map[address]
+    localStorage.setItem(PIN_KEY, JSON.stringify(map))
+  } catch {}
+}
+
+// ── 机器名 ────────────────────────────────────────────────────────────
+
+export function getMachineName(address: string): string {
+  try {
+    const map: Record<string, string> = JSON.parse(localStorage.getItem(NAME_KEY) ?? '{}')
+    return map[address] ?? ''
+  } catch { return '' }
+}
+
+export function saveMachineName(address: string, name: string): void {
+  try {
+    const map: Record<string, string> = JSON.parse(localStorage.getItem(NAME_KEY) ?? '{}')
+    const trimmed = name.trim()
+    if (trimmed) map[address] = trimmed; else delete map[address]
+    localStorage.setItem(NAME_KEY, JSON.stringify(map))
+  } catch {}
 }

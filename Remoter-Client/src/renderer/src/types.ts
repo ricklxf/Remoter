@@ -7,6 +7,7 @@ export interface ConnectParams {
   relayUrl?: string
   sessionId?: string
   pin: string
+  label?: string       // 用户自定义机器名，用作 tab 标签
   // Auth extension
   authMethod?: AuthMethod
   username?: string

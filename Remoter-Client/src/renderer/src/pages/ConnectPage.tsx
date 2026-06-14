@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { ConnectParams, ConnectMode, AuthMethod } from '../types'
-import { getSavedAccounts, removeSavedAccount, SavedAccount } from '../utils/savedAccounts'
+import { getSavedAccounts, removeSavedAccount, SavedAccount,
+         getSavedPin, getMachineName, saveMachineName } from '../utils/savedAccounts'
 
 interface Props {
   onConnect: (params: ConnectParams) => void
@@ -46,10 +47,11 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [password, setPassword]       = useState('')
   const [savedList, setSavedList]     = useState<SavedAccount[]>([])
   const [selectedSaved, setSelectedSaved] = useState<SavedAccount | null>(null)
+  const [machineName, setMachineName] = useState('')
 
-  // Load saved accounts whenever address changes
+  // Load saved accounts, PIN, and machine name whenever address changes
   useEffect(() => {
-    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); return }
+    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); setMachineName(''); return }
     const accounts = getSavedAccounts(directUrl)
     setSavedList(accounts)
     if (accounts.length > 0) {
@@ -58,13 +60,18 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     } else {
       setSelectedSaved(null)
     }
+    const savedPin = getSavedPin(directUrl)
+    if (savedPin) setPin(savedPin)
+    setMachineName(getMachineName(directUrl))
   }, [mode, directUrl])
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     localStorage.setItem('remoter-direct-url', directUrl)
     localStorage.setItem('remoter-relay-url', relayUrl)
-    const base = { mode, directUrl, relayUrl, sessionId: sessionId.toUpperCase(), pin }
+    if (mode === 'direct') saveMachineName(directUrl, machineName)
+    const label = (mode === 'direct' && machineName.trim()) ? machineName.trim() : undefined
+    const base = { mode, directUrl, relayUrl, sessionId: sessionId.toUpperCase(), pin, label }
     if (authMode === 'token' && selectedSaved) {
       onConnect({ ...base, authMethod: 'token', token: selectedSaved.token })
     } else if (authMode === 'credentials') {
@@ -129,11 +136,19 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
         <form onSubmit={handleSubmit} style={s.form}>
           {/* Address */}
           {mode === 'direct' ? (
-            <label style={s.label}>
-              <span>被控端地址</span>
-              <input value={directUrl} onChange={e => setDirectUrl(e.target.value)}
-                placeholder="ws://192.168.1.100:7788" required />
-            </label>
+            <>
+              <label style={s.label}>
+                <span>被控端地址</span>
+                <input value={directUrl} onChange={e => setDirectUrl(e.target.value)}
+                  placeholder="ws://192.168.1.100:7788" required />
+              </label>
+              <label style={s.label}>
+                <span style={s.nameLabel}>机器名称<em style={s.optional}>（选填）</em></span>
+                <input value={machineName} onChange={e => setMachineName(e.target.value)}
+                  onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
+                  placeholder="办公室 PC · 家里 Mac…" />
+              </label>
+            </>
           ) : (
             <>
               <label style={s.label}>
@@ -254,6 +269,8 @@ const s: Record<string, React.CSSProperties> = {
   tabActive:{ background: 'var(--primary)', color: '#fff' },
   form:    { display: 'flex', flexDirection: 'column', gap: 16 },
   label:   { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: 'var(--text2)' },
+  nameLabel: { display: 'flex', alignItems: 'center', gap: 4 },
+  optional:  { fontStyle: 'normal', fontSize: 11, color: 'var(--text2)', opacity: 0.6 },
 
   // saved accounts dropdown row
   savedBanner: {

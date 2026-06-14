@@ -216,12 +216,11 @@ export default function App() {
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
       const mbps = (bitrateKbps / 1000).toFixed(1)
       document.title = buildTooltipTitle([
-        `${tab.label}  串流中`,
-        `连接时长  ${dur}`,
-        `延迟      ${rttMs} ms`,
-        `帧率      ${fps} fps`,
-        `码率      ${mbps} Mbps`,
-        `传输      ${transport}`,
+        `连接时长 ${dur}`,
+        `延迟 ${rttMs}ms`,
+        `帧率 ${fps}fps`,
+        `码率 ${mbps}Mbps`,
+        `传输 ${transport}`,
       ])
     }
     tick()

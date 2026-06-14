@@ -51,7 +51,7 @@ sealed class WebSocketServer
             OnConnect?.Invoke(conn);  // fired before first message arrives
             await ReceiveLoopAsync(conn, stream);
         }
-        catch { /* connection reset */ }
+        catch (Exception ex) { AppLog.Write($"[WS] {conn?.RemoteAddr ?? "?"} error: {ex.GetType().Name}: {ex.Message}"); }
         finally
         {
             if (conn != null) OnDisconnect?.Invoke(conn);
@@ -110,6 +110,7 @@ sealed class WebSocketServer
                     OnBinary?.Invoke(conn, payload);
                     break;
                 case 0x8: // close
+                    AppLog.Write($"[WS] {conn.RemoteAddr} sent close frame");
                     return;
                 case 0x9: // ping → pong
                     await conn.SendRawAsync(0xA, payload);

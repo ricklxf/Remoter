@@ -101,13 +101,15 @@ export class Connection {
         this.handleBinary(ev.data as ArrayBuffer)
       }
     }
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+      console.warn(`[WS] closed: code=${ev.code}, reason="${ev.reason}", wasClean=${ev.wasClean}`)
       this.webrtc?.close()
       this.webrtc = null
       this.stopStats()
       this.emit({ type: 'state', state: 'disconnected' })
     }
-    ws.onerror = () => {
+    ws.onerror = (ev) => {
+      console.error('[WS] error event:', ev)
       this.emit({ type: 'error', message: 'Connection failed' })
       this.emit({ type: 'state', state: 'error' })
     }

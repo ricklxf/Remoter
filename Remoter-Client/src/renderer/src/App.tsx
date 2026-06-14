@@ -183,7 +183,7 @@ export default function App() {
       const { fps, bitrateKbps, transport, rttMs } = tab.stats
       const mbps = (bitrateKbps / 1000).toFixed(1)
       const SEP = '   '  // 3× U+00A0 NBSP，不被 Chrome 压缩
-      document.title = `${tab.label}${SEP}${dur}${SEP}${rttMs}ms${SEP}${fps}fps${SEP}${mbps}Mbps${SEP}${transport}`
+      document.title = `${tab.label}${SEP}连接时长 ${dur}${SEP}延迟 ${rttMs}ms${SEP}帧率 ${fps}fps${SEP}码率 ${mbps}Mbps${SEP}传输 ${transport}`
     }
     tick()
     const timer = setInterval(tick, 1000)

@@ -17,6 +17,9 @@ export class InputHandler {
   private curNormX = 0.5
   private curNormY = 0.5
 
+  // Keyboard capture only when mouse is hovering over the remote canvas (or pointer-locked)
+  private hovering = false
+
   // Track CapsLock state to detect real toggles (macOS may suppress CapsLock keydown)
   private lastCapsLock: boolean | null = null
 
@@ -36,6 +39,7 @@ export class InputHandler {
 
   detach(): void {
     this.enabled = false
+    this.hovering = false
     this.removeListeners()
     this.el = null
     if (this.locked) document.exitPointerLock?.()
@@ -55,6 +59,8 @@ export class InputHandler {
       this.boundHandlers.push([name, fn])
     }
 
+    add(this.el, 'mouseenter',  this.onMouseEnter)
+    add(this.el, 'mouseleave',  this.onMouseLeave)
     add(this.el, 'mousemove',   this.onMouseMove)
     add(this.el, 'mousedown',   this.onMouseDown)
     add(this.el, 'mouseup',     this.onMouseUp)
@@ -128,10 +134,14 @@ export class InputHandler {
 
   private onContextMenu = (e: Event): void => e.preventDefault()
 
+  private onMouseEnter = (): void => { this.hovering = true }
+  private onMouseLeave = (): void => { this.hovering = false }
+
   // MARK: - Keyboard
 
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
+    if (!this.hovering && !this.locked) return
     const ke = e as KeyboardEvent
     if (ke.code === 'F11') return
     ke.preventDefault()
@@ -153,9 +163,19 @@ export class InputHandler {
 
   private onKeyUp = (e: Event): void => {
     if (!this.enabled) return
+    if (!this.hovering && !this.locked) return
     const ke = e as KeyboardEvent
     ke.preventDefault()
-    if (ke.code === 'CapsLock') return  // handled entirely in onKeyDown
+    if (ke.code === 'CapsLock') {
+      // macOS may only fire keyup (not keydown) when turning CapsLock off — handle both
+      const capsOn = ke.getModifierState('CapsLock')
+      if (this.lastCapsLock !== capsOn) {
+        this.lastCapsLock = capsOn
+        this.conn.sendKey('CapsLock', true, [])
+        this.conn.sendKey('CapsLock', false, [])
+      }
+      return
+    }
     this.conn.sendKey(ke.code, false, collectModifiers(ke))
   }
 

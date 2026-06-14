@@ -624,10 +624,7 @@ export class Connection {
         const img = await this.clipReadImage()
         if (img && img.length !== this.lastClipImgLen) {
           this.lastClipImgLen = img.length
-          // 4MB limit on raw PNG (base64 ~1.33× overhead)
-          if (img.length <= 5_600_000) {
-            this.sendJson({ type: 'clipboard_set_image', data: img })
-          }
+          this.sendJson({ type: 'clipboard_set_image', data: img })
         }
       } catch { /* ignore */ }
     }, 1000)

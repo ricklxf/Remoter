@@ -20,9 +20,6 @@ export class InputHandler {
   // Keyboard capture only when mouse is hovering over the remote canvas (or pointer-locked)
   private hovering = false
 
-  // Track CapsLock state to detect real toggles (macOS may suppress CapsLock keydown)
-  private lastCapsLock: boolean | null = null
-
   private boundHandlers: Array<[string, EventListenerOrEventListenerObject]> = []
 
   constructor(conn: Connection) {
@@ -147,14 +144,12 @@ export class InputHandler {
     ke.preventDefault()
 
     if (ke.code === 'CapsLock') {
-      // CapsLock is a toggle key. getModifierState gives the NEW state after this press.
-      // Only send once per actual state change (macOS may fire duplicate or suppress events).
-      const capsOn = ke.getModifierState('CapsLock')
-      if (this.lastCapsLock !== capsOn) {
-        this.lastCapsLock = capsOn
-        this.conn.sendKey('CapsLock', true, [])
-        this.conn.sendKey('CapsLock', false, [])
-      }
+      // Send unconditionally — server reads its own current CapsLock state to decide direction.
+      // Do NOT use getModifierState: IMEs (e.g. WeChat) may intercept CapsLock without changing
+      // the OS CapsLock state, making getModifierState always return the same value and causing
+      // the deduplication to suppress all subsequent presses.
+      this.conn.sendKey('CapsLock', true, [])
+      this.conn.sendKey('CapsLock', false, [])
       return
     }
 
@@ -166,16 +161,7 @@ export class InputHandler {
     if (!this.hovering && !this.locked) return
     const ke = e as KeyboardEvent
     ke.preventDefault()
-    if (ke.code === 'CapsLock') {
-      // macOS may only fire keyup (not keydown) when turning CapsLock off — handle both
-      const capsOn = ke.getModifierState('CapsLock')
-      if (this.lastCapsLock !== capsOn) {
-        this.lastCapsLock = capsOn
-        this.conn.sendKey('CapsLock', true, [])
-        this.conn.sendKey('CapsLock', false, [])
-      }
-      return
-    }
+    if (ke.code === 'CapsLock') return  // handled in keydown
     this.conn.sendKey(ke.code, false, collectModifiers(ke))
   }
 

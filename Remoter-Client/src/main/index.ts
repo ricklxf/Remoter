@@ -130,10 +130,24 @@ app.whenReady().then(() => {
   })
   ipcMain.on('shrink-window', () => {
     if (!mainWindow) return
-    if (mainWindow.isMaximized()) mainWindow.unmaximize()
     mainWindow.setMinimumSize(400, 480)
-    mainWindow.setSize(420, 600)
-    mainWindow.center()
+    const resize = () => {
+      if (!mainWindow) return
+      const { screen } = require('electron')
+      const { workArea } = screen.getPrimaryDisplay()
+      const w = 420, h = 600
+      mainWindow.setBounds({
+        x: Math.round(workArea.x + (workArea.width  - w) / 2),
+        y: Math.round(workArea.y + (workArea.height - h) / 2),
+        width: w, height: h,
+      })
+    }
+    if (mainWindow.isMaximized()) {
+      mainWindow.once('unmaximize', resize)
+      mainWindow.unmaximize()
+    } else {
+      resize()
+    }
   })
 
   // File save dialog for received files

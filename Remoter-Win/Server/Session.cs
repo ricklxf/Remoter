@@ -20,6 +20,7 @@ sealed class Session
     private bool   _authed    = false;
     private bool   _inputEnabled = true;
     private bool   _debugInputLog = true;
+    private int    _textCount  = 0;
     private int    _inputLogCount = 0;
     private int    _routeLogCount = 0;
     private bool   _clipSync  = true;
@@ -50,6 +51,8 @@ sealed class Session
 
     public void HandleText(string text)
     {
+        if (_textCount++ < 5)
+            AppLog.Write($"[Session] Rx#{_textCount} {text[..Math.Min(40, text.Length)]}");
         try
         {
             var doc = JsonDocument.Parse(text);

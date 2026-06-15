@@ -13,6 +13,7 @@ sealed class InputController
     }
 
     private readonly int _sw, _sh;
+    private int _moveLogN = 0;
 
     // ── Mouse ──────────────────────────────────────────────────────────
 
@@ -20,7 +21,8 @@ sealed class InputController
     {
         int ax = Norm(xNorm);
         int ay = Norm(yNorm);
-        SendInput1(new INPUT
+        bool log = _moveLogN++ < 3;
+        uint sent = SendInput(1, [new INPUT
         {
             type = IT_MOUSE,
             mi   = new MOUSEINPUT
@@ -28,7 +30,11 @@ sealed class InputController
                 dx      = ax, dy = ay,
                 dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
             }
-        });
+        }], Marshal.SizeOf<INPUT>());
+        if (log)
+            AppLog.Write($"[Input] Move ax={ax} ay={ay} sent={sent} err=0x{Marshal.GetLastWin32Error():X8}");
+        else if (sent == 0)
+            AppLog.Write($"[Input] Move failed err=0x{Marshal.GetLastWin32Error():X8}");
     }
 
     public void MouseButton(string button, bool down, double xNorm, double yNorm)

@@ -132,12 +132,15 @@ export class WebRTCClient {
     if (buf.received === buf.total) {
       const combined = mergeBuffers(buf.chunks)
       this.frameBuffer.delete(frameId)
-      // 清理过旧的不完整帧（网络乱序可能导致）
-      if (this.frameBuffer.size > 15) {
-        const oldest = this.frameBuffer.keys().next().value
-        if (oldest !== undefined) this.frameBuffer.delete(oldest)
-      }
       this.onVideoFrame?.(combined, buf.isKeyframe, combined.byteLength)
+    }
+
+    // Discard stale incomplete frames (> 30 frames old) to prevent buffer growth
+    if (this.frameBuffer.size > 30) {
+      const cutoff = frameId - 30
+      for (const [id] of this.frameBuffer) {
+        if (id < cutoff) this.frameBuffer.delete(id)
+      }
     }
   }
 }

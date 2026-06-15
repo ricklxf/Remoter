@@ -393,9 +393,20 @@ final class Session {
                 "codec":  "jpeg"
             ])
 
+            var framesSentRTC = 0
+            var framesSentWS  = 0
+            var framesDropped = 0
+
             c.onFrame = { [weak self] cgImage, _, _ in
                 guard let self else { return }
-                guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
+                guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else {
+                    framesDropped += 1
+                    if framesDropped <= 3 || framesDropped % 30 == 0 {
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "jpeg_encode_nil", detail: "count=\(framesDropped)")
+                    }
+                    return
+                }
                 let fid = self.frameId
                 self.frameId &+= 1
                 self.bytesSent += Int64(jpeg.count)
@@ -404,10 +415,20 @@ final class Session {
                 // Fall back to TCP WebSocket while DataChannel is establishing
                 if let rtc = self.webrtc, rtc.isVideoChannelOpen {
                     rtc.sendVideoFrame(jpeg, isKeyframe: true, frameId: fid)
+                    framesSentRTC += 1
+                    if framesSentRTC == 1 {
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "first_frame_rtc", detail: "jpeg=\(jpeg.count)B")
+                    }
                 } else {
                     let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
                     let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
                     self.server.sendBinary(pkt, to: self.connection)
+                    framesSentWS += 1
+                    if framesSentWS == 1 {
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "first_frame_ws", detail: "jpeg=\(jpeg.count)B")
+                    }
                 }
             }
 

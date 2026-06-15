@@ -22,12 +22,15 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     private let captureQueue    = DispatchQueue(label: "remoter.capture.cb", qos: .userInitiated)
     private let encodeQueue     = DispatchQueue(label: "remoter.encode",     qos: .userInitiated)
     private let encodeSemaphore = DispatchSemaphore(value: 1)
-    private let ciCtx           = CIContext(options: [.useSoftwareRenderer: false])
+    private let ciCtxGPU        = CIContext(options: [.useSoftwareRenderer: false])
+    private let ciCtxCPU        = CIContext(options: [.useSoftwareRenderer: true])
 
     // Diagnostics (benign data-race on counters — log only)
-    private var statFrames: Int = 0
-    private var statDrop:   Int = 0
-    private var statTick:   CFAbsoluteTime = 0
+    private var statFrames:   Int = 0
+    private var statDrop:     Int = 0
+    private var statNilImg:   Int = 0   // createCGImage returned nil
+    private var statCpuFall:  Int = 0   // fell back to software renderer
+    private var statTick:     CFAbsoluteTime = 0
 
     func start(fps: Int = 60) async throws {
         let displayID = CGMainDisplayID()
@@ -72,7 +75,14 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
                     defer { sem.signal() }
                     guard let self else { return }
                     let te = CFAbsoluteTimeGetCurrent()
-                    if let cg = self.ciCtx.createCGImage(ci, from: ci.extent) {
+                    // GPU renderer first; fall back to software if it returns nil
+                    var cg = self.ciCtxGPU.createCGImage(ci, from: ci.extent)
+                    if cg == nil {
+                        self.statNilImg += 1
+                        cg = self.ciCtxCPU.createCGImage(ci, from: ci.extent)
+                        if cg != nil { self.statCpuFall += 1 }
+                    }
+                    if let cg {
                         self.onFrame?(cg, w, h)
                     }
                     let encMs = (CFAbsoluteTimeGetCurrent() - te) * 1000
@@ -81,11 +91,13 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
                     if now - self.statTick >= 5 {
                         ConnectionLogger.shared.logStep(
                             sessionId: "capturer", step: "perf_5s",
-                            detail: "enc=\(String(format: "%.1f", encMs))ms drop=\(self.statDrop) frames=\(self.statFrames)"
+                            detail: "enc=\(String(format: "%.1f", encMs))ms drop=\(self.statDrop) frames=\(self.statFrames) nil=\(self.statNilImg) cpuFall=\(self.statCpuFall)"
                         )
-                        self.statDrop   = 0
-                        self.statFrames = 0
-                        self.statTick   = now
+                        self.statDrop    = 0
+                        self.statFrames  = 0
+                        self.statNilImg  = 0
+                        self.statCpuFall = 0
+                        self.statTick    = now
                     }
                 }
             }

@@ -66,6 +66,11 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     func sendVideoFrame(_ data: Data, isKeyframe: Bool, frameId: UInt32) {
         guard let ch = videoChannel, ch.readyState == .open else { return }
 
+        // Drop frame if SCTP send buffer is backing up (prevents latency buildup and
+        // silent chunk drops that would cause the receiver to never complete a frame).
+        // Threshold = ~2 frames worth of data.
+        if ch.bufferedAmount > 700_000 { return }
+
         let CHUNK = 60 * 1024
         let flags: UInt8 = isKeyframe ? 0x01 : 0x00
         let totalChunks = UInt16((data.count + CHUNK - 1) / CHUNK)

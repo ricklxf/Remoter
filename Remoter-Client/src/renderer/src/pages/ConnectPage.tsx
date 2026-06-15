@@ -295,9 +295,6 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           </button>
         </form>
 
-        <div style={s.hintBox}>
-          Mac 端运行：<code style={s.code}>swift run RemoterAgent --pin 123456</code>
-        </div>
         <div style={s.version}>v{__APP_VERSION__}</div>
       </div>
     </div>
@@ -377,14 +374,6 @@ const s: Record<string, React.CSSProperties> = {
   btn: {
     marginTop: 4, padding: '12px 0', borderRadius: 8,
     background: 'var(--primary)', color: '#fff', fontSize: 15, fontWeight: 600,
-  },
-  hintBox: {
-    marginTop: 8, fontSize: 12, color: 'var(--text2)',
-    lineHeight: 1.6, borderTop: '1px solid var(--border)', paddingTop: 12,
-  },
-  code: {
-    background: 'var(--bg)', padding: '2px 6px', borderRadius: 4,
-    fontFamily: 'monospace', fontSize: 11, color: 'var(--text)',
   },
   version: { marginTop: 8, fontSize: 11, color: 'var(--text2)', textAlign: 'center' as const, opacity: 0.6 },
 }

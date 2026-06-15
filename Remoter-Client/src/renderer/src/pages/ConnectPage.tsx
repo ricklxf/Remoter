@@ -216,7 +216,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                     >
                       {savedList.map(a => (
                         <option key={a.username} value={a.username}>
-                          {a.username === '__pin__' ? (machineName || 'PIN 码（记住）') : (machineName || a.username)}
+                          {a.username === '__pin__' ? (machineName || 'PIN 码') : (machineName || a.username)}
                         </option>
                       ))}
                       <option value="__new__">+ 使用其他账户…</option>

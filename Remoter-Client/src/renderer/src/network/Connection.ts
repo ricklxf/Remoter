@@ -569,7 +569,7 @@ export class Connection {
   private startStatsLoop(): void {
     if (this.statsTimer) clearInterval(this.statsTimer)
     const INTERVAL = 2000
-    const STALE_TIMEOUT = 15000  // no data for 15s → assume connection is dead
+    const STALE_TIMEOUT = 6000   // no data for 6s → assume connection is dead (WireGuard renegotiation ~2s)
 
     this.statsTimer = setInterval(() => {
       // Detect stale connection: server crashed / TCP hung without a clean close

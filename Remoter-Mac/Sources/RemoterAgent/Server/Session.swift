@@ -410,6 +410,17 @@ final class Session {
                     self.server.sendBinary(pkt, to: self.connection)
                 }
             }
+
+            // CGDisplayStream stops when macOS locks the screen, goes to sleep,
+            // or revokes screen recording permission. Restart the stream so the
+            // client resumes automatically when the display comes back.
+            c.onStopped = { [weak self] in
+                guard let self else { return }
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000) // wait 1s for display to wake
+                    await self.beginCapture()
+                }
+            }
         } catch {
             let msg = "\(error)"
             ConnectionLogger.shared.logCaptureError(sessionId: sid, error: msg)

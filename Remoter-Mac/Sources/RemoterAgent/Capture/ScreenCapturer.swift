@@ -12,7 +12,8 @@ import CoreImage
 // when the encoder is busy, keeping latency constant.
 
 final class ScreenCapturer: NSObject, @unchecked Sendable {
-    var onFrame: ((CGImage, Int, Int) -> Void)?
+    var onFrame:   ((CGImage, Int, Int) -> Void)?
+    var onStopped: (() -> Void)?   // called when CGDisplayStream reports frameStopped
 
     private(set) var screenWidth:  Int = 1920
     private(set) var screenHeight: Int = 1080
@@ -50,7 +51,14 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
             properties: props as CFDictionary,
             queue: captureQueue,
             handler: { [weak self] status, _, surface, _ in
-                guard status == .frameComplete, let surface, let self else { return }
+                guard let self else { return }
+                if status == .stopped {
+                    // macOS stopped the stream (lock screen, sleep, permission revoked, etc.)
+                    ConnectionLogger.shared.logStep(sessionId: "capturer", step: "stream_stopped")
+                    self.onStopped?()
+                    return
+                }
+                guard status == .frameComplete, let surface else { return }
                 guard self.encodeSemaphore.wait(timeout: .now()) == .success else {
                     self.statDrop += 1
                     return

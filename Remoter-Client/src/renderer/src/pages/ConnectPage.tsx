@@ -161,11 +161,9 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {/* Auth section (direct only) */}
           {mode === 'direct' && (
             <>
-              {/* Connection card: machine name + saved accounts */}
-              <div style={{
-                ...s.savedBanner,
-                borderColor: savedList.length > 0 ? 'var(--primary)' : 'var(--border)',
-              }}>
+              {/* Connection card: machine name + saved accounts (only when accounts exist) */}
+              {savedList.length > 0 && (
+              <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
                 <input
                   style={s.machineInput}
                   value={machineName}
@@ -173,42 +171,39 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                   onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
                   placeholder="给这台机器起个名字（可选）"
                 />
-                {savedList.length > 0 && machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
+                {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
                   <div style={s.machineInfoRow}>
                     <span style={s.machineInfoName}>{machineInfo.computerName}</span>
                     {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
                   </div>
                 )}
-                {savedList.length > 0 && (
-                  <>
-                    <div style={s.bannerDivider} />
-                    <div style={s.accountRow}>
-                      <span style={s.savedIcon}>👤</span>
-                      <select
-                        style={s.savedSelect}
-                        value={selectedSaved?.username ?? '__new__'}
-                        onChange={e => {
-                          if (e.target.value === '__new__') {
-                            setSelectedSaved(null)
-                            setAuthMode('credentials')
-                          } else {
-                            const acct = savedList.find(a => a.username === e.target.value)
-                            if (acct) { setSelectedSaved(acct); setAuthMode('token') }
-                          }
-                        }}
-                      >
-                        {savedList.map(a => (
-                          <option key={a.username} value={a.username}>
-                            {a.username === '__pin__' ? 'PIN 码（记住）' : a.username}
-                          </option>
-                        ))}
-                        <option value="__new__">+ 使用其他账户…</option>
-                      </select>
-                      <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
-                    </div>
-                  </>
-                )}
+                <div style={s.bannerDivider} />
+                <div style={s.accountRow}>
+                  <span style={s.savedIcon}>👤</span>
+                  <select
+                    style={s.savedSelect}
+                    value={selectedSaved?.username ?? '__new__'}
+                    onChange={e => {
+                      if (e.target.value === '__new__') {
+                        setSelectedSaved(null)
+                        setAuthMode('credentials')
+                      } else {
+                        const acct = savedList.find(a => a.username === e.target.value)
+                        if (acct) { setSelectedSaved(acct); setAuthMode('token') }
+                      }
+                    }}
+                  >
+                    {savedList.map(a => (
+                      <option key={a.username} value={a.username}>
+                        {a.username === '__pin__' ? 'PIN 码（记住）' : a.username}
+                      </option>
+                    ))}
+                    <option value="__new__">+ 使用其他账户…</option>
+                  </select>
+                  <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
+                </div>
               </div>
+              )}
 
               {/* Auth mode tabs */}
               <div style={s.authTabs}>

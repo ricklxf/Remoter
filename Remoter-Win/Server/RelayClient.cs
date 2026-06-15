@@ -157,6 +157,21 @@ sealed class RelayConn : IWsConn
     public Task SendBinaryAsync(byte[] data) =>
         SendAsync(data, WebSocketMessageType.Binary);
 
+    public void Disconnect()
+    {
+        try
+        {
+            if (_ws.State == WebSocketState.Open)
+            {
+                _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disconnect", CancellationToken.None).Wait();
+            }
+        }
+        catch
+        {
+            // Ignore errors when closing
+        }
+    }
+
     private async Task SendAsync(byte[] data, WebSocketMessageType type)
     {
         await _sendLock.WaitAsync();

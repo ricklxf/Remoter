@@ -1,144 +1,47 @@
-using System.IO;
-using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
-using RemoterWin;
+using System.Windows.Forms;
 
-// ── Arg parsing ───────────────────────────────────────────────────────────
+namespace RemoterWin;
 
-static (string? pin, ushort? port, string? relay) ParseArgs(string[] args)
+public class Program
 {
-    string? pin   = null;
-    ushort? port  = null;
-    string? relay = null;
-    for (int i = 0; i + 1 < args.Length; i++)
+    [STAThread]
+    public static void Main()
     {
-        if (args[i] == "--pin")   pin   = args[i + 1];
-        if (args[i] == "--port"  && ushort.TryParse(args[i + 1], out var p)) port = p;
-        if (args[i] == "--relay") relay = args[i + 1];
+        // Register global exception handlers
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (sender, args) =>
+        {
+            AppLog.Write($"[Global] UI Thread Exception: {args.Exception.Message}");
+            AppLog.Write($"[Global] StackTrace: {args.Exception.StackTrace}");
+        };
+        
+        AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
+        {
+            var ex = args.ExceptionObject as Exception;
+            AppLog.Write($"[Global] Unhandled Exception: {ex?.Message ?? "Unknown"}");
+            AppLog.Write($"[Global] StackTrace: {ex?.StackTrace ?? "N/A"}");
+        };
+        
+        TaskScheduler.UnobservedTaskException += (sender, args) =>
+        {
+            AppLog.Write($"[Global] Unobserved Task Exception: {args.Exception.Message}");
+            AppLog.Write($"[Global] StackTrace: {args.Exception.StackTrace}");
+            args.SetObserved(); // Mark as observed to prevent crash
+        };
+
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        
+        try
+        {
+            Application.Run(new MainForm());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Global] Application.Run Exception: {ex.Message}");
+            AppLog.Write($"[Global] StackTrace: {ex.StackTrace}");
+            MessageBox.Show($"程序发生错误：{ex.Message}\n\n请查看日志文件获取详细信息。", 
+                "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
-    return (pin, port, relay);
 }
-
-static List<string> GetLocalIPs()
-{
-    var ips = new List<string>();
-    foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
-    {
-        if (ni.OperationalStatus != OperationalStatus.Up) continue;
-        foreach (var ua in ni.GetIPProperties().UnicastAddresses)
-            if (ua.Address.AddressFamily == AddressFamily.InterNetwork
-                && !IPAddress.IsLoopback(ua.Address))
-                ips.Add(ua.Address.ToString());
-    }
-    return ips;
-}
-
-// ── Agent bootstrap ───────────────────────────────────────────────────────
-
-// CLI args override persisted config; PIN is generated if not set anywhere.
-var (cliPin, cliPort, cliRelay) = ParseArgs(args);
-var cfg     = AgentConfig.Load();
-var pin     = cliPin     ?? (cfg.Pin.Length > 0 ? cfg.Pin : null)
-                         ?? Random.Shared.Next(100_000, 999_999).ToString();
-var port    = cliPort    ?? cfg.Port;
-var relayUrl = cliRelay  ?? cfg.RelayUrl;
-
-var sessions    = new Dictionary<IWsConn, Session>();
-var server      = new WebSocketServer();
-var admin       = new AdminServer(port, pin, relayUrl);
-RelayClient? relay = string.IsNullOrEmpty(relayUrl) ? null : new RelayClient(relayUrl, pin);
-
-// Route all AppLog entries to the admin SSE stream
-AppLog.OnLog += admin.Log;
-
-// PIN hot-change from admin UI — also persist to config
-admin.OnPinChange = newPin =>
-{
-    pin = newPin;
-    relay?.UpdatePin(newPin);
-    var c = AgentConfig.Load(); c.Pin = newPin; c.Save();
-    AppLog.Write($"[Agent] PIN updated to {newPin}");
-};
-
-// Relay URL hot-change from admin UI
-admin.OnRelayChange = newRelay =>
-{
-    relay?.Stop();
-    relay = null;
-    relayUrl = newRelay;
-    var c = AgentConfig.Load(); c.RelayUrl = newRelay; c.Save();
-    if (!string.IsNullOrEmpty(newRelay))
-    {
-        relay = new RelayClient(newRelay, pin);
-        relay.Start();
-        AppLog.Write($"[Agent] Relay URL updated to {newRelay}");
-    }
-    else
-    {
-        AppLog.Write("[Agent] Relay disabled");
-    }
-};
-
-server.OnConnect = (conn) =>
-{
-    var s = new Session(conn, pin);
-    lock (sessions) sessions[conn] = s;
-    s.Start();
-    AppLog.Write($"[Agent] {conn.RemoteAddr} connected ({sessions.Count} active)");
-    admin.SetConnCount(sessions.Count);
-};
-
-server.OnText = (conn, text) =>
-{
-    Session? s;
-    lock (sessions) sessions.TryGetValue(conn, out s);
-    s?.HandleText(text);
-};
-
-server.OnBinary = (conn, data) =>
-{
-    Session? s;
-    lock (sessions) sessions.TryGetValue(conn, out s);
-    s?.HandleBinary(data);
-};
-
-server.OnDisconnect = (conn) =>
-{
-    Session? s;
-    lock (sessions)
-    {
-        sessions.TryGetValue(conn, out s);
-        sessions.Remove(conn);
-    }
-    s?.Close();
-    AppLog.Write($"[Agent] {conn.RemoteAddr} disconnected ({sessions.Count} active)");
-    admin.SetConnCount(sessions.Count);
-};
-
-server.Start(port);
-admin.Start();
-relay?.Start();
-
-var ips = GetLocalIPs();
-AppLog.Write("╔══════════════════════════════════╗");
-AppLog.Write("║      Remoter Windows Agent        ║");
-AppLog.Write("╚══════════════════════════════════╝");
-AppLog.Write($"  PIN : {pin}");
-AppLog.Write($"  Port: {port}");
-foreach (var ip in ips)
-    AppLog.Write($"  LAN : ws://{ip}:{port}");
-AppLog.Write($"  Admin: http://localhost:{port + 2}/");
-var webDir = Path.Combine(AppContext.BaseDirectory, "web");
-if (Directory.Exists(webDir))
-    foreach (var ip in ips)
-        AppLog.Write($"  Web : http://{ip}:{port}/");
-if (relay != null)
-    AppLog.Write($"  Relay: {relayUrl} (session ID printed on connect)");
-AppLog.Write("Ready. Waiting for connections…");
-ConnectionLogger.Shared.LogAgentStarted(port, string.IsNullOrEmpty(relayUrl) ? null : relayUrl);
-
-// WinExe: no console window, no Ctrl+C. Cleanup on process exit.
-// To stop the server gracefully, use the admin console → "停止服务".
-AppDomain.CurrentDomain.ProcessExit += (_, _) => { server.Stop(); admin.Stop(); };
-await Task.Delay(Timeout.Infinite);

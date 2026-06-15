@@ -7,6 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>RemoterWin</AssemblyName>
     <RootNamespace>RemoterWin</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
     <!-- DXGI Desktop Duplication for GPU-side screen capture -->
@@ -14,5 +15,12 @@
     <PackageReference Include="Vortice.DXGI"       Version="3.5.0" />
     <!-- JPEG encoding via GDI+ (zero-copy from staging texture) -->
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- Copy web directory to output -->
+  <ItemGroup>
+    <Content Include="web\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

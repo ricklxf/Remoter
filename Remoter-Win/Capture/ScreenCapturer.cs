@@ -72,6 +72,13 @@ sealed class ScreenCapturer : IDisposable
             InitializeGdi();
         }
     }
+    
+    public void SetQuality(int quality)
+    {
+        if (quality < 1) quality = 1;
+        if (quality > 100) quality = 100;
+        _jpegParams.Param[0] = new EncoderParameter(Encoder.Quality, (long)quality);
+    }
 
     // ── DXGI path ───────────────────────────────────────────────────────────
 
@@ -104,13 +111,33 @@ sealed class ScreenCapturer : IDisposable
 
     private byte[]? CaptureDxgi(int timeoutMs)
     {
-        if (_dup == null || _staging == null || _context == null) return null;
+        if (_dup == null || _staging == null || _context == null) 
+        {
+            AppLog.Write("[Capturer] DXGI state is null, attempting reinitialization");
+            TryReinitDuplication();
+            return null;
+        }
 
         var hr = _dup.AcquireNextFrame(timeoutMs, out _, out var resource);
         if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT) return null;
+        
         if (hr.Code == DXGI_ERROR_ACCESS_LOST ||
-            hr.Code == ERROR_INVALID_HANDLE) { TryReinitDuplication(); return null; }
-        hr.CheckError();
+            hr.Code == ERROR_INVALID_HANDLE) 
+        { 
+            AppLog.Write($"[Capturer] DXGI access lost or invalid handle (0x{hr.Code:X8}), attempting reinitialization");
+            TryReinitDuplication(); 
+            return null; 
+        }
+        
+        try
+        {
+            hr.CheckError();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] DXGI AcquireNextFrame failed: 0x{hr.Code:X8}, {ex.Message}");
+            return null;
+        }
 
         try
         {
@@ -119,15 +146,23 @@ sealed class ScreenCapturer : IDisposable
         }
         finally { resource.Dispose(); _dup.ReleaseFrame(); }
 
-        var mapped = _context.Map(_staging, 0, MapMode.Read, D3D11MapFlags.None);
         try
         {
-            using var bmp = new Bitmap(Width, Height, mapped.RowPitch, PixelFormat.Format32bppArgb, mapped.DataPointer);
-            using var ms  = new MemoryStream(Width * Height / 3);
-            bmp.Save(ms, _jpegCodec, _jpegParams);
-            return ms.ToArray();
+            var mapped = _context.Map(_staging, 0, MapMode.Read, D3D11MapFlags.None);
+            try
+            {
+                using var bmp = new Bitmap(Width, Height, mapped.RowPitch, PixelFormat.Format32bppArgb, mapped.DataPointer);
+                using var ms  = new MemoryStream(Width * Height / 3);
+                bmp.Save(ms, _jpegCodec, _jpegParams);
+                return ms.ToArray();
+            }
+            finally { _context.Unmap(_staging, 0); }
         }
-        finally { _context.Unmap(_staging, 0); }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] DXGI frame processing failed: {ex.Message}");
+            return null;
+        }
     }
 
     private void TryReinitDuplication()
@@ -196,11 +231,16 @@ sealed class ScreenCapturer : IDisposable
     {
         // Throttle to targetFps
         long now      = Environment.TickCount64;
-        long interval = 1000 / targetFps;
+        long interval = 1000 / Math.Max(targetFps, 1);
         if (now - _lastGdiTick < interval) return null;
         _lastGdiTick = now;
 
-        if (_gdiBmp == null) return null;
+        if (_gdiBmp == null) 
+        {
+            AppLog.Write("[Capturer] GDI bitmap is null");
+            return null;
+        }
+        
         try
         {
             using var g = Graphics.FromImage(_gdiBmp);
@@ -213,6 +253,7 @@ sealed class ScreenCapturer : IDisposable
         catch (Exception ex)
         {
             AppLog.Write($"[Capturer] GDI frame error (0x{ex.HResult:X8}): {ex.Message}");
+            // If GDI fails repeatedly, it might be a system issue
             return null;
         }
     }

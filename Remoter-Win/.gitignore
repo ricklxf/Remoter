@@ -1,0 +1,33 @@
+# .NET
+bin/
+obj/
+publish/
+*.user
+*.suo
+*.userprefs
+.vs/
+
+# Visual Studio
+.vscode/
+
+# Rider
+.idea/
+
+# Logs
+*.log
+AppLog/
+
+# OS
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temp files
+*.tmp
+*.temp
+
+# Build outputs
+build.bat~
+
+# Ignore Remoter.ico if it's generated
+# Remoter.ico

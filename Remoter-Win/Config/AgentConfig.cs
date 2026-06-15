@@ -8,6 +8,7 @@ sealed class AgentConfig
 {
     public ushort Port     { get; set; } = 7788;
     public string Pin      { get; set; } = "";
+    public bool   PinEnabled { get; set; } = true;
     public string RelayUrl { get; set; } = "";
 
     private static readonly string _path = Path.Combine(

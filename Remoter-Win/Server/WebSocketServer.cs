@@ -43,10 +43,18 @@ sealed class WebSocketServer
     {
         var stream = tcp.GetStream();
         WsConn? conn = null;
+        bool isHttpRequest = false;
         try
         {
-            conn = await DoHandshakeAsync(stream, tcp);
-            if (conn == null) { tcp.Close(); return; }
+            (conn, isHttpRequest) = await DoHandshakeAsync(stream, tcp);
+            if (conn == null) 
+            { 
+                // If it was an HTTP request, wait a bit for data to be sent
+                if (isHttpRequest)
+                    await Task.Delay(500);
+                tcp.Close(); 
+                return; 
+            }
 
             OnConnect?.Invoke(conn);  // fired before first message arrives
             await ReceiveLoopAsync(conn, stream);
@@ -60,14 +68,15 @@ sealed class WebSocketServer
     }
 
     // HTTP/WebSocket upgrade handshake
-    private static async Task<WsConn?> DoHandshakeAsync(NetworkStream stream, TcpClient tcp)
+    // Returns (connection, isHttpRequest)
+    private static async Task<(WsConn? conn, bool isHttp)> DoHandshakeAsync(NetworkStream stream, TcpClient tcp)
     {
         var buf  = new byte[4096];
         int read = 0;
         while (read < buf.Length)
         {
             int n = await stream.ReadAsync(buf.AsMemory(read));
-            if (n == 0) return null;
+            if (n == 0) return (null, false);
             read += n;
             var req = Encoding.ASCII.GetString(buf, 0, read);
             if (req.Contains("\r\n\r\n")) break;
@@ -78,8 +87,12 @@ sealed class WebSocketServer
         if (key == null)
         {
             // Not a WebSocket upgrade — serve as HTTP GET if possible
-            await ServeFileAsync(stream, request);
-            return null;
+            var served = await ServeFileAsync(stream, request);
+            if (served)
+            {
+                return (null, true);
+            }
+            return (null, false);
         }
 
         var accept = Convert.ToBase64String(
@@ -93,7 +106,7 @@ sealed class WebSocketServer
             $"Sec-WebSocket-Accept: {accept}\r\n\r\n"
         );
         await stream.WriteAsync(response);
-        return new WsConn(stream, tcp);
+        return (new WsConn(stream, tcp), false);
     }
 
     private async Task ReceiveLoopAsync(WsConn conn, NetworkStream stream)
@@ -178,17 +191,17 @@ sealed class WebSocketServer
         return buf;
     }
 
-    private static async Task ServeFileAsync(NetworkStream stream, string request)
+    private static async Task<bool> ServeFileAsync(NetworkStream stream, string request)
     {
         try
         {
             var firstLine = request.Split("\r\n")[0];
             var parts     = firstLine.Split(' ');
-            if (parts.Length < 2 || parts[0] != "GET") return;
+            if (parts.Length < 2 || parts[0] != "GET") return false;
 
             var rawPath = parts[1].Split('?')[0];
             var webRoot = Path.Combine(AppContext.BaseDirectory, "web");
-            if (!Directory.Exists(webRoot)) return;
+            if (!Directory.Exists(webRoot)) return false;
 
             var rel      = rawPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
             var filePath = string.IsNullOrEmpty(rel)
@@ -197,7 +210,7 @@ sealed class WebSocketServer
 
             if (!File.Exists(filePath))
                 filePath = Path.Combine(webRoot, "index.html");
-            if (!File.Exists(filePath)) return;
+            if (!File.Exists(filePath)) return false;
 
             var ext  = Path.GetExtension(filePath);
             var mime = GetMime(ext);
@@ -205,10 +218,19 @@ sealed class WebSocketServer
 
             var header = Encoding.ASCII.GetBytes(
                 $"HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {data.Length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
-            await stream.WriteAsync(header);
-            await stream.WriteAsync(data);
+            
+            // Send header and data
+            await stream.WriteAsync(header, 0, header.Length);
+            await stream.WriteAsync(data, 0, data.Length);
+            await stream.FlushAsync();
+            
+            // Wait to ensure data is sent before connection is closed
+            await Task.Delay(300);
+            
+            return true;
         }
         catch { /* ignore broken connections */ }
+        return false;
     }
 
     private static string GetMime(string ext) => ext.ToLowerInvariant() switch
@@ -249,20 +271,56 @@ sealed class WsConn : IWsConn
         _tcp    = tcp;
     }
 
-    public Task SendTextAsync(string text) =>
-        SendRawAsync(0x1, Encoding.UTF8.GetBytes(text));
-
-    public Task SendBinaryAsync(byte[] data) =>
-        SendRawAsync(0x2, data);
-
-    // Sends a WebSocket frame (server → client, no mask, single fragment)
-    public async Task SendRawAsync(byte opcode, byte[] payload)
+    public async Task SendTextAsync(string text)
     {
+        using var frame = BuildFrame(0x1, Encoding.UTF8.GetBytes(text));
         await _sendLock.WaitAsync();
         try
         {
-            using var frame = BuildFrame(opcode, payload);
-            await _stream.WriteAsync(frame.GetBuffer().AsMemory(0, (int)frame.Length));
+            await _stream.WriteAsync(frame.GetBuffer().AsMemory(0, (int)frame.Length)).ConfigureAwait(false);
+        }
+        finally { _sendLock.Release(); }
+    }
+
+    public async Task SendBinaryAsync(byte[] data)
+    {
+        using var frame = BuildFrame(0x2, data);
+        await _sendLock.WaitAsync();
+        try
+        {
+            await _stream.WriteAsync(frame.GetBuffer().AsMemory(0, (int)frame.Length)).ConfigureAwait(false);
+        }
+        finally { _sendLock.Release(); }
+    }
+
+    public void Disconnect()
+    {
+        try
+        {
+            // Send close frame to client
+            var closeFrame = new byte[] { 0x88, 0x00 }; // FIN=1, opcode=0x8 (close), length=0
+            _stream.Write(closeFrame, 0, closeFrame.Length);
+            _stream.Flush();
+        }
+        catch
+        {
+            // Ignore errors when sending close frame
+        }
+        finally
+        {
+            // Close TCP connection
+            _tcp.Close();
+        }
+    }
+
+    // Sends a WebSocket frame (server → client, no mask, single fragment)
+    internal async Task SendRawAsync(byte opcode, byte[] payload)
+    {
+        using var frame = BuildFrame(opcode, payload);
+        await _sendLock.WaitAsync();
+        try
+        {
+            await _stream.WriteAsync(frame.GetBuffer().AsMemory(0, (int)frame.Length)).ConfigureAwait(false);
         }
         finally { _sendLock.Release(); }
     }

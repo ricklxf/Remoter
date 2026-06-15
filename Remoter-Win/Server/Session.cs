@@ -33,11 +33,38 @@ sealed class Session
 
     private CancellationTokenSource? _cts;
     private System.Threading.Timer?  _clipTimer;
-
+    
+    // Adaptive quality control - 延迟优先配置
+    private int    _currentFps = 60;  // 提高默认FPS到60，最大限度减少延迟
+    private int    _currentQuality = 50;  // 降低质量到50，提高编码速度
+    private long   _lastBytesSent = 0;
+    private DateTime _lastCheckTime = DateTime.UtcNow;
+    private const long TARGET_BANDWIDTH = 10L * 1024 * 1024; // 提高到10MB/s，适应更高速网络
+    private const int MIN_FPS = 30;  // 提高最低FPS到30，确保流畅度
+    private const int MAX_FPS = 60;
+    private const int MIN_QUALITY = 30;  // 降低最低质量到30，在带宽不足时优先保证低延迟
+    private const int MAX_QUALITY = 80;  // 降低最高质量到80，避免过度消耗带宽
+    private bool   _cpuLimitReached = false;
+    private bool   _adaptiveEnabled = true;
+    
+    // Statistics for overlay
+    private int    _frameCount = 0;
+    private DateTime _fpsCalcTime = DateTime.UtcNow;
+    private double _currentFpsDisplay = 0;
+    
+        // PIN enabled flag (static, shared across all sessions)
+    private static bool _pinEnabled = true;
+    
     public Session(IWsConn conn, string pin)
     {
         _conn = conn;
         _pin  = pin;
+    }
+    
+    // Update PIN enabled flag (called by MainForm)
+    public static void SetPinEnabled(bool enabled)
+    {
+        _pinEnabled = enabled;
     }
 
     public void Start()
@@ -92,6 +119,17 @@ sealed class Session
     {
         _cts?.Cancel();
         _clipTimer?.Dispose();
+        
+        // 主动断开WebSocket连接
+        try
+        {
+            _conn.Disconnect();
+        }
+        catch
+        {
+            // 忽略断开连接时的错误
+        }
+        
         if (_connectTime != default)
         {
             var secs = (int)(DateTime.UtcNow - _connectTime).TotalSeconds;
@@ -124,14 +162,26 @@ sealed class Session
         // PIN auth
         if (msg is ClientMsg.Auth auth)
         {
-            // if (auth.Pin != _pin) { Send(new { type = "error", code = "bad_pin" }); return; }
+            // Check if PIN is required
+            if (_pinEnabled && auth.Pin != _pin)
+            {
+                Send(new { type = "error", code = "bad_pin", message = "PIN码错误" });
+                return;
+            }
+            
             _ = auth;
             var pinToken = TokenStore.Generate("__pin__");
             _authed = true;
             AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated (PIN)");
             ConnectionLogger.Shared.LogAuthSuccess(_id);
             Send(new { type = "auth_ok", token = pinToken, username = "__pin__" });
-            _ = BeginCaptureAsync();
+            _ = BeginCaptureAsync().ContinueWith(t =>
+            {
+                if (t.Exception != null)
+                {
+                    AppLog.Write($"[Session] Capture task failed: {t.Exception.InnerException?.Message ?? t.Exception.Message}");
+                }
+            }, TaskScheduler.Default);
             return;
         }
 
@@ -145,7 +195,13 @@ sealed class Session
                 AppLog.Write($"[Session] {_conn.RemoteAddr} authenticated as {creds.Username}");
                 ConnectionLogger.Shared.LogAuthSuccess(_id);
                 Send(new { type = "auth_ok", token, username = creds.Username });
-                _ = BeginCaptureAsync();
+                _ = BeginCaptureAsync().ContinueWith(t =>
+                {
+                    if (t.Exception != null)
+                    {
+                        AppLog.Write($"[Session] Capture task failed: {t.Exception.InnerException?.Message ?? t.Exception.Message}");
+                    }
+                }, TaskScheduler.Default);
             }
             else
             {
@@ -165,7 +221,13 @@ sealed class Session
                 AppLog.Write($"[Session] {_conn.RemoteAddr} token auth as {username}");
                 ConnectionLogger.Shared.LogAuthSuccess(_id);
                 Send(new { type = "auth_ok" });
-                _ = BeginCaptureAsync();
+                _ = BeginCaptureAsync().ContinueWith(t =>
+                {
+                    if (t.Exception != null)
+                    {
+                        AppLog.Write($"[Session] Capture task failed: {t.Exception.InnerException?.Message ?? t.Exception.Message}");
+                    }
+                }, TaskScheduler.Default);
             }
             else
             {
@@ -241,8 +303,9 @@ sealed class Session
                 if (_clipSync) StartClipboard(); else StopClipboard();
                 break;
 
-            case ClientMsg.SetInputEnabled si:
-                _inputEnabled = si.Enabled; break;
+            // 注释掉SetInputEnabled处理，防止Web端禁用输入控制
+            // case ClientMsg.SetInputEnabled si:
+            //     _inputEnabled = si.Enabled; break;
 
             case ClientMsg.LockScreen:
                 LockWorkStation(); break;
@@ -269,7 +332,13 @@ sealed class Session
                 HandleListDir(ld.Path); break;
 
             case ClientMsg.RequestFile rf:
-                _ = SendFileAsync(rf.Path); break;
+                _ = SendFileAsync(rf.Path).ContinueWith(t =>
+                {
+                    if (t.Exception != null)
+                    {
+                        AppLog.Write($"[Session] SendFileAsync failed: {t.Exception.InnerException?.Message ?? t.Exception.Message}");
+                    }
+                }, TaskScheduler.Default); break;
 
             // WebRTC: accept offer but don't set up DataChannel yet
             case ClientMsg.WebRtcOffer:
@@ -284,7 +353,8 @@ sealed class Session
 
     private async Task BeginCaptureAsync()
     {
-        var c = new ScreenCapturer(jpegQuality: 65);
+        // 使用更高的初始质量以减少延迟感（客户端解码更快）
+        var c = new ScreenCapturer(jpegQuality: _currentQuality);
         try
         {
             c.Initialize();
@@ -294,7 +364,7 @@ sealed class Session
             _connectTime = DateTime.UtcNow;
             _cts        = new CancellationTokenSource();
 
-            Send(new { type = "stream_started", width = c.Width, height = c.Height, codec = "jpeg" });
+            Send(new { type = "stream_started", width = c.Width, height = c.Height, codec = "jpeg", fps = _currentFps });
             ConnectionLogger.Shared.LogConnected(_id, "jpeg", _crypto.IsReady);
             StartClipboard();
 
@@ -317,35 +387,181 @@ sealed class Session
     private async Task CaptureLoopAsync(CancellationToken ct)
     {
         int consecutiveErrors = 0;
+        var lastFrameTime = DateTime.UtcNow;
+        
         while (!ct.IsCancellationRequested)
         {
+            // Adaptive control: adjust FPS and quality based on bandwidth
+            AdjustQualityAndFps();
+            
+            // Calculate frame interval based on current FPS
+            var frameInterval = TimeSpan.FromMilliseconds(1000.0 / Math.Max(_currentFps, 1));
+            
+            // Wait for next frame
+            var elapsed = DateTime.UtcNow - lastFrameTime;
+            if (elapsed < frameInterval)
+            {
+                await Task.Delay(frameInterval - elapsed, ct).ConfigureAwait(false);
+            }
+            lastFrameTime = DateTime.UtcNow;
+            
+            // Calculate FPS for overlay
+            _frameCount++;
+            var now = DateTime.UtcNow;
+            if ((now - _fpsCalcTime).TotalSeconds >= 1.0)
+            {
+                _currentFpsDisplay = _frameCount / (now - _fpsCalcTime).TotalSeconds;
+                _frameCount = 0;
+                _fpsCalcTime = now;
+            }
+            
+            // Check if capturer is available
+            if (_capturer == null)
+            {
+                AppLog.Write("[Session] Capturer is null, exiting capture loop");
+                break;
+            }
+            
             byte[]? jpeg;
             try
             {
-                jpeg = _capturer!.CaptureJpeg(timeoutMs: 16); // blocks ≤16ms
+                jpeg = _capturer.CaptureJpeg(timeoutMs: 1);
                 consecutiveErrors = 0;
+            }
+            catch (OperationCanceledException)
+            {
+                // Task was cancelled, exit loop
+                break;
             }
             catch (Exception ex)
             {
                 consecutiveErrors++;
-                AppLog.Write($"[Session] Capture frame error ({consecutiveErrors}): {ex.Message}");
-                if (consecutiveErrors > 30) throw; // give up after ~6s of consecutive failures
+                AppLog.Write($"[Session] Capture error (x{consecutiveErrors}): {ex.Message}");
+                if (consecutiveErrors > 30) 
+                {
+                    AppLog.Write("[Session] Too many consecutive errors, exiting capture loop");
+                    break;
+                }
                 await Task.Delay(200, ct).ConfigureAwait(false);
                 continue;
             }
 
-            if (jpeg == null) { await Task.Delay(1, ct).ConfigureAwait(false); continue; }
+            if (jpeg == null) continue;
 
             var fid = _frameId++;
             var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
             var pkt = FrameBuilder.VideoFramePacket(jpeg, fid, pts, keyframe: true);
             _bytesSent += pkt.Length;
-            // On send failure, cancel the capture loop so the session tears down cleanly
+            
+            // Send overlay info to client (embedded in frame metadata)
+            SendOverlayInfo();
+            
             _ = _conn.SendBinaryAsync(pkt).ContinueWith(
                 _ => _cts?.Cancel(),
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted,
                 TaskScheduler.Default);
+        }
+    }
+    
+    private void SendOverlayInfo()
+    {
+        // Send statistics to client for overlay display
+        var uploadSpeed = CalculateUploadSpeed();
+        Send(new
+        {
+            type = "stats",
+            fps = (int)_currentFpsDisplay,
+            uploadSpeed = uploadSpeed,
+            quality = _currentQuality
+        });
+    }
+    
+    private string CalculateUploadSpeed()
+    {
+        var now = DateTime.UtcNow;
+        var timeDiff = (now - _lastCheckTime).TotalSeconds;
+        if (timeDiff <= 0) return "0 KB/s";
+        
+        var bytesPerSecond = (_bytesSent - _lastBytesSent) / timeDiff;
+        _lastBytesSent = _bytesSent;
+        _lastCheckTime = now;
+        
+        if (bytesPerSecond < 1024)
+            return $"{bytesPerSecond:F0} B/s";
+        else if (bytesPerSecond < 1024 * 1024)
+            return $"{bytesPerSecond / 1024:F1} KB/s";
+        else
+            return $"{bytesPerSecond / (1024 * 1024):F1} MB/s";
+    }
+    
+    private void AdjustQualityAndFps()
+    {
+        // 检查CPU限制
+        if (_cpuLimitReached)
+            return;
+        
+        var now = DateTime.UtcNow;
+        var timeDiff = (now - _lastCheckTime).TotalSeconds;
+        if (timeDiff < 3.0) return; // Check every 3 seconds for more stable adjustment
+        
+        // Calculate current bandwidth
+        var bytesDiff = _bytesSent - _lastBytesSent;
+        var currentBandwidth = (long)(bytesDiff / timeDiff);
+        
+        _lastBytesSent = _bytesSent;
+        _lastCheckTime = now;
+        
+        // Adaptive logic: follow user's specified order
+        // 1. Increase FPS to 30
+        // 2. Increase quality
+        // 3. Increase FPS to 60
+        // 4. Increase quality to original (100)
+        if (currentBandwidth < TARGET_BANDWIDTH * 0.7)
+        {
+            // Bandwidth usage is low, gradually increase following the specified order
+            if (_currentFps < 30)
+            {
+                _currentFps += 2; // Increase by 2 each time for faster adaptation
+                if (_currentFps > 30) _currentFps = 30;
+                AppLog.Write($"[Session] FPS increased to {_currentFps}");
+            }
+            else if (_currentQuality < MAX_QUALITY)
+            {
+                _currentQuality += 2; // Increase by 2 each time
+                if (_currentQuality > MAX_QUALITY) _currentQuality = MAX_QUALITY;
+                _capturer?.SetQuality(_currentQuality);
+                AppLog.Write($"[Session] Quality increased to {_currentQuality}");
+            }
+            else if (_currentFps < MAX_FPS)
+            {
+                _currentFps += 2; // Increase by 2 each time
+                if (_currentFps > MAX_FPS) _currentFps = MAX_FPS;
+                AppLog.Write($"[Session] FPS increased to {_currentFps}");
+            }
+        }
+        else if (currentBandwidth > TARGET_BANDWIDTH * 1.3)
+        {
+            // Bandwidth usage is high, gradually decrease (reverse order)
+            if (_currentFps > 30)
+            {
+                _currentFps -= 2; // Decrease by 2 each time
+                if (_currentFps < 30) _currentFps = 30;
+                AppLog.Write($"[Session] FPS decreased to {_currentFps}");
+            }
+            else if (_currentQuality > 50)
+            {
+                _currentQuality -= 2; // Decrease by 2 each time
+                if (_currentQuality < 50) _currentQuality = 50;
+                _capturer?.SetQuality(_currentQuality);
+                AppLog.Write($"[Session] Quality decreased to {_currentQuality}");
+            }
+            else if (_currentFps > MIN_FPS)
+            {
+                _currentFps -= 2; // Decrease by 2 each time
+                if (_currentFps < MIN_FPS) _currentFps = MIN_FPS;
+                AppLog.Write($"[Session] FPS decreased to {_currentFps}");
+            }
         }
     }
 
@@ -361,18 +577,45 @@ sealed class Session
             var frame = new byte[1 + enc.Length];
             frame[0]  = FrameType.Encrypted;
             Buffer.BlockCopy(enc, 0, frame, 1, enc.Length);
+            _bytesSent += frame.Length;
             _ = _conn.SendBinaryAsync(frame);
         }
         else
         {
-            _ = _conn.SendTextAsync(System.Text.Encoding.UTF8.GetString(json));
+            var text = System.Text.Encoding.UTF8.GetString(json);
+            _bytesSent += json.Length;
+            _ = _conn.SendTextAsync(text);
         }
     }
 
     // Always plaintext (hello / crypto_ok)
-    private void SendRaw(object obj) =>
-        _ = _conn.SendTextAsync(JsonSerializer.Serialize(obj));
-
+    private void SendRaw(object obj)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(obj);
+        _bytesSent += json.Length;
+        _ = _conn.SendTextAsync(System.Text.Encoding.UTF8.GetString(json));
+    }
+    
+    // Get total bytes sent for upload speed calculation
+    public long GetTotalBytesSent() => Interlocked.Read(ref _bytesSent);
+    
+    // Set CPU limit reached flag (called by MainForm)
+    public void SetCpuLimitReached(bool reached)
+    {
+        _cpuLimitReached = reached;
+        if (reached)
+        {
+            AppLog.Write($"[Session] CPU limit reached, pausing adaptive quality increase");
+        }
+    }
+    
+    // Set adaptive quality enabled/disabled
+    public void SetAdaptiveEnabled(bool enabled)
+    {
+        _adaptiveEnabled = enabled;
+        AppLog.Write($"[Session] Adaptive quality {(enabled ? "enabled" : "disabled")}");
+    }
+    
     // ── Directory listing ────────────────────────────────────────────────
 
     private void HandleListDir(string path)
@@ -421,6 +664,7 @@ sealed class Session
             pkt[17] = (byte)(offset >> 24); pkt[18] = (byte)(offset >> 16);
             pkt[19] = (byte)(offset >> 8);  pkt[20] = (byte)(offset);
             Buffer.BlockCopy(data, offset, pkt, 21, len);
+            _bytesSent += pkt.Length;
             await _conn.SendBinaryAsync(pkt);
         }
         Send(new { type = "file_end", id = rawId });

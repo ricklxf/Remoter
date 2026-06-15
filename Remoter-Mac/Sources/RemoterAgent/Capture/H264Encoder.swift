@@ -12,6 +12,11 @@ final class H264Encoder {
     private var session: VTCompressionSession?
     private var frameIndex: Int64 = 0
 
+    // Encode backpressure: cap frames in flight inside VideoToolbox so its
+    // internal queue can't grow unbounded (each pending CVPixelBuffer is ~8MB
+    // at 1080p → OOM crash within ~25s if the encoder falls behind).
+    private let inFlight = DispatchSemaphore(value: 2)
+
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
         var s: VTCompressionSession?
         let err = VTCompressionSessionCreate(
@@ -57,13 +62,15 @@ final class H264Encoder {
 
     func encode(_ cgImage: CGImage) {
         guard let session else { return }
-        guard let pb = cgImageToPixelBuffer(cgImage) else { return }
+        // Drop this frame if the encoder is still busy with prior ones.
+        guard inFlight.wait(timeout: .now()) == .success else { return }
+        guard let pb = cgImageToPixelBuffer(cgImage) else { inFlight.signal(); return }
 
         let idx  = frameIndex
         frameIndex += 1
         let pts  = CMTime(value: idx, timescale: 60)
 
-        VTCompressionSessionEncodeFrame(
+        let st = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pb,
             presentationTimeStamp: pts,
@@ -71,6 +78,7 @@ final class H264Encoder {
             frameProperties: nil,
             infoFlagsOut: nil
         ) { [weak self] status, _, sample in
+            defer { self?.inFlight.signal() }
             guard let self, status == noErr, let sample else {
                 if status != noErr {
                     ConnectionLogger.shared.logStep(sessionId: "h264", step: "encode_err",
@@ -80,6 +88,8 @@ final class H264Encoder {
             }
             self.handleOutput(sample)
         }
+        // If the call itself failed, the completion handler won't fire — release here.
+        if st != noErr { inFlight.signal() }
     }
 
     func close() {

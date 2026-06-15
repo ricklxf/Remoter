@@ -4,6 +4,13 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 
+// Reduce Chromium startup overhead. Must be called before app.whenReady().
+app.commandLine.appendSwitch('disable-background-networking')
+app.commandLine.appendSwitch('disable-features', 'TranslateUI,AutofillServerCommunication')
+if (process.platform === 'darwin') {
+  app.commandLine.appendSwitch('enable-features', 'Metal')
+}
+
 // ─── Single-instance lock (fixes Windows double-click no-show) ─────
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {

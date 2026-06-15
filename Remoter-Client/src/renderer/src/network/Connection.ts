@@ -45,6 +45,8 @@ export class Connection {
   private serverOs = ''
 
   private sendQueue: Promise<void> = Promise.resolve()
+  private queueGen = 0        // incremented on disconnect to abort stale queue items
+  private _lastRecvTs = 0    // timestamp of last received WebSocket message
   private _inputLogN = 0
 
   private streamWidth  = 0
@@ -85,7 +87,9 @@ export class Connection {
     this.params = params
     this.e2e.reset()
     this.serverOs = ''
+    this.queueGen++                       // invalidate any stale queue items from prior connection
     this.sendQueue = Promise.resolve()
+    this._lastRecvTs = Date.now()
     this._inputLogN = 0
     this.emit({ type: 'state', state: 'connecting' })
 
@@ -114,6 +118,7 @@ export class Connection {
       }
     }
     ws.onmessage = (ev) => {
+      this._lastRecvTs = Date.now()
       if (typeof ev.data === 'string') {
         this.handleText(ev.data)
       } else {
@@ -122,6 +127,7 @@ export class Connection {
     }
     ws.onclose = (ev) => {
       console.warn(`[WS] closed: code=${ev.code}, reason="${ev.reason}", wasClean=${ev.wasClean}`)
+      this.queueGen++                     // abort any pending queue items — they must not alter state
       this.webrtc?.close()
       this.webrtc = null
       this.stopStats()
@@ -212,7 +218,9 @@ export class Connection {
       return
     }
     if (this.e2e.isReady) {
+      const gen = this.queueGen
       this.sendQueue = this.sendQueue.then(async () => {
+        if (this.queueGen !== gen) return
         try {
           const ct = await this.e2e.encryptJson(obj)
           const frame = new Uint8Array(1 + ct.length)
@@ -328,7 +336,9 @@ export class Connection {
 
     if (prefix === ENCRYPTED_MSG) {
       const ct = new Uint8Array(buf, 1)
+      const gen = this.queueGen
       this.sendQueue = this.sendQueue.then(async () => {
+        if (this.queueGen !== gen) return
         try {
           const msg = await this.e2e.decryptJson(ct)
           this.routeMessage(msg)
@@ -559,8 +569,16 @@ export class Connection {
   private startStatsLoop(): void {
     if (this.statsTimer) clearInterval(this.statsTimer)
     const INTERVAL = 2000
+    const STALE_TIMEOUT = 15000  // no data for 15s → assume connection is dead
 
     this.statsTimer = setInterval(() => {
+      // Detect stale connection: server crashed / TCP hung without a clean close
+      if (this._lastRecvTs > 0 && Date.now() - this._lastRecvTs > STALE_TIMEOUT) {
+        console.warn('[Conn] no data received for 15s — closing stale connection')
+        this.ws?.close(4001, 'stale connection')
+        return
+      }
+
       const fps         = Math.round(this._frameCount / (INTERVAL / 1000))
       const bitrateKbps = Math.round(this._bytesCount * 8 / INTERVAL)
       const transport   = this.webrtc?.videoState === 'open' ? 'UDP' : 'TCP' as 'UDP' | 'TCP'

@@ -26,6 +26,7 @@ final class Session {
     private var authenticated = false
     private var frameId: UInt32 = 0
     private var inputEnabled = true
+    private var jpegQuality: Double = 0.85
 
     // For disconnection logging
     private var connectTime: Date?
@@ -239,8 +240,9 @@ final class Session {
         case .fileEnd(let fid):
             fileReceiver?.finish(id: fid)
 
-        case .qualitySet(let fps, _):
+        case .qualitySet(let fps, let bitrate):
             capturer?.updateFps(fps)
+            jpegQuality = bitrateToJpegQuality(bitrate)
 
         case .ping:
             sendJson(["type": "pong"])
@@ -393,7 +395,7 @@ final class Session {
 
             c.onFrame = { [weak self] cgImage, _, _ in
                 guard let self else { return }
-                guard let jpeg = Self.encodeJPEG(cgImage, quality: 0.65) else { return }
+                guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
                 let fid = self.frameId
                 self.frameId &+= 1
                 self.bytesSent += Int64(jpeg.count)
@@ -412,6 +414,16 @@ final class Session {
             let msg = "\(error)"
             ConnectionLogger.shared.logCaptureError(sessionId: sid, error: msg)
             sendJsonRaw(["type": "error", "code": "capture_failed", "message": msg])
+        }
+    }
+
+    /// 码率（bps）→ JPEG 质量，匹配客户端 Toolbar 预设
+    private func bitrateToJpegQuality(_ bps: Int) -> Double {
+        switch bps {
+        case 10_000_000...: return 0.92
+        case  6_000_000...: return 0.85
+        case  3_000_000...: return 0.75
+        default:            return 0.60
         }
     }
 

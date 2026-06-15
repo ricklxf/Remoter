@@ -40,10 +40,10 @@ export class WebRTCClient {
     const pc = new RTCPeerConnection({ iceServers })
     this.pc = pc
 
-    // 视频 DataChannel：无序、不重传（UDP 语义，单帧丢失不阻塞后续帧）
+    // 视频 DataChannel：无序 + 可靠传输（无 HOL 阻塞，chunk 全部保证到达）
+    // 帧级别的丢帧由 Mac 端 bufferedAmount 检查控制，不依赖 SCTP 丢包
     this.videoChannel = pc.createDataChannel('video', {
-      ordered: false,
-      maxRetransmits: 0
+      ordered: false
     })
     this.videoChannel.binaryType = 'arraybuffer'
     this.videoChannel.onmessage = (ev) => this.handleVideoChunk(ev.data as ArrayBuffer)

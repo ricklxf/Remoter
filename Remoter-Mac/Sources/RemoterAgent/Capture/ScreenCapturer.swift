@@ -38,9 +38,10 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         let displayID = CGMainDisplayID()
         physWidth    = Int(CGDisplayPixelsWide(displayID))
         physHeight   = Int(CGDisplayPixelsHigh(displayID))
-        // Stream at 50% resolution: 4× fewer pixels → ~4× smaller JPEG → ~4× higher fps
-        screenWidth  = physWidth  / 2
-        screenHeight = physHeight / 2
+        // Cap stream at 1280 wide: text stays readable, frame size ~120KB (~3× smaller than 1080p)
+        let maxStreamW = 1280
+        screenWidth  = min(physWidth, maxStreamW)
+        screenHeight = physHeight * screenWidth / physWidth
         statTick     = CFAbsoluteTimeGetCurrent()
 
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",

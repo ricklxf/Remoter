@@ -26,7 +26,7 @@ final class Session {
     private var authenticated = false
     private var frameId: UInt32 = 0
     private var inputEnabled = true
-    private var jpegQuality: Double = 0.85
+    private var jpegQuality: Double = 0.75
 
     // Video send semaphore: only one frame in flight at a time.
     // When TCP is slower than the encoder, newer frames replace the

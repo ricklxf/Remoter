@@ -178,48 +178,46 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
               <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
                 {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
                   <div style={s.machineHeader}>
-                    {isEditingNote ? (
-                      <input
-                        autoFocus
-                        style={s.noteInput}
-                        value={noteValue}
-                        onChange={e => setNoteValue(e.target.value)}
-                        onBlur={handleNoteBlur}
-                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-                        placeholder={machineInfo.computerName}
-                      />
-                    ) : (
-                      <span style={s.machineDisplayName}>
-                        {machineName || machineInfo.computerName}
-                      </span>
-                    )}
+                    <span style={s.machineDisplayName}>{machineInfo.computerName}</span>
                     {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
                   </div>
                 )}
                 <div style={s.bannerDivider} />
                 <div style={s.accountRow}>
                   <span style={s.savedIcon}>👤</span>
-                  <select
-                    style={s.savedSelect}
-                    value={selectedSaved?.username ?? '__new__'}
-                    onChange={e => {
-                      if (e.target.value === '__new__') {
-                        setSelectedSaved(null)
-                        setAuthMode('pin')
-                      } else {
-                        const acct = savedList.find(a => a.username === e.target.value)
-                        if (acct) { setSelectedSaved(acct); setAuthMode('token') }
-                      }
-                    }}
-                  >
-                    {savedList.map(a => (
-                      <option key={a.username} value={a.username}>
-                        {a.username === '__pin__' ? 'PIN 码（记住）' : a.username}
-                      </option>
-                    ))}
-                    <option value="__new__">+ 使用其他账户…</option>
-                  </select>
-                  <button type="button" style={s.noteBtn}
+                  {isEditingNote ? (
+                    <input
+                      autoFocus
+                      style={s.noteInput}
+                      value={noteValue}
+                      onChange={e => setNoteValue(e.target.value)}
+                      onBlur={handleNoteBlur}
+                      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                      placeholder="输入备注名称…"
+                    />
+                  ) : (
+                    <select
+                      style={s.savedSelect}
+                      value={selectedSaved?.username ?? '__new__'}
+                      onChange={e => {
+                        if (e.target.value === '__new__') {
+                          setSelectedSaved(null)
+                          setAuthMode('pin')
+                        } else {
+                          const acct = savedList.find(a => a.username === e.target.value)
+                          if (acct) { setSelectedSaved(acct); setAuthMode('token') }
+                        }
+                      }}
+                    >
+                      {savedList.map(a => (
+                        <option key={a.username} value={a.username}>
+                          {a.username === '__pin__' ? (machineName || 'PIN 码（记住）') : (machineName || a.username)}
+                        </option>
+                      ))}
+                      <option value="__new__">+ 使用其他账户…</option>
+                    </select>
+                  )}
+                  <button type="button" style={s.forgetBtn}
                     onClick={() => { setNoteValue(machineName); setIsEditingNote(true) }}>备注</button>
                   <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
                 </div>
@@ -329,7 +327,7 @@ const s: Record<string, React.CSSProperties> = {
   noteInput: {
     flex: 1, background: 'transparent', border: 'none', outline: 'none',
     borderBottom: '1px solid var(--primary)',
-    fontSize: 15, fontWeight: 700, color: 'var(--text)', padding: '0 0 2px 0',
+    fontSize: 13, fontWeight: 600, color: 'var(--text)', padding: '0 0 1px 0',
   },
   machineInfoBadge: {
     background: 'var(--bg)', border: '1px solid var(--border)',
@@ -344,10 +342,6 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1, background: 'var(--bg3)', color: 'var(--text)',
     border: 'none', outline: 'none', fontSize: 13, fontWeight: 600,
     cursor: 'pointer', minWidth: 0,
-  },
-  noteBtn: {
-    fontSize: 12, color: 'var(--primary)', background: 'transparent', flexShrink: 0,
-    border: '1px solid var(--primary)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
   },
   forgetBtn: {
     fontSize: 12, color: 'var(--text2)', background: 'transparent', flexShrink: 0,

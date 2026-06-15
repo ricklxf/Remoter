@@ -279,7 +279,7 @@ const s: Record<string, React.CSSProperties> = {
   logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 },
   logoIcon:{ fontSize: 32, color: 'var(--primary)' },
   logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' },
-  sub:     { color: 'var(--text2)', fontSize: 13, marginBottom: 28 },
+  sub:     { color: 'var(--text2)', fontSize: 13, marginBottom: 20 },
   tabs:    { display: 'flex', gap: 8, marginBottom: 24 },
   tab:     { flex: 1, padding: '8px 0', borderRadius: 6, fontSize: 13, background: 'var(--bg3)', color: 'var(--text2)' },
   tabActive:{ background: 'var(--primary)', color: '#fff' },
@@ -288,7 +288,7 @@ const s: Record<string, React.CSSProperties> = {
   // connection card (machine name + saved accounts)
   savedBanner: {
     display: 'flex', flexDirection: 'column',
-    background: 'var(--bg3)', borderRadius: 10, padding: '8px 12px',
+    background: 'var(--bg3)', borderRadius: 10, padding: '5px 12px',
     border: '1px solid var(--border)',
   },
   machineInput: {
@@ -309,7 +309,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 11, color: 'var(--text2)',
     whiteSpace: 'nowrap' as const, flexShrink: 0,
   },
-  bannerDivider: { height: 1, background: 'var(--border)', margin: '6px 0' },
+  bannerDivider: { height: 1, background: 'var(--border)', margin: '4px 0' },
   accountRow:   { display: 'flex', alignItems: 'center', gap: 8 },
   savedIcon:    { fontSize: 18, flexShrink: 0 },
   savedSelect: {

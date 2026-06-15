@@ -176,13 +176,15 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
               {/* Connection card: machine info + saved accounts (only when accounts exist) */}
               {savedList.length > 0 && (
               <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
-                {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
-                  <div style={{ ...s.machineHeader, visibility: selectedSaved !== null ? 'visible' : 'hidden' }}>
-                    <span style={s.machineDisplayName}>{machineInfo.computerName}</span>
-                    {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
-                  </div>
+                {machineInfo && (machineInfo.computerName || machineInfo.modelId) && selectedSaved !== null && (
+                  <>
+                    <div style={s.machineHeader}>
+                      <span style={s.machineDisplayName}>{machineInfo.computerName}</span>
+                      {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
+                    </div>
+                    <div style={s.bannerDivider} />
+                  </>
                 )}
-                <div style={s.bannerDivider} />
                 {isEditingNote ? (
                   <div style={s.accountRow}>
                     <input
@@ -304,7 +306,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
 const s: Record<string, React.CSSProperties> = {
   wrap:    { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg)', overflowX: 'hidden' },
-  card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px', width: '100%', maxWidth: 420, boxSizing: 'border-box' as const, boxShadow: 'var(--shadow)', position: 'relative' as const },
+  card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px 28px', width: '100%', maxWidth: 420, boxSizing: 'border-box' as const, boxShadow: 'var(--shadow)', position: 'relative' as const },
   logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 },
   logoIcon:{ fontSize: 32, color: 'var(--primary)' },
   logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' },
@@ -312,7 +314,7 @@ const s: Record<string, React.CSSProperties> = {
   tabs:    { display: 'flex', gap: 8, marginBottom: 16 },
   tab:     { flex: 1, padding: '8px 0', borderRadius: 6, fontSize: 13, background: 'var(--bg3)', color: 'var(--text2)' },
   tabActive:{ background: 'var(--primary)', color: '#fff' },
-  form:    { display: 'flex', flexDirection: 'column', gap: 16 },
+  form:    { display: 'flex', flexDirection: 'column', gap: 14 },
   label:   { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: 'var(--text2)' },
   // connection card (machine name + saved accounts)
   savedBanner: {
@@ -377,8 +379,8 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--primary)', color: '#fff', fontSize: 15, fontWeight: 600,
   },
   hintBox: {
-    marginTop: 12, fontSize: 12, color: 'var(--text2)',
-    lineHeight: 1.6, borderTop: '1px solid var(--border)', paddingTop: 16,
+    marginTop: 8, fontSize: 12, color: 'var(--text2)',
+    lineHeight: 1.6, borderTop: '1px solid var(--border)', paddingTop: 12,
   },
   code: {
     background: 'var(--bg)', padding: '2px 6px', borderRadius: 4,

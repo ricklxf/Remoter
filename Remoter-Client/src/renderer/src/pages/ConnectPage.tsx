@@ -183,19 +183,22 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                   </div>
                 )}
                 <div style={s.bannerDivider} />
-                <div style={s.accountRow}>
-                  <span style={s.savedIcon}>👤</span>
-                  {isEditingNote ? (
+                {isEditingNote ? (
+                  <div style={s.accountRow}>
                     <input
                       autoFocus
-                      style={s.noteInput}
+                      style={{ ...s.noteInput, flex: 1 }}
                       value={noteValue}
                       onChange={e => setNoteValue(e.target.value)}
                       onBlur={handleNoteBlur}
                       onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
                       placeholder="输入备注名称…"
                     />
-                  ) : (
+                    <button type="button" style={s.forgetBtn} onClick={handleNoteBlur}>完成</button>
+                  </div>
+                ) : (
+                  <div style={s.accountRow}>
+                    <span style={s.savedIcon}>👤</span>
                     <select
                       style={s.savedSelect}
                       value={selectedSaved?.username ?? '__new__'}
@@ -216,11 +219,11 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                       ))}
                       <option value="__new__">+ 使用其他账户…</option>
                     </select>
-                  )}
-                  <button type="button" style={s.forgetBtn}
-                    onClick={() => { setNoteValue(machineName); setIsEditingNote(true) }}>备注</button>
-                  <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
-                </div>
+                    <button type="button" style={s.forgetBtn}
+                      onClick={() => { setNoteValue(machineName); setIsEditingNote(true) }}>备注</button>
+                    <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
+                  </div>
+                )}
               </div>
               )}
 
@@ -300,8 +303,8 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  wrap:    { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg)' },
-  card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px', width: 420, boxShadow: 'var(--shadow)', position: 'relative' as const },
+  wrap:    { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg)', overflowX: 'hidden' },
+  card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px', width: '100%', maxWidth: 420, boxSizing: 'border-box' as const, boxShadow: 'var(--shadow)', position: 'relative' as const },
   logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 },
   logoIcon:{ fontSize: 32, color: 'var(--primary)' },
   logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' },

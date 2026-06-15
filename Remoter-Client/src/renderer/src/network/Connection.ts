@@ -212,6 +212,10 @@ export class Connection {
     this.sendJson({ type: 'request_file', path })
   }
 
+  sendSetCodec(codec: string): void {
+    this.sendJson({ type: 'set_codec', codec })
+  }
+
   sendJson(obj: object): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('[Conn] sendJson: ws not open, state=', this.ws?.readyState)

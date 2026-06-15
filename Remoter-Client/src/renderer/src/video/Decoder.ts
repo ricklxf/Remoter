@@ -5,7 +5,7 @@ export type FrameCallback = (frame: VideoFrame) => void
 export type VideoCodec = 'h264' | 'h265' | 'jpeg'
 
 const CODEC_STRING: Record<Exclude<VideoCodec, 'jpeg'>, string> = {
-  h264: 'avc1.42E034',       // H.264 Baseline Profile Level 5.2 (broad compatibility)
+  h264: 'avc3.42E034',       // H.264 Baseline Annex-B in-band SPS/PPS, Level 5.2
   h265: 'hvc1.1.6.L150.B0'  // H.265 Main Profile Level 5.0
 }
 

@@ -265,8 +265,8 @@ final class Session {
         case .clientStats:
             break  // JPEG 模式下无 ABR
 
-        case .setCodec:
-            break  // JPEG 模式下不支持切换
+        case .setCodec(let codec):
+            if codec == "jpeg" { switchToJpeg() }
 
         case .listDir(let path):
             handleListDir(path)
@@ -446,6 +446,33 @@ final class Session {
             let msg = "\(error)"
             ConnectionLogger.shared.logCaptureError(sessionId: sid, error: msg)
             sendJsonRaw(["type": "error", "code": "capture_failed", "message": msg])
+        }
+    }
+
+    // Client requested fallback to JPEG (e.g. WebCodecs unavailable on this platform)
+    private func switchToJpeg() {
+        guard let c = capturer else { return }
+        encoder?.close()
+        encoder = nil
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "codec_switch", detail: "h264→jpeg")
+        sendJson([
+            "type":   "stream_started",
+            "width":  c.screenWidth,
+            "height": c.screenHeight,
+            "codec":  "jpeg"
+        ])
+        c.onFrame = { [weak self] cgImage, _, _ in
+            guard let self else { return }
+            guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
+            guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
+            let fid = self.frameId
+            self.frameId &+= 1
+            self.bytesSent += Int64(jpeg.count)
+            let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
+            let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
+            self.server.sendBinaryVideo(pkt, to: self.connection) {
+                self.wsSendSem.signal()
+            }
         }
     }
 

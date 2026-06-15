@@ -393,8 +393,6 @@ final class Session {
                 "codec":  "jpeg"
             ])
 
-            var framesSentRTC = 0
-            var framesSentWS  = 0
             var framesDropped = 0
 
             c.onFrame = { [weak self] cgImage, _, _ in
@@ -411,24 +409,17 @@ final class Session {
                 self.frameId &+= 1
                 self.bytesSent += Int64(jpeg.count)
 
-                // Prefer UDP DataChannel (low latency, no HOL blocking)
-                // Fall back to TCP WebSocket while DataChannel is establishing
-                if let rtc = self.webrtc, rtc.isVideoChannelOpen {
-                    rtc.sendVideoFrame(jpeg, isKeyframe: true, frameId: fid)
-                    framesSentRTC += 1
-                    if framesSentRTC == 1 {
-                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "first_frame_rtc", detail: "jpeg=\(jpeg.count)B")
-                    }
-                } else {
-                    let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
-                    let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
-                    self.server.sendBinary(pkt, to: self.connection)
-                    framesSentWS += 1
-                    if framesSentWS == 1 {
-                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "first_frame_ws", detail: "jpeg=\(jpeg.count)B")
-                    }
+                // Always send via WebSocket (TCP, reliable). JPEG frames are large
+                // (~350 KB), and the WebRTC DataChannel reliability depends on the
+                // client version setting maxRetransmits — use WebSocket to guarantee
+                // delivery regardless of client version.
+                let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
+                let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
+                self.server.sendBinary(pkt, to: self.connection)
+
+                if fid == 0 {
+                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                        step: "first_frame_ws", detail: "jpeg=\(jpeg.count)B")
                 }
             }
 

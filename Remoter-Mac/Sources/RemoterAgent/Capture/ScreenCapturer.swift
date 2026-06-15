@@ -15,8 +15,10 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     var onFrame:   ((CGImage, Int, Int) -> Void)?
     var onStopped: (() -> Void)?   // called when CGDisplayStream reports frameStopped
 
-    private(set) var screenWidth:  Int = 1920
-    private(set) var screenHeight: Int = 1080
+    private(set) var physWidth:    Int = 1920  // physical display pixels (for input mapping)
+    private(set) var physHeight:   Int = 1080
+    private(set) var screenWidth:  Int = 960   // encode/stream resolution (50% of physical)
+    private(set) var screenHeight: Int = 540
 
     private var displayStream:  CGDisplayStream?
     private let captureQueue    = DispatchQueue(label: "remoter.capture.cb", qos: .userInitiated)
@@ -34,12 +36,15 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
 
     func start(fps: Int = 60) async throws {
         let displayID = CGMainDisplayID()
-        screenWidth   = Int(CGDisplayPixelsWide(displayID))
-        screenHeight  = Int(CGDisplayPixelsHigh(displayID))
-        statTick      = CFAbsoluteTimeGetCurrent()
+        physWidth    = Int(CGDisplayPixelsWide(displayID))
+        physHeight   = Int(CGDisplayPixelsHigh(displayID))
+        // Stream at 50% resolution: 4× fewer pixels → ~4× smaller JPEG → ~4× higher fps
+        screenWidth  = physWidth  / 2
+        screenHeight = physHeight / 2
+        statTick     = CFAbsoluteTimeGetCurrent()
 
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
-            detail: "id=\(displayID) \(screenWidth)x\(screenHeight)")
+            detail: "id=\(displayID) phys=\(physWidth)x\(physHeight) stream=\(screenWidth)x\(screenHeight)")
 
         let props: [CFString: Any] = [
             CGDisplayStream.minimumFrameTime: 1.0 / Double(max(fps, 1)),

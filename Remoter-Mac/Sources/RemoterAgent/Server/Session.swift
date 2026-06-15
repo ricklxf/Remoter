@@ -385,7 +385,7 @@ final class Session {
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             capturer     = c
-            input        = InputController(screenWidth: c.screenWidth, screenHeight: c.screenHeight)
+            input        = InputController(screenWidth: c.physWidth, screenHeight: c.physHeight)
             fileReceiver = FileReceiver()
             connectTime  = Date()
 

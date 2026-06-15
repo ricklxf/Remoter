@@ -288,7 +288,7 @@ const s: Record<string, React.CSSProperties> = {
   logoIcon:{ fontSize: 32, color: 'var(--primary)' },
   logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' },
   sub:     { color: 'var(--text2)', fontSize: 13, marginBottom: 20 },
-  tabs:    { display: 'flex', gap: 8, marginBottom: 24 },
+  tabs:    { display: 'flex', gap: 8, marginBottom: 16 },
   tab:     { flex: 1, padding: '8px 0', borderRadius: 6, fontSize: 13, background: 'var(--bg3)', color: 'var(--text2)' },
   tabActive:{ background: 'var(--primary)', color: '#fff' },
   form:    { display: 'flex', flexDirection: 'column', gap: 16 },
@@ -356,12 +356,12 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--primary)', color: '#fff', fontSize: 15, fontWeight: 600,
   },
   hintBox: {
-    marginTop: 24, fontSize: 12, color: 'var(--text2)',
+    marginTop: 12, fontSize: 12, color: 'var(--text2)',
     lineHeight: 1.6, borderTop: '1px solid var(--border)', paddingTop: 16,
   },
   code: {
     background: 'var(--bg)', padding: '2px 6px', borderRadius: 4,
     fontFamily: 'monospace', fontSize: 11, color: 'var(--text)',
   },
-  version: { marginTop: 12, fontSize: 11, color: 'var(--text2)', textAlign: 'center' as const, opacity: 0.6 },
+  version: { marginTop: 8, fontSize: 11, color: 'var(--text2)', textAlign: 'center' as const, opacity: 0.6 },
 }

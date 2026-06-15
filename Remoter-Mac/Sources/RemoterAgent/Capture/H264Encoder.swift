@@ -14,17 +14,12 @@ final class H264Encoder {
 
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
         var s: VTCompressionSession?
-        // Force software encoder: macOS 26 hardware H.264 encoder can hang
-        let encoderSpec: [CFString: Any] = [
-            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: kCFBooleanFalse!,
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder:  kCFBooleanFalse!,
-        ]
         let err = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width:  Int32(width),
             height: Int32(height),
             codecType: kCMVideoCodecType_H264,
-            encoderSpecification: encoderSpec as CFDictionary,
+            encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
             outputCallback: nil,

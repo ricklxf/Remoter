@@ -51,10 +51,12 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [machineName, setMachineName] = useState('')
   const [machineInfo, setMachineInfo] = useState<MachineInfo | null>(null)
   const [rememberDevice, setRememberDevice] = useState(false)
+  const [isEditingNote, setIsEditingNote] = useState(false)
+  const [noteValue, setNoteValue] = useState('')
 
   // Load saved accounts, PIN, and machine name whenever address changes
   useEffect(() => {
-    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); setMachineName(''); setMachineInfo(null); return }
+    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); setMachineName(''); setMachineInfo(null); setIsEditingNote(false); return }
     const accounts = getSavedAccounts(directUrl)
     setSavedList(accounts)
     if (accounts.length > 0) {
@@ -63,15 +65,24 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     } else {
       setSelectedSaved(null)
     }
-    setMachineName(getMachineName(directUrl))
+    const name = getMachineName(directUrl)
+    setMachineName(name)
+    setNoteValue(name)
     setMachineInfo(getMachineInfo(directUrl))
+    setIsEditingNote(false)
   }, [mode, directUrl])
+
+  function handleNoteBlur() {
+    const trimmed = noteValue.trim()
+    setMachineName(trimmed)
+    if (directUrl) saveMachineName(directUrl, trimmed)
+    setIsEditingNote(false)
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     localStorage.setItem('remoter-direct-url', directUrl)
     localStorage.setItem('remoter-relay-url', relayUrl)
-    if (mode === 'direct') saveMachineName(directUrl, machineName)
     const label = (mode === 'direct' && machineName.trim()) ? machineName.trim() : undefined
     const base = { mode, directUrl, relayUrl, sessionId: sessionId.toUpperCase(), pin, label }
     if (authMode === 'token' && selectedSaved) {
@@ -162,19 +173,26 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {/* Auth section (direct only) */}
           {mode === 'direct' && (
             <>
-              {/* Connection card: machine name + saved accounts (only when accounts exist) */}
+              {/* Connection card: machine info + saved accounts (only when accounts exist) */}
               {savedList.length > 0 && selectedSaved !== null && (
               <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
-                <input
-                  style={s.machineInput}
-                  value={machineName}
-                  onChange={e => setMachineName(e.target.value)}
-                  onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
-                  placeholder="给这台机器起个名字（可选）"
-                />
                 {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
-                  <div style={s.machineInfoRow}>
-                    <span style={s.machineInfoName}>{machineInfo.computerName}</span>
+                  <div style={s.machineHeader}>
+                    {isEditingNote ? (
+                      <input
+                        autoFocus
+                        style={s.noteInput}
+                        value={noteValue}
+                        onChange={e => setNoteValue(e.target.value)}
+                        onBlur={handleNoteBlur}
+                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                        placeholder={machineInfo.computerName}
+                      />
+                    ) : (
+                      <span style={s.machineDisplayName}>
+                        {machineName || machineInfo.computerName}
+                      </span>
+                    )}
                     {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
                   </div>
                 )}
@@ -201,6 +219,8 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                     ))}
                     <option value="__new__">+ 使用其他账户…</option>
                   </select>
+                  <button type="button" style={s.noteBtn}
+                    onClick={() => { setNoteValue(machineName); setIsEditingNote(true) }}>备注</button>
                   <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
                 </div>
               </div>
@@ -299,31 +319,35 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--bg3)', borderRadius: 10, padding: '5px 12px',
     border: '1px solid var(--border)',
   },
-  machineInput: {
-    background: 'transparent', border: 'none', outline: 'none',
-    fontSize: 13, fontWeight: 600, color: 'var(--text)',
-    width: '100%', padding: '2px 0',
+  machineHeader: {
+    display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0',
   },
-  machineInfoRow: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    marginTop: 2, fontSize: 11, color: 'var(--text2)',
-  },
-  machineInfoName: {
+  machineDisplayName: {
     flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+    fontSize: 15, fontWeight: 700, color: 'var(--text)',
+  },
+  noteInput: {
+    flex: 1, background: 'transparent', border: 'none', outline: 'none',
+    borderBottom: '1px solid var(--primary)',
+    fontSize: 15, fontWeight: 700, color: 'var(--text)', padding: '0 0 2px 0',
   },
   machineInfoBadge: {
     background: 'var(--bg)', border: '1px solid var(--border)',
-    borderRadius: 4, padding: '1px 6px',
+    borderRadius: 4, padding: '2px 7px',
     fontSize: 11, color: 'var(--text2)',
     whiteSpace: 'nowrap' as const, flexShrink: 0,
   },
-  bannerDivider: { height: 1, background: 'var(--border)', margin: '4px 0' },
+  bannerDivider: { height: 1, background: 'var(--border)', margin: '6px 0' },
   accountRow:   { display: 'flex', alignItems: 'center', gap: 8 },
   savedIcon:    { fontSize: 18, flexShrink: 0 },
   savedSelect: {
     flex: 1, background: 'var(--bg3)', color: 'var(--text)',
     border: 'none', outline: 'none', fontSize: 13, fontWeight: 600,
     cursor: 'pointer', minWidth: 0,
+  },
+  noteBtn: {
+    fontSize: 12, color: 'var(--primary)', background: 'transparent', flexShrink: 0,
+    border: '1px solid var(--primary)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
   },
   forgetBtn: {
     fontSize: 12, color: 'var(--text2)', background: 'transparent', flexShrink: 0,

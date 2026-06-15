@@ -14,12 +14,17 @@ final class H264Encoder {
 
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
         var s: VTCompressionSession?
+        // Force software encoder: macOS 26 hardware H.264 encoder can hang
+        let encoderSpec: [CFString: Any] = [
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: kCFBooleanFalse!,
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder:  kCFBooleanFalse!,
+        ]
         let err = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width:  Int32(width),
             height: Int32(height),
             codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
+            encoderSpecification: encoderSpec as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
             outputCallback: nil,
@@ -33,8 +38,9 @@ final class H264Encoder {
 
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        // Baseline profile: 最兼容 WebCodecs，无 B 帧，软件编码器稳定支持
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
-                             value: kVTProfileLevel_H264_High_AutoLevel)
+                             value: kVTProfileLevel_H264_Baseline_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,

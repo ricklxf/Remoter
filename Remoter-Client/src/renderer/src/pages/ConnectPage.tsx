@@ -110,14 +110,14 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const serverAddr = mode === 'direct' ? directUrl : null
 
   const isMac = window.remoterAPI?.platform === 'darwin'
-  // 桌面模式：顶部对齐（避免内容超出时上溢）+ 可滚动
+  // 桌面模式：column 方向 flex + 卡片 margin:auto → 空间足够时居中，内容超高时顶部对齐可滚动
   // Mac hiddenInset 红绿灯占 ~28px，额外加顶部间距
   const wrapStyle = isDesktop
-    ? { ...s.wrap, background: 'var(--bg2)', alignItems: 'flex-start' as const, overflowY: 'auto' as const }
+    ? { ...s.wrap, background: 'var(--bg2)', flexDirection: 'column' as const, overflowY: 'auto' as const }
     : s.wrap
   const cardStyle = isDesktop
     ? { ...s.card, borderRadius: 0, boxShadow: 'none',
-        paddingTop: isMac ? '56px' : '40px' }
+        paddingTop: isMac ? '56px' : '40px', marginTop: 'auto', marginBottom: 'auto' }
     : s.card
 
   return (

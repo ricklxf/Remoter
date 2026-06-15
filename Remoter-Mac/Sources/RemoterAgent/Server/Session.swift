@@ -29,10 +29,15 @@ final class Session {
     private var inputEnabled = true
     private var jpegQuality: Double = 0.75
 
-    // Video send semaphore: only one frame in flight at a time.
-    // When TCP is slower than the encoder, newer frames replace the
-    // pending one — never build up a latency-inducing backlog.
-    private let wsSendSem = DispatchSemaphore(value: 1)
+    // Video send semaphore: allow several small H.264 frames in flight so a
+    // single high-RTT contentProcessed round-trip doesn't throttle throughput.
+    // Frames are tiny (a few KB), so a small backlog adds negligible latency
+    // while keeping the pipe full. Excess frames are dropped (backpressure).
+    private let wsSendSem = DispatchSemaphore(value: 4)
+
+    // Sent-frame diagnostics
+    private var sentFrames = 0
+    private var sentTick = Date()
 
     // For disconnection logging
     private var connectTime: Date?
@@ -419,6 +424,14 @@ final class Session {
                 let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
                 self.server.sendBinaryVideo(pkt, to: self.connection) {
                     self.wsSendSem.signal()
+                    self.sentFrames += 1
+                    let dt = Date().timeIntervalSince(self.sentTick)
+                    if dt >= 5 {
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "sent_5s", detail: "sent=\(self.sentFrames) fps=\(String(format: "%.0f", Double(self.sentFrames)/dt))")
+                        self.sentFrames = 0
+                        self.sentTick = Date()
+                    }
                 }
 
                 if fid == 0 {

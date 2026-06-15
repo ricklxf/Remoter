@@ -105,7 +105,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     ? { ...s.wrap, background: 'var(--bg2)', alignItems: 'flex-start' as const, overflowY: 'auto' as const }
     : s.wrap
   const cardStyle = isDesktop
-    ? { ...s.card, width: '100%', borderRadius: 0, boxShadow: 'none',
+    ? { ...s.card, borderRadius: 0, boxShadow: 'none',
         paddingTop: isMac ? '56px' : '40px' }
     : s.card
 

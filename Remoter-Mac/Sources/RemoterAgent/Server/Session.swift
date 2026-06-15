@@ -18,6 +18,7 @@ final class Session {
     private let pin: String
 
     private var capturer: ScreenCapturer?
+    private var encoder: H264Encoder?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
     private var webrtc: WebRTCAgent?
@@ -126,6 +127,8 @@ final class Session {
             )
         }
         stopClipboardMonitor()
+        encoder?.close()
+        encoder = nil
         Task { await capturer?.stop() }
         webrtc?.close()
     }
@@ -389,45 +392,44 @@ final class Session {
             fileReceiver = FileReceiver()
             connectTime  = Date()
 
-            ConnectionLogger.shared.logConnected(sessionId: sid, codec: "jpeg", encrypted: crypto.isReady)
+            // Set up H.264 encoder
+            encoder?.close()
+            let enc = H264Encoder()
+            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 60, bitrateBps: 8_000_000)
+            encoder = enc
+
+            ConnectionLogger.shared.logConnected(sessionId: sid, codec: "h264", encrypted: crypto.isReady)
             startClipboardMonitor()
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
                 "height": c.screenHeight,
-                "codec":  "jpeg"
+                "codec":  "h264"
             ])
 
-            var framesDropped = 0
-
-            c.onFrame = { [weak self] cgImage, _, _ in
+            enc.onEncodedFrame = { [weak self] data, isKeyframe in
                 guard let self else { return }
-                guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else {
-                    framesDropped += 1
-                    if framesDropped <= 3 || framesDropped % 30 == 0 {
-                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "jpeg_encode_nil", detail: "count=\(framesDropped)")
-                    }
-                    return
-                }
-                // Skip frame if the previous one is still in the TCP send buffer —
-                // this prevents latency buildup when the network is slower than the encoder.
                 guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
 
                 let fid = self.frameId
                 self.frameId &+= 1
-                self.bytesSent += Int64(jpeg.count)
+                self.bytesSent += Int64(data.count)
 
                 let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
-                let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
+                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
                 self.server.sendBinaryVideo(pkt, to: self.connection) {
                     self.wsSendSem.signal()
                 }
 
                 if fid == 0 {
                     ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                        step: "first_frame_ws", detail: "jpeg=\(jpeg.count)B")
+                        step: "first_frame_h264", detail: "\(data.count)B keyframe=\(isKeyframe)")
                 }
+            }
+
+            c.onFrame = { [weak self] cgImage, _, _ in
+                guard let self else { return }
+                self.encoder?.encode(cgImage)
             }
 
             // CGDisplayStream stops when macOS locks the screen, goes to sleep,

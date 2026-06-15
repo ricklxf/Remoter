@@ -239,8 +239,8 @@ final class Session {
         case .fileEnd(let fid):
             fileReceiver?.finish(id: fid)
 
-        case .qualitySet:
-            break  // JPEG 模式下质量固定，忽略
+        case .qualitySet(let fps, _):
+            capturer?.updateFps(fps)
 
         case .ping:
             sendJson(["type": "pong"])
@@ -374,7 +374,7 @@ final class Session {
         ConnectionLogger.shared.logStep(sessionId: sid, step: "capture_begin", detail: "jpeg")
         do {
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_start")
-            try await c.start(fps: 30)
+            try await c.start(fps: 60)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             capturer     = c

@@ -105,6 +105,8 @@ final class WebSocketServer {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
             guard let self else { return }
             guard let data, !data.isEmpty, error == nil else {
+                ConnectionLogger.shared.logStep(sessionId: "ws", step: "recv_disconnect",
+                    detail: "err=\(String(describing: error)) emptyData=\(data?.isEmpty ?? true)")
                 self.onDisconnect?(conn); return
             }
             var close = false
@@ -121,8 +123,11 @@ final class WebSocketServer {
                 default: break
                 }
             }
-            if close { self.onDisconnect?(conn); conn.cancel() }
-            else      { self.recvFrames(conn: conn, reader: reader) }
+            if close {
+                ConnectionLogger.shared.logStep(sessionId: "ws", step: "client_close_frame")
+                self.onDisconnect?(conn); conn.cancel()
+            }
+            else { self.recvFrames(conn: conn, reader: reader) }
         }
     }
 

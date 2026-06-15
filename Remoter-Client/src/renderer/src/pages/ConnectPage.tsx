@@ -174,10 +174,10 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {mode === 'direct' && (
             <>
               {/* Connection card: machine info + saved accounts (only when accounts exist) */}
-              {savedList.length > 0 && selectedSaved !== null && (
+              {savedList.length > 0 && (
               <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
                 {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
-                  <div style={s.machineHeader}>
+                  <div style={{ ...s.machineHeader, visibility: selectedSaved !== null ? 'visible' : 'hidden' }}>
                     <span style={s.machineDisplayName}>{machineInfo.computerName}</span>
                     {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}
                   </div>

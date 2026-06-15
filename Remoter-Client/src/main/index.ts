@@ -38,7 +38,7 @@ function createWindow(): void {
 
   mainWindow = new BrowserWindow({
     width: 420,
-    height: 700,
+    height: 710,
     minWidth: 400,
     minHeight: 580,
     fullscreen: false,     // 防止 macOS 恢复上次的全屏状态

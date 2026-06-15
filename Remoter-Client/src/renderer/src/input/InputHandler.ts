@@ -20,7 +20,10 @@ export class InputHandler {
   // Keyboard capture only when mouse is hovering over the remote canvas (or pointer-locked)
   private hovering = false
 
-  private boundHandlers: Array<[string, EventListenerOrEventListenerObject]> = []
+  // Keys that have been sent as keydown — keyup must be sent regardless of hover state
+  private pressedKeys = new Set<string>()
+
+  private boundHandlers: Array<[EventTarget, string, EventListenerOrEventListenerObject]> = []
 
   constructor(conn: Connection) {
     this.conn = conn
@@ -37,6 +40,7 @@ export class InputHandler {
   detach(): void {
     this.enabled = false
     this.hovering = false
+    this.releaseAllKeys()
     this.removeListeners()
     this.el = null
     if (this.locked) document.exitPointerLock?.()
@@ -53,7 +57,7 @@ export class InputHandler {
     if (!this.el) return
     const add = (target: EventTarget, name: string, fn: EventListenerOrEventListenerObject) => {
       target.addEventListener(name, fn)
-      this.boundHandlers.push([name, fn])
+      this.boundHandlers.push([target, name, fn])
     }
 
     add(this.el, 'mouseenter',  this.onMouseEnter)
@@ -67,13 +71,11 @@ export class InputHandler {
     add(document, 'keydown',    this.onKeyDown)
     add(document, 'keyup',      this.onKeyUp)
     add(document, 'pointerlockchange', this.onPointerLockChange)
+    add(window,   'blur',       this.onWindowBlur)
   }
 
   private removeListeners(): void {
-    this.boundHandlers.forEach(([name, fn]) => {
-      this.el?.removeEventListener(name, fn)
-      document.removeEventListener(name, fn)
-    })
+    this.boundHandlers.forEach(([target, name, fn]) => target.removeEventListener(name, fn))
     this.boundHandlers = []
   }
 
@@ -133,6 +135,7 @@ export class InputHandler {
 
   private onMouseEnter = (): void => { this.hovering = true }
   private onMouseLeave = (): void => { this.hovering = false }
+  private onWindowBlur = (): void => { this.releaseAllKeys() }
 
   // MARK: - Keyboard
 
@@ -154,15 +157,27 @@ export class InputHandler {
     }
 
     this.conn.sendKey(ke.code, true, collectModifiers(ke))
+    this.pressedKeys.add(ke.code)
   }
 
   private onKeyUp = (e: Event): void => {
     if (!this.enabled) return
-    if (!this.hovering && !this.locked) return
     const ke = e as KeyboardEvent
-    ke.preventDefault()
     if (ke.code === 'CapsLock') return  // handled in keydown
+    // Send keyup only if we previously sent keydown for this key.
+    // This ensures keyup always pairs with keydown regardless of hover state,
+    // preventing stuck keys when the mouse drifts out of the canvas.
+    if (!this.pressedKeys.has(ke.code)) return
+    ke.preventDefault()
+    this.pressedKeys.delete(ke.code)
     this.conn.sendKey(ke.code, false, collectModifiers(ke))
+  }
+
+  private releaseAllKeys(): void {
+    for (const code of this.pressedKeys) {
+      this.conn.sendKey(code, false, [])
+    }
+    this.pressedKeys.clear()
   }
 
   // MARK: - Pointer lock

@@ -456,7 +456,7 @@ export class Connection {
         // Save token when server returns one (credential auth)
         const token    = msg.token    as string | undefined
         const username = msg.username as string | undefined
-        if (token && (username ?? this.params?.username)) {
+        if (token && (username ?? this.params?.username) && this.params?.rememberDevice) {
           const addr = this.params?.directUrl ?? ''
           saveAccount(addr, username ?? this.params?.username ?? '', token)
         }

@@ -13,6 +13,7 @@ export interface ConnectParams {
   username?: string
   password?: string
   token?: string
+  rememberDevice?: boolean
 }
 
 export interface StreamInfo {

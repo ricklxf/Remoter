@@ -50,6 +50,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [selectedSaved, setSelectedSaved] = useState<SavedAccount | null>(null)
   const [machineName, setMachineName] = useState('')
   const [machineInfo, setMachineInfo] = useState<MachineInfo | null>(null)
+  const [rememberDevice, setRememberDevice] = useState(false)
 
   // Load saved accounts, PIN, and machine name whenever address changes
   useEffect(() => {
@@ -74,11 +75,11 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     const label = (mode === 'direct' && machineName.trim()) ? machineName.trim() : undefined
     const base = { mode, directUrl, relayUrl, sessionId: sessionId.toUpperCase(), pin, label }
     if (authMode === 'token' && selectedSaved) {
-      onConnect({ ...base, authMethod: 'token', token: selectedSaved.token })
+      onConnect({ ...base, authMethod: 'token', token: selectedSaved.token, rememberDevice: true })
     } else if (authMode === 'credentials') {
-      onConnect({ ...base, authMethod: 'credentials', username, password })
+      onConnect({ ...base, authMethod: 'credentials', username, password, rememberDevice })
     } else {
-      onConnect({ ...base, authMethod: 'pin' })
+      onConnect({ ...base, authMethod: 'pin', rememberDevice })
     }
   }
 
@@ -242,6 +243,18 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
             </>
           )}
 
+          {mode === 'direct' && authMode !== 'token' && (
+            <label style={s.rememberRow}>
+              <input
+                type="checkbox"
+                checked={rememberDevice}
+                onChange={e => setRememberDevice(e.target.checked)}
+                style={s.rememberCheck}
+              />
+              <span>记住登录状态</span>
+            </label>
+          )}
+
           {errorMsg && (
             <div style={s.error}>
               {errorMsg}
@@ -323,6 +336,11 @@ const s: Record<string, React.CSSProperties> = {
   authTabActive: { background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--primary)' },
 
   hint2: { fontSize: 11, color: 'var(--text2)', opacity: 0.7, lineHeight: 1.4, marginTop: -6 },
+  rememberRow: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    fontSize: 13, color: 'var(--text2)', cursor: 'pointer', userSelect: 'none' as const,
+  },
+  rememberCheck: { width: 15, height: 15, cursor: 'pointer', flexShrink: 0 },
 
   error: {
     background: '#fef2f2', color: '#dc2626', borderRadius: 6,

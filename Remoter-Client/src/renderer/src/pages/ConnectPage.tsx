@@ -123,9 +123,9 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   return (
     <div style={wrapStyle}>
       <div style={cardStyle}>
-        {/* Mac：顶部 56px padding 区域作为拖拽把手 */}
-        {isMac && isDesktop && (
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 56,
+        {/* 顶部拖拽区：Mac 56px（让开红绿灯），Win 36px（titleBarOverlay 同高） */}
+        {isDesktop && (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: isMac ? 56 : 36,
             // @ts-ignore
             WebkitAppRegion: 'drag' }} />
         )}

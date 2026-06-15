@@ -45,44 +45,28 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
     canvas.width  = streamInfo.width
     canvas.height = streamInfo.height
 
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
-
     if (initialCodec === 'jpeg') {
       ctx2dRef.current = canvas.getContext('2d')
+      console.log('[RemoteCanvas] JPEG mode')
     } else {
       const renderer = rendererRef.current
       renderer.resize(streamInfo.width, streamInfo.height)
       renderer.attach(canvas)
 
       if (!VideoDecoder_.isSupported()) {
-        console.warn('[RemoteCanvas] WebCodecs not supported, falling back to JPEG')
-        conn.sendSetCodec('jpeg')
-      } else {
-        let firstFrameRendered = false
-        const decoder = new VideoDecoder_((frame) => {
-          firstFrameRendered = true
-          renderer.renderFrame(frame)
-        })
-        decoderRef.current = decoder
-        decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch((e) => {
-          console.warn('[RemoteCanvas] decoder init failed:', e, '— falling back to JPEG')
-          conn.sendSetCodec('jpeg')
-        })
-
-        // 2 秒没渲出帧 → WebCodecs 在此平台不可用，请求降级
-        fallbackTimer = setTimeout(() => {
-          if (!firstFrameRendered) {
-            console.warn('[RemoteCanvas] no frame in 2s, falling back to JPEG')
-            conn.sendSetCodec('jpeg')
-          }
-        }, 2000)
+        console.error('[RemoteCanvas] WebCodecs not supported')
+        return
       }
+
+      const decoder = new VideoDecoder_((frame) => renderer.renderFrame(frame))
+      decoderRef.current = decoder
+      decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch(console.error)
+      console.log('[RemoteCanvas] H.264 mode, decoder initializing')
     }
 
     inputRef.current.attach(canvas, streamInfo.width, streamInfo.height)
 
     return () => {
-      if (fallbackTimer) clearTimeout(fallbackTimer)
       decoderRef.current?.close()
       decoderRef.current = null
       rendererRef.current.detach()

@@ -36,12 +36,24 @@ export class VideoDecoder_ {
       }
     }
 
+    // Check support before configuring
+    const support = await VideoDecoder.isConfigSupported({
+      codec: codecStr,
+      codedWidth: width,
+      codedHeight: height,
+      hardwareAcceleration: 'prefer-software',
+    })
+    console.log(`[Decoder] isConfigSupported(${codecStr}):`, support.supported, support)
+    if (!support.supported) {
+      throw new Error(`Codec ${codecStr} not supported by WebCodecs`)
+    }
+
     this.decoder = new VideoDecoder({
       output: (frame) => {
         this.onFrame(frame)
       },
       error: (e) => {
-        console.warn('[Decoder] error:', e.message)
+        console.error('[Decoder] decode error:', e.message)
         this.pendingKeyframe = true
       }
     })
@@ -50,7 +62,8 @@ export class VideoDecoder_ {
       codec: codecStr,
       codedWidth: width,
       codedHeight: height,
-      optimizeForLatency: true
+      optimizeForLatency: true,
+      hardwareAcceleration: 'prefer-software',  // macOS 26 hardware decoder may be broken
     })
 
     this.pendingKeyframe = true

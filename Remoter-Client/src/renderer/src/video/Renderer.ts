@@ -1,34 +1,20 @@
-// Renders VideoFrame to canvas using ImageBitmapRenderingContext
-// (hardware-accelerated, lower latency than 2D canvas drawImage)
-
 export class VideoRenderer {
-  private ctx: ImageBitmapRenderingContext | null = null
   private canvas: HTMLCanvasElement | null = null
 
   attach(canvas: HTMLCanvasElement): void {
     this.canvas = canvas
-    this.ctx = canvas.getContext('bitmaprenderer') ?? null
-    if (!this.ctx) {
-      console.warn('[Renderer] bitmaprenderer not available, falling back to 2d')
-    }
   }
 
   renderFrame(frame: VideoFrame): void {
-    if (!this.canvas) { frame.close(); return }
-
-    if (this.ctx) {
-      createImageBitmap(frame).then((bmp) => {
-        this.ctx!.transferFromImageBitmap(bmp)
-        frame.close()
-      })
+    const canvas = this.canvas
+    if (!canvas) { frame.close(); return }
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.drawImage(frame, 0, 0, canvas.width, canvas.height)
     } else {
-      // 2D canvas fallback
-      const ctx2d = this.canvas.getContext('2d')
-      if (ctx2d) {
-        ctx2d.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height)
-      }
-      frame.close()
+      console.warn('[Renderer] no 2d context')
     }
+    frame.close()
   }
 
   resize(width: number, height: number): void {
@@ -38,7 +24,6 @@ export class VideoRenderer {
   }
 
   detach(): void {
-    this.ctx = null
     this.canvas = null
   }
 }

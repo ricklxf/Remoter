@@ -65,7 +65,13 @@ final class WebSocketServer {
             for i in (0..<8).reversed() { frame.append(UInt8((len >> (i * 8)) & 0xFF)) }
         }
         frame.append(contentsOf: data)
-        conn.send(content: frame, completion: .contentProcessed { _ in onSent() })
+        conn.send(content: frame, completion: .contentProcessed { error in
+            if let error {
+                ConnectionLogger.shared.logStep(sessionId: "ws", step: "video_send_err",
+                    detail: "\(error)")
+            }
+            onSent()
+        })
     }
 
     // MARK: - Accept + HTTP/WS dispatch

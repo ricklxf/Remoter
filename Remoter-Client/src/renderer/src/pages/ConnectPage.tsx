@@ -173,7 +173,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                   onBlur={() => { if (directUrl) saveMachineName(directUrl, machineName) }}
                   placeholder="给这台机器起个名字（可选）"
                 />
-                {machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
+                {savedList.length > 0 && machineInfo && (machineInfo.computerName || machineInfo.modelId) && (
                   <div style={s.machineInfoRow}>
                     <span style={s.machineInfoName}>{machineInfo.computerName}</span>
                     {machineInfo.modelId && <span style={s.machineInfoBadge}>{machineInfo.modelId}</span>}

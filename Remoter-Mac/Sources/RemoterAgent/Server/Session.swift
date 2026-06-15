@@ -28,6 +28,11 @@ final class Session {
     private var inputEnabled = true
     private var jpegQuality: Double = 0.85
 
+    // Video send semaphore: only one frame in flight at a time.
+    // When TCP is slower than the encoder, newer frames replace the
+    // pending one — never build up a latency-inducing backlog.
+    private let wsSendSem = DispatchSemaphore(value: 1)
+
     // For disconnection logging
     private var connectTime: Date?
     private var bytesSent: Int64 = 0
@@ -405,17 +410,19 @@ final class Session {
                     }
                     return
                 }
+                // Skip frame if the previous one is still in the TCP send buffer —
+                // this prevents latency buildup when the network is slower than the encoder.
+                guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
+
                 let fid = self.frameId
                 self.frameId &+= 1
                 self.bytesSent += Int64(jpeg.count)
 
-                // Always send via WebSocket (TCP, reliable). JPEG frames are large
-                // (~350 KB), and the WebRTC DataChannel reliability depends on the
-                // client version setting maxRetransmits — use WebSocket to guarantee
-                // delivery regardless of client version.
                 let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
                 let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
-                self.server.sendBinary(pkt, to: self.connection)
+                self.server.sendBinaryVideo(pkt, to: self.connection) {
+                    self.wsSendSem.signal()
+                }
 
                 if fid == 0 {
                     ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,

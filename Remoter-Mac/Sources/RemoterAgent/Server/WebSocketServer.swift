@@ -47,6 +47,27 @@ final class WebSocketServer {
         sendFrame(opcode: 0x02, payload: data, to: conn)
     }
 
+    /// Video-frame variant: fires onSent when TCP has accepted the data, giving
+    /// the caller real backpressure so frames are never queued ahead of the
+    /// network's actual capacity.
+    func sendBinaryVideo(_ data: Data, to conn: NWConnection, onSent: @escaping () -> Void) {
+        var frame = Data()
+        frame.append(0x82)                          // FIN + binary opcode
+        let len = data.count
+        if len < 126 {
+            frame.append(UInt8(len))
+        } else if len < 65536 {
+            frame.append(126)
+            frame.append(UInt8((len >> 8) & 0xFF))
+            frame.append(UInt8( len       & 0xFF))
+        } else {
+            frame.append(127)
+            for i in (0..<8).reversed() { frame.append(UInt8((len >> (i * 8)) & 0xFF)) }
+        }
+        frame.append(contentsOf: data)
+        conn.send(content: frame, completion: .contentProcessed { _ in onSent() })
+    }
+
     // MARK: - Accept + HTTP/WS dispatch
 
     private func accept(_ conn: NWConnection) {

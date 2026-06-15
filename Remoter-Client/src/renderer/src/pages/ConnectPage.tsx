@@ -286,7 +286,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           )}
 
           <button type="submit" style={s.btn} disabled={isConnecting}>
-            {isConnecting ? '连接中…' : (authMode === 'token' && selectedSaved ? `连接 (${selectedSaved.username})` : '连接')}
+            {isConnecting ? '连接中…' : '连接'}
           </button>
         </form>
 

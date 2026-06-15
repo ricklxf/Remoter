@@ -260,7 +260,6 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                     <input value={password} onChange={e => setPassword(e.target.value)}
                       type="password" placeholder="账户密码" autoComplete="current-password" required />
                   </label>
-                  <div style={s.hint2}>密码通过端对端加密传输，不会被中间节点获取</div>
                 </>
               )}
             </>
@@ -304,10 +303,10 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 const s: Record<string, React.CSSProperties> = {
   wrap:    { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg)', overflowX: 'hidden' },
   card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px 28px', width: '100%', maxWidth: 420, boxSizing: 'border-box' as const, boxShadow: 'var(--shadow)', position: 'relative' as const },
-  logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 },
+  logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 0 },
   logoIcon:{ fontSize: 32, color: 'var(--primary)' },
-  logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' },
-  sub:     { color: 'var(--text2)', fontSize: 13, marginBottom: 20 },
+  logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px', margin: 0 },
+  sub:     { color: 'var(--text2)', fontSize: 13, marginTop: 4, marginBottom: 10 },
   tabs:    { display: 'flex', gap: 8, marginBottom: 16 },
   tab:     { flex: 1, padding: '8px 0', borderRadius: 6, fontSize: 13, background: 'var(--bg3)', color: 'var(--text2)' },
   tabActive:{ background: 'var(--primary)', color: '#fff' },
@@ -355,7 +354,6 @@ const s: Record<string, React.CSSProperties> = {
   authTab:    { flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, background: 'var(--bg3)', color: 'var(--text2)' },
   authTabActive: { background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--primary)' },
 
-  hint2: { fontSize: 11, color: 'var(--text2)', opacity: 0.7, lineHeight: 1.4, marginTop: -6 },
   rememberRow: {
     display: 'flex', alignItems: 'center', gap: 8,
     fontSize: 13, color: 'var(--text2)', cursor: 'pointer', userSelect: 'none' as const,

@@ -187,7 +187,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                     onChange={e => {
                       if (e.target.value === '__new__') {
                         setSelectedSaved(null)
-                        setAuthMode('credentials')
+                        setAuthMode('pin')
                       } else {
                         const acct = savedList.find(a => a.username === e.target.value)
                         if (acct) { setSelectedSaved(acct); setAuthMode('token') }

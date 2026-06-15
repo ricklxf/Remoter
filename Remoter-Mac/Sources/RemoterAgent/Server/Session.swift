@@ -158,10 +158,10 @@ final class Session {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "cred_received", detail: "user=\(u) pwd_len=\(password.count)")
             if validateOsCredentials(username: u, password: password) {
-                let token = TokenStore.shared.generate(username: u)
+                let token = TokenStore.shared.generate(username: username)
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
-                sendJsonRaw(["type": "auth_ok", "token": token, "username": u])
+                sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
             } else {
                 ConnectionLogger.shared.logStep(sessionId: id.uuidString,

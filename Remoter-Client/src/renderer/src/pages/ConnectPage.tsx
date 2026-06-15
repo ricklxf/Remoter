@@ -163,7 +163,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {mode === 'direct' && (
             <>
               {/* Connection card: machine name + saved accounts (only when accounts exist) */}
-              {savedList.length > 0 && (
+              {savedList.length > 0 && selectedSaved !== null && (
               <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
                 <input
                   style={s.machineInput}

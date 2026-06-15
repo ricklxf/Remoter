@@ -221,9 +221,14 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                       ))}
                       <option value="__new__">+ 使用其他账户…</option>
                     </select>
-                    <button type="button" style={s.forgetBtn}
+                    <button type="button"
+                      style={{ ...s.forgetBtn, ...(selectedSaved === null ? s.forgetBtnDisabled : {}) }}
+                      disabled={selectedSaved === null}
                       onClick={() => { setNoteValue(machineName); setIsEditingNote(true) }}>备注</button>
-                    <button type="button" style={s.forgetBtn} onClick={forgetAccount}>忘记</button>
+                    <button type="button"
+                      style={{ ...s.forgetBtn, ...(selectedSaved === null ? s.forgetBtnDisabled : {}) }}
+                      disabled={selectedSaved === null}
+                      onClick={forgetAccount}>忘记</button>
                   </div>
                 )}
               </div>
@@ -347,6 +352,9 @@ const s: Record<string, React.CSSProperties> = {
   forgetBtn: {
     fontSize: 12, color: 'var(--text2)', background: 'transparent', flexShrink: 0,
     border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+  },
+  forgetBtnDisabled: {
+    opacity: 0.35, cursor: 'not-allowed',
   },
 
   // auth mode tabs

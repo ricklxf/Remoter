@@ -38,9 +38,9 @@ function createWindow(): void {
 
   mainWindow = new BrowserWindow({
     width: 420,
-    height: 760,
+    height: 700,
     minWidth: 400,
-    minHeight: 600,
+    minHeight: 580,
     fullscreen: false,     // 防止 macOS 恢复上次的全屏状态
     show: false,
     // Windows: card bg before React renders; Mac: white matches card --bg2

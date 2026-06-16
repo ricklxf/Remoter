@@ -54,36 +54,56 @@ final class WebSocketServer {
         return NWParameters(tls: tlsOptions)
     }
 
-    /// Load the embedded self-signed identity (Resources/server.p12, passphrase "remoter").
-    private static func loadIdentity() -> sec_identity_t? {
-        guard let url = Bundle.main.resourceURL?.appendingPathComponent("server.p12"),
-              let data = try? Data(contentsOf: url) else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_not_found")
-            return nil
-        }
-        // Trust the current process so NW Framework can use the private key
-        // without macOS showing a keychain access dialog on every TLS handshake.
-        var currentApp: SecTrustedApplication?
-        SecTrustedApplicationCreateFromPath(nil, &currentApp)
-        var access: SecAccess?
-        if let app = currentApp {
-            SecAccessCreate("Remoter TLS" as CFString, [app] as CFArray, &access)
-        }
-        var opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
-        if let acc = access { opts[kSecImportExportAccess as String] = acc }
+    // Kept alive so NW Framework can access the private key for the full server lifetime.
+    private static var tempKeychain: SecKeychain?
 
-        var items: CFArray?
-        let status = SecPKCS12Import(data as CFData, opts as CFDictionary, &items)
-        guard status == errSecSuccess,
-              let arr = items as? [[String: Any]],
-              let first = arr.first,
-              let idRef = first[kSecImportItemIdentity as String] else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_import_failed",
-                                            detail: "status=\(status)")
+    /// Load the TLS identity from the pre-configured keychain bundled in Resources.
+    ///
+    /// The keychain (server.keychain-db) is created at build time by build-app.sh using
+    /// `security import -A`, which sets an open ACL ("allow any application without prompting").
+    /// At runtime we just open + unlock it — no SecPKCS12Import, no authorization dialog.
+    private static func loadIdentity() -> sec_identity_t? {
+        guard let kcURL = Bundle.main.url(forResource: "server", withExtension: "keychain-db") else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_not_found")
             return nil
         }
-        let secIdentity = idRef as! SecIdentity
-        return sec_identity_create(secIdentity)
+
+        // App bundle is read-only; copy to temp so SecKeychain can write lock state.
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let tempPath = NSTemporaryDirectory() + "remoter_ks_\(pid).keychain-db"
+        try? FileManager.default.removeItem(atPath: tempPath)
+        guard (try? FileManager.default.copyItem(at: kcURL, to: URL(fileURLWithPath: tempPath))) != nil else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_copy_failed")
+            return nil
+        }
+
+        var kc: SecKeychain?
+        guard SecKeychainOpen(tempPath, &kc) == errSecSuccess, let kc else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_open_failed")
+            return nil
+        }
+        let ksPass = "remoter_ks"
+        SecKeychainUnlock(kc, UInt32(ksPass.utf8.count), ksPass, true)
+
+        // Query the identity — ACL was set to -A at build time, so no prompt.
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassIdentity,
+            kSecMatchSearchList as String: [kc] as CFArray,
+            kSecReturnRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let result else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_identity_not_found",
+                                            detail: "status=\(status)")
+            SecKeychainDelete(kc)
+            return nil
+        }
+
+        tempKeychain = kc  // retain so the key stays accessible via NW Framework
+        let identity = result as! SecIdentity
+        return sec_identity_create(identity)
     }
 
     func sendText(_ text: String, to conn: NWConnection) {
@@ -117,7 +137,7 @@ final class WebSocketServer {
         // the watchdog and contentProcessed callback race.
         let lock = NSLock()
         var completed = false
-        let finish: (Bool) -> Void = { cancel in
+        let finish: (Bool) -> Void = { [weak self] cancel in
             lock.lock()
             let already = completed
             completed = true
@@ -126,6 +146,10 @@ final class WebSocketServer {
             if cancel {
                 ConnectionLogger.shared.logStep(sessionId: "ws", step: "video_send_timeout")
                 conn.cancel()
+                // Immediately notify disconnect via server queue so the session's
+                // encoder stops right away — avoids a flood of video_send_err while
+                // the receive path slowly detects the cancel.
+                self?.queue.async { [weak self] in self?.onDisconnect?(conn) }
             }
             onSent()
         }

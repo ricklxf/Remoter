@@ -114,7 +114,10 @@ fi
 # 证书持久保存在 Remoter-Mac/certs/，存在则复用 → 只需信任一次。
 CERT_DIR="$PKG_DIR/certs"
 P12_PATH="$CERT_DIR/server.p12"
-if [ ! -f "$P12_PATH" ]; then
+KC_PATH="$CERT_DIR/server.keychain-db"
+KC_PASS="remoter_ks"
+
+if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
     echo ""
     echo "▶ 生成自签 TLS 证书…"
     mkdir -p "$CERT_DIR"
@@ -129,13 +132,21 @@ if [ ! -f "$P12_PATH" ]; then
         -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
         -days 3650 -subj "/CN=Remoter" \
         -addext "subjectAltName=$SAN" 2>/dev/null
-    openssl pkcs12 -export -out "$P12_PATH" \
-        -inkey "$CERT_DIR/key.pem" -in "$CERT_DIR/cert.pem" \
-        -passout pass:remoter 2>/dev/null
-    echo "  ✓ 证书生成 → $P12_PATH"
+    echo "  ✓ 证书生成 → $CERT_DIR/cert.pem"
 fi
+
+# 每次构建都重新打包 keychain（-legacy 格式兼容 security import；证书本身不变，无需重新信任）
+# -A 让所有应用无需弹框即可访问私钥，避免运行时触发 macOS 授权弹框
+openssl pkcs12 -export -legacy -out "$P12_PATH" \
+    -inkey "$CERT_DIR/key.pem" -in "$CERT_DIR/cert.pem" \
+    -passout pass:remoter 2>/dev/null
+security delete-keychain "$KC_PATH" 2>/dev/null || true
+security create-keychain -p "$KC_PASS" "$KC_PATH"
+security import "$P12_PATH" -k "$KC_PATH" -P "remoter" -A 2>/dev/null
+security set-keychain-settings -t 0 "$KC_PATH" 2>/dev/null || true
+
 mkdir -p "$RESOURCES_DIR"
-cp "$P12_PATH" "$RESOURCES_DIR/server.p12"
+cp "$KC_PATH" "$RESOURCES_DIR/server.keychain-db"
 echo "✅ TLS 证书已嵌入"
 echo ""
 

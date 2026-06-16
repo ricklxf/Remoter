@@ -25,6 +25,7 @@ final class Session {
     private let crypto = E2ECrypto()
 
     private var authenticated = false
+    private var isClosed = false
     private var frameId: UInt32 = 0
     private var inputEnabled = true
     private var jpegQuality: Double = 0.75
@@ -125,6 +126,7 @@ final class Session {
     }
 
     func close() {
+        isClosed = true
         // Log disconnection if we were streaming
         if let t = connectTime {
             let secs = Int(Date().timeIntervalSince(t))
@@ -139,7 +141,13 @@ final class Session {
         stopClipboardMonitor()
         encoder?.close()
         encoder = nil
-        Task { await capturer?.stop() }
+        // Capture the current capturer locally before niling it out, so the
+        // stop Task doesn't hold a strong ref to self (which would keep the
+        // session alive and allow onStopped to fire and restart beginCapture).
+        let cap = capturer
+        capturer = nil
+        cap?.onStopped = nil   // prevent stop() from triggering beginCapture restart
+        Task { await cap?.stop() }
         webrtc?.close()
     }
 
@@ -420,6 +428,7 @@ final class Session {
 
             enc.onEncodedFrame = { [weak self] data, isKeyframe in
                 guard let self else { return }
+                guard self.connection.state == .ready else { return }
                 guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
 
                 let fid = self.frameId
@@ -455,7 +464,7 @@ final class Session {
             // or revokes screen recording permission. Restart the stream so the
             // client resumes automatically when the display comes back.
             c.onStopped = { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isClosed else { return }
                 Task {
                     try? await Task.sleep(nanoseconds: 1_000_000_000) // wait 1s for display to wake
                     await self.beginCapture()
@@ -483,6 +492,7 @@ final class Session {
         c.onFrame = { [weak self] cgImage, _, _ in
             guard let self else { return }
             guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
+            guard self.connection.state == .ready else { return }
             guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
             let fid = self.frameId
             self.frameId &+= 1

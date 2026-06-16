@@ -106,22 +106,45 @@ if [ -n "$WEB_DIST" ]; then
     mkdir -p "$RESOURCES_DIR"
     rm -rf "$RESOURCES_DIR/web"
     cp -R "$WEB_DIST" "$RESOURCES_DIR/web"
-    echo "✅ Web 客户端已嵌入（浏览器访问 http://<ip>:7799）"
+    echo "✅ Web 客户端已嵌入（浏览器访问 https://<ip>:7788）"
 fi
+
+# ── 生成/嵌入 TLS 自签证书（HTTPS/WSS）──────────────────────────────────
+# WebCodecs(H.264 解码) 需要安全上下文(HTTPS)；自签证书首次访问需手动信任。
+# 证书持久保存在 Remoter-Mac/certs/，存在则复用 → 只需信任一次。
+CERT_DIR="$PKG_DIR/certs"
+P12_PATH="$CERT_DIR/server.p12"
+if [ ! -f "$P12_PATH" ]; then
+    echo ""
+    echo "▶ 生成自签 TLS 证书…"
+    mkdir -p "$CERT_DIR"
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
+        -days 3650 -subj "/CN=Remoter" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+    openssl pkcs12 -export -out "$P12_PATH" \
+        -inkey "$CERT_DIR/key.pem" -in "$CERT_DIR/cert.pem" \
+        -passout pass:remoter 2>/dev/null
+    echo "  ✓ 证书生成 → $P12_PATH"
+fi
+mkdir -p "$RESOURCES_DIR"
+cp "$P12_PATH" "$RESOURCES_DIR/server.p12"
+echo "✅ TLS 证书已嵌入"
 echo ""
 
 # ── 代码签名 ─────────────────────────────────────────────────────────────
 # designated requirement 只包含 bundle ID，不绑定证书 hash。
 # 这样 TCC 的辅助功能授权在每次 rebuild 后仍然有效（只需授权一次）。
-SIGN_IDENTITY="Remoter"
 DR='=designated => identifier "com.remoter.agent"'
-echo "▶ Signing with \"$SIGN_IDENTITY\"…"
-if security find-certificate -c "$SIGN_IDENTITY" &>/dev/null; then
-    codesign --force --deep --sign "$SIGN_IDENTITY" --requirements "$DR" "$APP_DIR"
+# 只找代码签名身份（code signing），避免把 TLS 证书误认为签名证书
+if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Remoter"'; then
+    echo "▶ Signing with \"Remoter\" identity…"
+    codesign --force --deep --sign "Remoter" --requirements "$DR" "$APP_DIR"
     echo "✅ Signed (designated req: bundle ID only)"
 else
+    echo "▶ Signing ad-hoc (designated req: bundle ID only)…"
     codesign --force --deep --sign - --requirements "$DR" "$APP_DIR"
-    echo "✅ Signed ad-hoc (designated req: bundle ID only)"
+    echo "✅ Signed ad-hoc"
 fi
 echo ""
 

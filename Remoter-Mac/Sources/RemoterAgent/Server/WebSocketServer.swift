@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CryptoKit
+import Security
 
 typealias MessageHandler    = (NWConnection, String) -> Void
 typealias BinaryHandler     = (NWConnection, Data)   -> Void
@@ -20,10 +21,16 @@ final class WebSocketServer {
 
     func start(port: UInt16) throws {
         let p = NWEndpoint.Port(rawValue: port)!
-        let l = try NWListener(using: .tcp, on: p)
+        // TLS (HTTPS/WSS) so browsers get a secure context and can use WebCodecs (H.264).
+        // Falls back to plain TCP if the embedded cert is missing.
+        let tlsParams = Self.makeTLSParameters()
+        let params = tlsParams ?? .tcp
+        let scheme = tlsParams != nil ? "wss/https" : "ws/http"
+        ConnectionLogger.shared.logStep(sessionId: "tls", step: "listen_scheme", detail: scheme)
+        let l = try NWListener(using: params, on: p)
         l.stateUpdateHandler = { state in
             switch state {
-            case .ready:        print("[Server] Listening on :\(port)")
+            case .ready:        print("[Server] Listening on :\(port) (\(scheme))")
             case .failed(let e): print("[Server] Failed: \(e)")
             default: break
             }
@@ -36,6 +43,37 @@ final class WebSocketServer {
     func stop() {
         listener?.cancel()
         listener = nil
+    }
+
+    // MARK: - TLS
+
+    private static func makeTLSParameters() -> NWParameters? {
+        guard let identity = loadIdentity() else { return nil }
+        let tlsOptions = NWProtocolTLS.Options()
+        sec_protocol_options_set_local_identity(tlsOptions.securityProtocolOptions, identity)
+        return NWParameters(tls: tlsOptions)
+    }
+
+    /// Load the embedded self-signed identity (Resources/server.p12, passphrase "remoter").
+    private static func loadIdentity() -> sec_identity_t? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("server.p12"),
+              let data = try? Data(contentsOf: url) else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_not_found")
+            return nil
+        }
+        let opts = [kSecImportExportPassphrase as String: "remoter"] as CFDictionary
+        var items: CFArray?
+        let status = SecPKCS12Import(data as CFData, opts, &items)
+        guard status == errSecSuccess,
+              let arr = items as? [[String: Any]],
+              let first = arr.first,
+              let idRef = first[kSecImportItemIdentity as String] else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_import_failed",
+                                            detail: "status=\(status)")
+            return nil
+        }
+        let secIdentity = idRef as! SecIdentity
+        return sec_identity_create(secIdentity)
     }
 
     func sendText(_ text: String, to conn: NWConnection) {
@@ -65,12 +103,31 @@ final class WebSocketServer {
             for i in (0..<8).reversed() { frame.append(UInt8((len >> (i * 8)) & 0xFF)) }
         }
         frame.append(contentsOf: data)
+        // One-shot guard: ensures onSent() fires exactly once even when both
+        // the watchdog and contentProcessed callback race.
+        let lock = NSLock()
+        var completed = false
+        let finish: (Bool) -> Void = { cancel in
+            lock.lock()
+            let already = completed
+            completed = true
+            lock.unlock()
+            guard !already else { return }
+            if cancel {
+                ConnectionLogger.shared.logStep(sessionId: "ws", step: "video_send_timeout")
+                conn.cancel()
+            }
+            onSent()
+        }
+        // Watchdog: if TCP flow-control stalls contentProcessed (client recv buffer full),
+        // cancel the connection after 5s so the client can reconnect cleanly.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { finish(true) }
         conn.send(content: frame, completion: .contentProcessed { error in
             if let error {
                 ConnectionLogger.shared.logStep(sessionId: "ws", step: "video_send_err",
                     detail: "\(error)")
             }
-            onSent()
+            finish(false)
         })
     }
 

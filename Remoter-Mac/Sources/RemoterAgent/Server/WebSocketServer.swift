@@ -61,9 +61,19 @@ final class WebSocketServer {
             ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_not_found")
             return nil
         }
-        let opts = [kSecImportExportPassphrase as String: "remoter"] as CFDictionary
+        // Trust the current process so NW Framework can use the private key
+        // without macOS showing a keychain access dialog on every TLS handshake.
+        var currentApp: SecTrustedApplication?
+        SecTrustedApplicationCreateFromPath(nil, &currentApp)
+        var access: SecAccess?
+        if let app = currentApp {
+            SecAccessCreate("Remoter TLS" as CFString, [app] as CFArray, &access)
+        }
+        var opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
+        if let acc = access { opts[kSecImportExportAccess as String] = acc }
+
         var items: CFArray?
-        let status = SecPKCS12Import(data as CFData, opts, &items)
+        let status = SecPKCS12Import(data as CFData, opts as CFDictionary, &items)
         guard status == errSecSuccess,
               let arr = items as? [[String: Any]],
               let first = arr.first,

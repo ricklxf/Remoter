@@ -12,6 +12,7 @@ out/
 Packages/
 .swiftpm/
 Remoter-Mac/build/
+Remoter-Mac/certs/
 
 # Electron / Web build
 Remoter-Client/dist/

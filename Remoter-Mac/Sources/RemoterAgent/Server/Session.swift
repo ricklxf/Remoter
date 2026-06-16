@@ -50,6 +50,10 @@ final class Session {
     private var lastClipboardContent = ""
     private var lastClipboardImageSize: Int = -1
 
+    // Keepalive: send a JSON message every 3s so the client's stale-timeout (6s)
+    // doesn't fire when the screen is static and CGDisplayStream pushes no frames.
+    private var keepaliveTimer: DispatchSourceTimer?
+
     init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
         self.id = id
         self.connection = connection
@@ -131,6 +135,7 @@ final class Session {
                 bytesRecvMB: Double(bytesRecv) / 1_048_576
             )
         }
+        stopKeepalive()
         stopClipboardMonitor()
         encoder?.close()
         encoder = nil
@@ -405,6 +410,7 @@ final class Session {
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: "h264", encrypted: crypto.isReady)
             startClipboardMonitor()
+            startKeepalive()
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
@@ -608,6 +614,24 @@ final class Session {
     private func stopClipboardMonitor() {
         clipboardTimer?.cancel()
         clipboardTimer = nil
+    }
+
+    // MARK: - 保活定时器
+
+    private func startKeepalive() {
+        stopKeepalive()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
+        timer.setEventHandler { [weak self] in
+            self?.sendJson(["type": "keepalive"])
+        }
+        timer.resume()
+        keepaliveTimer = timer
+    }
+
+    private func stopKeepalive() {
+        keepaliveTimer?.cancel()
+        keepaliveTimer = nil
     }
 
     // MARK: - 系统静音控制

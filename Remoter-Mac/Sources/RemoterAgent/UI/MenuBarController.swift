@@ -13,6 +13,7 @@ struct AgentStatus {
     var connectedClients: Int
     var webEnabled: Bool = false
     var port: UInt16 = 7788
+    var localHostname: String = ""  // mDNS .local 主机名，固定不随 IP 变化
 }
 
 // MARK: - MenuBarController
@@ -131,7 +132,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             header.isEnabled = false
             menu.addItem(header)
             for ip in status.localIPs {
-                let item = NSMenuItem(title: "  ws://\(ip):7788",
+                let item = NSMenuItem(title: "  wss://\(ip):7788",
                                       action: #selector(copyIP(_:)),
                                       keyEquivalent: "")
                 item.target = self
@@ -147,7 +148,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             vpnHeader.isEnabled = false
             menu.addItem(vpnHeader)
             for ip in status.vpnIPs {
-                let item = NSMenuItem(title: "  ws://\(ip):7788",
+                let item = NSMenuItem(title: "  wss://\(ip):7788",
                                       action: #selector(copyIP(_:)),
                                       keyEquivalent: "")
                 item.target = self
@@ -157,13 +158,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
 
         // ── Web 客户端地址（仅当 bundle 内嵌了 web 产物时显示）────
-        if status.webEnabled && !status.localIPs.isEmpty {
+        if status.webEnabled {
             menu.addItem(.separator())
-            let webHeader = NSMenuItem(title: "Web 客户端", action: nil, keyEquivalent: "")
+            let webHeader = NSMenuItem(title: "Web 客户端（浏览器）", action: nil, keyEquivalent: "")
             webHeader.isEnabled = false
             menu.addItem(webHeader)
+            // 优先显示 .local 主机名（固定不变，推荐用来信任证书）
+            if !status.localHostname.isEmpty {
+                let item = NSMenuItem(title: "  https://\(status.localHostname):\(status.port)/",
+                                      action: #selector(copyWebURL(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(status.localHostname):\(status.port)"
+                menu.addItem(item)
+            }
             for ip in status.localIPs {
-                let item = NSMenuItem(title: "  http://\(ip):\(status.port)/",
+                let item = NSMenuItem(title: "  https://\(ip):\(status.port)/",
                                       action: #selector(copyWebURL(_:)),
                                       keyEquivalent: "")
                 item.target = self
@@ -306,7 +316,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc private func copyIP(_ sender: NSMenuItem) {
         guard let ip = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("ws://\(ip):7788", forType: .string)
+        NSPasteboard.general.setString("wss://\(ip):7788", forType: .string)
     }
 
     @objc private func openAccessibilitySettings() {
@@ -329,7 +339,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc private func copyWebURL(_ sender: NSMenuItem) {
         guard let ip = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("http://\(ip):7799", forType: .string)
+        NSPasteboard.general.setString("https://\(ip):7788", forType: .string)
     }
 
     // MARK: - Helpers

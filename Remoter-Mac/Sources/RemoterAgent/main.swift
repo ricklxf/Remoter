@@ -80,11 +80,13 @@ final class RemoterAgent {
         print("╚══════════════════════════════════╝")
         print("  PIN : \(pin)")
         print("  Port: \(config.port)")
-        ips.forEach    { print("  LAN : ws://\($0):\(config.port)") }
-        vpnIPs.forEach { print("  VPN : ws://\($0):\(config.port)") }
+        ips.forEach    { print("  LAN : wss://\($0):\(config.port)") }
+        vpnIPs.forEach { print("  VPN : wss://\($0):\(config.port)") }
         if webDir != nil {
-            ips.forEach    { print("  Web : http://\($0):\(config.port)/") }
-            vpnIPs.forEach { print("  Web : http://\($0):\(config.port)/") }
+            let host = getLocalHostname()
+            print("  Web : https://\(host):\(config.port)/  ← 推荐（.local 固定不变）")
+            ips.forEach    { print("  Web : https://\($0):\(config.port)/") }
+            vpnIPs.forEach { print("  Web : https://\($0):\(config.port)/") }
         }
 
         if !config.relayURL.isEmpty, let url = URL(string: config.relayURL) {
@@ -153,7 +155,8 @@ final class RemoterAgent {
             vpnIPs: getVPNIPs(),
             connectedClients: sessions.count,
             webEnabled: webDir != nil,
-            port: config.port
+            port: config.port,
+            localHostname: getLocalHostname()
         )
         DispatchQueue.main.async { [weak self] in
             self?.onStatusUpdate?(status)
@@ -202,6 +205,15 @@ func getLocalIPs() -> [String] {
 
 func getVPNIPs() -> [String] {
     getIfaceAddresses().filter { isVPNIface($0.ifname, $0.ip) }.map { $0.ip }
+}
+
+func getLocalHostname() -> String {
+    var name = [CChar](repeating: 0, count: 256)
+    gethostname(&name, 256)
+    let host = String(cString: name)
+    // 去掉 .local 后缀再统一加回来，避免重复
+    let base = host.hasSuffix(".local") ? String(host.dropLast(6)) : host
+    return "\(base).local"
 }
 
 // MARK: - Entry point

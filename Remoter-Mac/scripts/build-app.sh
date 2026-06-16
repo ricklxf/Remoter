@@ -118,9 +118,11 @@ if [ ! -f "$P12_PATH" ]; then
     echo ""
     echo "▶ 生成自签 TLS 证书…"
     mkdir -p "$CERT_DIR"
-    # 收集本机所有局域网 IP（排除 127.0.0.1），拼成 SAN
+    # 收集本机所有局域网 IP + mDNS .local 主机名，拼成 SAN
+    # .local 主机名固定不随 IP 变化，是 web 客户端访问的推荐地址
+    LOCAL_HOST="$(scutil --get LocalHostName 2>/dev/null).local"
     LAN_IPS=$(ifconfig | awk '/inet / && !/127\.0\.0\.1/{print $2}' | tr '\n' ',' | sed 's/,$//')
-    SAN="DNS:localhost,IP:127.0.0.1"
+    SAN="DNS:localhost,DNS:${LOCAL_HOST},IP:127.0.0.1"
     [ -n "$LAN_IPS" ] && SAN="$SAN,$(echo "$LAN_IPS" | sed 's/[^,]*/IP:&/g')"
     echo "  SAN: $SAN"
     openssl req -x509 -newkey rsa:2048 -nodes \

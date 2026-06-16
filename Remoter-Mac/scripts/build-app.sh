@@ -118,10 +118,15 @@ if [ ! -f "$P12_PATH" ]; then
     echo ""
     echo "▶ 生成自签 TLS 证书…"
     mkdir -p "$CERT_DIR"
+    # 收集本机所有局域网 IP（排除 127.0.0.1），拼成 SAN
+    LAN_IPS=$(ifconfig | awk '/inet / && !/127\.0\.0\.1/{print $2}' | tr '\n' ',' | sed 's/,$//')
+    SAN="DNS:localhost,IP:127.0.0.1"
+    [ -n "$LAN_IPS" ] && SAN="$SAN,$(echo "$LAN_IPS" | sed 's/[^,]*/IP:&/g')"
+    echo "  SAN: $SAN"
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
         -days 3650 -subj "/CN=Remoter" \
-        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+        -addext "subjectAltName=$SAN" 2>/dev/null
     openssl pkcs12 -export -out "$P12_PATH" \
         -inkey "$CERT_DIR/key.pem" -in "$CERT_DIR/cert.pem" \
         -passout pass:remoter 2>/dev/null

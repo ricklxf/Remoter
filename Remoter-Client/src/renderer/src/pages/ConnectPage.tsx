@@ -17,7 +17,7 @@ function inferInitial(): { mode: ConnectMode; directUrl: string; relayUrl: strin
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   let defaults: { mode: ConnectMode; directUrl: string; relayUrl: string }
   if (!isWeb) {
-    defaults = { mode: 'direct', directUrl: 'ws://192.168.1.144:7788', relayUrl: 'ws://your-relay-server:7789' }
+    defaults = { mode: 'direct', directUrl: 'wss://192.168.1.144:7788', relayUrl: 'ws://your-relay-server:7789' }
   } else {
     const { hostname, port, protocol } = window.location
     const scheme = protocol === 'https:' ? 'wss' : 'ws'
@@ -234,16 +234,18 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
               </div>
               )}
 
-              {/* Auth mode tabs */}
-              <div style={s.authTabs}>
-                {([['pin', 'PIN 码'], ['credentials', '账户密码']] as [AuthMethod, string][]).map(([m, label]) => (
-                  <button key={m} type="button"
-                    style={{ ...s.authTab, ...(authMode === m ? s.authTabActive : {}) }}
-                    onClick={() => { setAuthMode(m); setSelectedSaved(null) }}>
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {/* Auth mode tabs — web 端只显示 PIN，账户密码仅桌面端可用 */}
+              {isDesktop && (
+                <div style={s.authTabs}>
+                  {([['pin', 'PIN 码'], ['credentials', '账户密码']] as [AuthMethod, string][]).map(([m, label]) => (
+                    <button key={m} type="button"
+                      style={{ ...s.authTab, ...(authMode === m ? s.authTabActive : {}) }}
+                      onClick={() => { setAuthMode(m); setSelectedSaved(null) }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {authMode === 'pin' && (
                 <label style={s.label}>

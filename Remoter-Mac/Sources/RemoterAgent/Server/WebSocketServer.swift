@@ -45,15 +45,17 @@ final class WSClient: Hashable, @unchecked Sendable {
 
         let lock = NSLock()
         var done = false
-        let finish: (Bool) -> Void = { [weak self] cancel in
+        let finish: () -> Void = {
             lock.lock(); let already = done; done = true; lock.unlock()
             guard !already else { return }
-            if cancel { self?.ch.close(promise: nil) }
             onSent()
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { finish(true) }
+        // On write stall, release the backpressure slot without closing the channel.
+        // The pending write stays in NIO's queue and drains when TCP recovers.
+        // Dead connections are detected by the WS PING/PONG keepalive in WSFrameHandler.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { finish() }
         ch.writeAndFlush(WebSocketFrame(fin: true, opcode: .binary, data: buf))
-            .whenComplete { _ in finish(false) }
+            .whenComplete { _ in finish() }
     }
 
     func close() { ch.close(promise: nil) }
@@ -193,10 +195,37 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     private let client: WSClient
     private weak var server: WebSocketServer?
     private var closed = false
+    private var lastPong = Date()
+    private var pingTask: Scheduled<Void>?
 
     init(client: WSClient, server: WebSocketServer) {
         self.client = client
         self.server = server
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        lastPong = Date()
+        schedulePing(context: context)
+    }
+
+    // Send a WS PING every 5s; close the channel if no PONG for 15s.
+    // Browsers must respond to PING with PONG per RFC 6455 §5.5.3.
+    private func schedulePing(context: ChannelHandlerContext) {
+        pingTask = context.eventLoop.scheduleTask(in: .seconds(5)) { [self] in
+            guard !self.closed else { return }
+            if Date().timeIntervalSince(self.lastPong) > 15 {
+                ConnectionLogger.shared.logStep(sessionId: self.client.endpoint,
+                                                step: "ws_ping_timeout")
+                context.close(promise: nil)
+                return
+            }
+            let buf = context.channel.allocator.buffer(capacity: 0)
+            context.writeAndFlush(
+                self.wrapOutboundOut(WebSocketFrame(fin: true, opcode: .ping, data: buf)),
+                promise: nil
+            )
+            self.schedulePing(context: context)
+        }
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -216,16 +245,21 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         case .ping:
             var pong = frame; pong.opcode = .pong
             context.writeAndFlush(wrapOutboundOut(pong), promise: nil)
+        case .pong:
+            lastPong = Date()
         default:
             break
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
+        pingTask?.cancel()
         if !closed { closed = true; server?.onDisconnect?(client) }
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        ConnectionLogger.shared.logStep(sessionId: client.endpoint,
+                                        step: "ws_error", detail: "\(error)")
         context.close(promise: nil)
     }
 }

@@ -58,11 +58,13 @@ final class WebSocketServer {
     // private key at any point during TLS handshakes without it being deallocated.
     private static var tlsIdentity: SecIdentity?
 
-    /// Load TLS identity entirely in-process — no keychain involved.
+    /// Load TLS identity into the login keychain, then explicitly strip all
+    /// UI-prompt flags from the private key's ACL.
     ///
-    /// SecPKCS12Import without kSecImportExportKeychain returns a temporary SecIdentity
-    /// whose private key lives in process memory. secd is never consulted, so macOS
-    /// never shows a keychain authorization dialog regardless of how many clients connect.
+    /// kSecImportItemAccess (the import-time access option) is deprecated in macOS 12
+    /// and silently ignored on 13+, so the imported key gets the DEFAULT ACL which
+    /// triggers an Allow/Deny dialog on every use. We fix this immediately after
+    /// import by calling SecKeychainItemSetAccess with a zero-prompt SecAccess.
     private static func loadIdentity() -> sec_identity_t? {
         guard let p12URL  = Bundle.main.url(forResource: "server", withExtension: "p12"),
               let p12Data = try? Data(contentsOf: p12URL) else {
@@ -70,7 +72,12 @@ final class WebSocketServer {
             return nil
         }
 
-        let opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
+        var loginKC: SecKeychain?
+        SecKeychainCopyDefault(&loginKC)
+
+        var opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
+        if let kc = loginKC { opts[kSecImportExportKeychain as String] = kc }
+
         var items: CFArray?
         let status = SecPKCS12Import(p12Data as CFData, opts as CFDictionary, &items)
         guard status == errSecSuccess,
@@ -82,9 +89,43 @@ final class WebSocketServer {
             return nil
         }
 
+        applyNoPromptACL(to: id)
         tlsIdentity = id
         ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok")
         return sec_identity_create(id)
+    }
+
+    /// Explicitly set the private key's ACL to allow any application without any dialog.
+    ///
+    /// SecAccessCreate("name", nil) means "all apps allowed, no trusted-app list".
+    /// SecACLSetContents with [] strips every UI-prompt bit (RequirePassphrase,
+    /// Unsigned, etc.) from every ACL entry, making access permanently silent.
+    private static func applyNoPromptACL(to identity: SecIdentity) {
+        var privateKey: SecKey?
+        guard SecIdentityCopyPrivateKey(identity, &privateKey) == errSecSuccess,
+              let key = privateKey else { return }
+
+        var access: SecAccess?
+        guard SecAccessCreate("Remoter TLS" as CFString, nil, &access) == errSecSuccess,
+              let access else { return }
+
+        // Strip all prompt-requirement flags from every ACL entry
+        var aclList: CFArray?
+        SecAccessCopyACLList(access, &aclList)
+        if let acls = aclList as? [SecACL] {
+            for acl in acls {
+                var apps: CFArray?, desc: CFString?
+                var prompt = SecKeychainPromptSelector()
+                SecACLCopyContents(acl, &apps, &desc, &prompt)
+                SecACLSetContents(acl, nil, desc ?? ("" as CFString), [])  // [] = no UI prompts
+            }
+        }
+
+        // SecKey from login keychain is internally a SecKeychainItem
+        let item = unsafeBitCast(key, to: SecKeychainItem.self)
+        let s = SecKeychainItemSetAccess(item, access)
+        ConnectionLogger.shared.logStep(sessionId: "tls", step: "acl_noprompt",
+            detail: "status=\(s)")
     }
 
     func sendText(_ text: String, to conn: NWConnection) {

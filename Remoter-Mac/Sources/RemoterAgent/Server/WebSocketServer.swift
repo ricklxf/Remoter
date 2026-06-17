@@ -232,7 +232,7 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
 
 // MARK: - HTTP static-file handler
 
-private final class HTTPFileHandler: ChannelInboundHandler, @unchecked Sendable {
+private final class HTTPFileHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn   = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 

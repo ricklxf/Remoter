@@ -54,52 +54,23 @@ final class WebSocketServer {
         return NWParameters(tls: tlsOptions)
     }
 
-    // Retain so NW Framework can access the private key for the full server lifetime.
+    // Retain the identity for the process lifetime so NW Framework can access the
+    // private key at any point during TLS handshakes without it being deallocated.
     private static var tlsIdentity: SecIdentity?
 
-    /// Load TLS identity, importing into the user's login keychain on first run.
+    /// Load TLS identity entirely in-process — no keychain involved.
     ///
-    /// Login keychain is always unlocked during user session — no secd unlock dialog.
-    /// Passing both keychain + access(nil) to SecPKCS12Import skips the confirmation
-    /// dialog entirely (Apple TN2104: "security is set without displaying a dialog").
+    /// SecPKCS12Import without kSecImportExportKeychain returns a temporary SecIdentity
+    /// whose private key lives in process memory. secd is never consulted, so macOS
+    /// never shows a keychain authorization dialog regardless of how many clients connect.
     private static func loadIdentity() -> sec_identity_t? {
-        let label = "Remoter TLS"
-
-        // Fast path: identity already in login keychain from a previous run.
-        let findQuery: [String: Any] = [
-            kSecClass as String: kSecClassIdentity,
-            kSecAttrLabel as String: label,
-            kSecReturnRef as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var existingRef: CFTypeRef?
-        if SecItemCopyMatching(findQuery as CFDictionary, &existingRef) == errSecSuccess,
-           let existingRef {
-            let id = existingRef as! SecIdentity
-            tlsIdentity = id
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok")
-            return sec_identity_create(id)
-        }
-
-        // First run: import bundled p12 into login keychain.
         guard let p12URL  = Bundle.main.url(forResource: "server", withExtension: "p12"),
               let p12Data = try? Data(contentsOf: p12URL) else {
             ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_not_found")
             return nil
         }
 
-        // ACL with nil trusted-apps list = allow any application without confirmation.
-        var access: SecAccess?
-        SecAccessCreate("Remoter TLS" as CFString, nil, &access)
-
-        var loginKC: SecKeychain?
-        SecKeychainCopyDefault(&loginKC)
-
-        var opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
-        if let kc = loginKC { opts[kSecImportExportKeychain as String] = kc }
-        // kSecImportItemAccess is macOS-only and not bridged to Swift; raw value is "access".
-        if let ac = access  { opts["access"] = ac }
-
+        let opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
         var items: CFArray?
         let status = SecPKCS12Import(p12Data as CFData, opts as CFDictionary, &items)
         guard status == errSecSuccess,
@@ -111,19 +82,8 @@ final class WebSocketServer {
             return nil
         }
 
-        // Label the cert so the identity can be found next launch.
-        var cert: SecCertificate?
-        SecIdentityCopyCertificate(id, &cert)
-        if let cert {
-            SecItemUpdate(
-                [kSecClass as String: kSecClassCertificate,
-                 kSecValueRef as String: cert] as CFDictionary,
-                [kSecAttrLabel as String: label] as CFDictionary
-            )
-        }
-
         tlsIdentity = id
-        ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok_imported")
+        ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok")
         return sec_identity_create(id)
     }
 

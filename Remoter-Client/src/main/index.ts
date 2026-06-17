@@ -11,6 +11,19 @@ if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('enable-features', 'Metal')
 }
 
+// Trust the agent's own self-signed cert (CN=Remoter) for internal HTTPS/WSS.
+// The agent serves over TLS so browsers get a secure context for WebCodecs(H.264);
+// Chromium would otherwise reject the self-signed cert. We only whitelist our own
+// cert by common name — all other cert errors still fail.
+app.on('certificate-error', (event, _webContents, _url, _error, certificate, callback) => {
+  if (certificate.subjectName === 'Remoter' || certificate.issuerName === 'Remoter') {
+    event.preventDefault()
+    callback(true)
+  } else {
+    callback(false)
+  }
+})
+
 // ─── Single-instance lock (fixes Windows double-click no-show) ─────
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {

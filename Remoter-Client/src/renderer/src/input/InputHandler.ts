@@ -20,6 +20,9 @@ export class InputHandler {
   // Keyboard capture only when mouse is hovering over the remote canvas (or pointer-locked)
   private hovering = false
 
+  // Persistent capture: set when user clicks canvas, cleared when clicking outside
+  private captured = false
+
   // Keys that have been sent as keydown — keyup must be sent regardless of hover state
   private pressedKeys = new Set<string>()
 
@@ -40,6 +43,7 @@ export class InputHandler {
   detach(): void {
     this.enabled = false
     this.hovering = false
+    this.captured = false
     this.releaseAllKeys()
     this.removeListeners()
     this.el = null
@@ -71,6 +75,7 @@ export class InputHandler {
     add(document, 'keydown',    this.onKeyDown)
     add(document, 'keyup',      this.onKeyUp)
     add(document, 'pointerlockchange', this.onPointerLockChange)
+    add(document, 'mousedown',  this.onDocumentMouseDown)
     add(window,   'blur',       this.onWindowBlur)
   }
 
@@ -106,6 +111,13 @@ export class InputHandler {
     this.conn.sendMouseButton(buttonName(me.button), true, nx, ny)
   }
 
+  // Track clicks anywhere on document to manage captured state
+  private onDocumentMouseDown = (e: Event): void => {
+    if (!this.enabled) return
+    const target = (e as MouseEvent).target as Node | null
+    this.captured = !!(this.el && target && this.el.contains(target))
+  }
+
   private onMouseUp = (e: Event): void => {
     if (!this.enabled) return
     const me = e as MouseEvent
@@ -135,13 +147,13 @@ export class InputHandler {
 
   private onMouseEnter = (): void => { this.hovering = true }
   private onMouseLeave = (): void => { this.hovering = false }
-  private onWindowBlur = (): void => { this.releaseAllKeys() }
+  private onWindowBlur = (): void => { this.releaseAllKeys(); this.captured = false }
 
   // MARK: - Keyboard
 
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
-    if (!this.hovering && !this.locked) return
+    if (!this.hovering && !this.locked && !this.captured) return
     const ke = e as KeyboardEvent
     if (ke.code === 'F11') return
     ke.preventDefault()

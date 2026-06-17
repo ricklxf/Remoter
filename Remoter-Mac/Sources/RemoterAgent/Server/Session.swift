@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import AppKit
 import CoreGraphics
 import ImageIO
@@ -13,8 +12,7 @@ import PamAuthHelper
 // Security: P-256 ECDH + AES-256-GCM end-to-end encryption (0xE0 frame prefix)
 final class Session {
     let id: UUID
-    let connection: NWConnection
-    private let server: WebSocketServer
+    let connection: WSClient
     private let pin: String
 
     private var capturer: ScreenCapturer?
@@ -55,10 +53,9 @@ final class Session {
     // doesn't fire when the screen is static and CGDisplayStream pushes no frames.
     private var keepaliveTimer: DispatchSourceTimer?
 
-    init(id: UUID, connection: NWConnection, server: WebSocketServer, pin: String) {
+    init(id: UUID, connection: WSClient, pin: String) {
         self.id = id
         self.connection = connection
-        self.server = server
         self.pin = pin
     }
 
@@ -428,7 +425,7 @@ final class Session {
 
             enc.onEncodedFrame = { [weak self] data, isKeyframe in
                 guard let self else { return }
-                guard self.connection.state == .ready else { return }
+                guard self.connection.isActive else { return }
                 guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
 
                 let fid = self.frameId
@@ -437,7 +434,7 @@ final class Session {
 
                 let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
                 let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
-                self.server.sendBinaryVideo(pkt, to: self.connection) {
+                self.connection.sendBinaryVideo(pkt) {
                     self.wsSendSem.signal()
                     self.sentFrames += 1
                     let dt = Date().timeIntervalSince(self.sentTick)
@@ -492,14 +489,14 @@ final class Session {
         c.onFrame = { [weak self] cgImage, _, _ in
             guard let self else { return }
             guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
-            guard self.connection.state == .ready else { return }
+            guard self.connection.isActive else { return }
             guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
             let fid = self.frameId
             self.frameId &+= 1
             self.bytesSent += Int64(jpeg.count)
             let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
             let pkt = buildVideoFramePacket(data: jpeg, frameId: fid, ptsMs: now, isKeyframe: true)
-            self.server.sendBinaryVideo(pkt, to: self.connection) {
+            self.connection.sendBinaryVideo(pkt) {
                 self.wsSendSem.signal()
             }
         }
@@ -536,10 +533,10 @@ final class Session {
             // 0xE0 前缀 + AES-GCM 密文
             var frame = Data([0xE0])
             frame.append(encrypted)
-            server.sendBinary(frame, to: connection)
+            connection.sendBinary(frame)
         } else {
             guard let text = String(data: data, encoding: .utf8) else { return }
-            server.sendText(text, to: connection)
+            connection.sendText(text)
         }
     }
 
@@ -547,7 +544,7 @@ final class Session {
     private func sendJsonRaw(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let text = String(data: data, encoding: .utf8) else { return }
-        server.sendText(text, to: connection)
+        connection.sendText(text)
     }
 
     // MARK: - 目录列表
@@ -691,7 +688,7 @@ final class Session {
             withUnsafeBytes(of: &offBE) { pkt.append(contentsOf: $0) }
             pkt.append(chunk)
 
-            server.sendBinary(pkt, to: connection)
+            connection.sendBinary(pkt)
             offset += CHUNK
         }
 

@@ -1,6 +1,5 @@
 import Foundation
 import AppKit
-import Network
 
 // MARK: - 命令行参数
 
@@ -99,16 +98,16 @@ final class RemoterAgent {
 
     // MARK: - Private
 
-    private func getOrCreate(conn: NWConnection) -> Session {
+    private func getOrCreate(conn: WSClient) -> Session {
         if let s = sessions.values.first(where: { $0.connection === conn }) { return s }
         let id = UUID()
-        let s  = Session(id: id, connection: conn, server: wsServer, pin: pin)
+        let s  = Session(id: id, connection: conn, pin: pin)
         sessions[id] = s
         s.start()
         return s
     }
 
-    private func removeSession(for conn: NWConnection) {
+    private func removeSession(for conn: WSClient) {
         if let entry = sessions.first(where: { $0.value.connection === conn }) {
             entry.value.close()
             sessions.removeValue(forKey: entry.key)

@@ -1,359 +1,299 @@
 import Foundation
-import Network
-import CryptoKit
-import Security
+import NIOCore
+import NIOPosix
+import NIOHTTP1
+import NIOWebSocket
+import NIOSSL
 
-typealias MessageHandler    = (NWConnection, String) -> Void
-typealias BinaryHandler     = (NWConnection, Data)   -> Void
-typealias DisconnectHandler = (NWConnection)          -> Void
+// MARK: - WSClient
+
+/// Connection handle exposed to the rest of the app.  Replaces NWConnection.
+/// Wraps a SwiftNIO channel; all sends are queued on the channel's event loop.
+/// TLS private key is loaded from PEM bytes in process memory — never touches
+/// macOS keychain, so no keychain authorization dialog can appear.
+final class WSClient: Hashable, @unchecked Sendable {
+    let endpoint: String        // Remote address string, used for logging
+    private let ch: Channel
+
+    init(channel: Channel, endpoint: String) {
+        self.ch = channel
+        self.endpoint = endpoint
+    }
+
+    var isActive: Bool { ch.isActive }
+
+    func sendText(_ text: String) {
+        guard ch.isActive, let data = text.data(using: .utf8) else { return }
+        var buf = ch.allocator.buffer(capacity: data.count)
+        buf.writeBytes(data)
+        ch.writeAndFlush(WebSocketFrame(fin: true, opcode: .text, data: buf), promise: nil)
+    }
+
+    func sendBinary(_ data: Data) {
+        guard ch.isActive else { return }
+        var buf = ch.allocator.buffer(capacity: data.count)
+        buf.writeBytes(data)
+        ch.writeAndFlush(WebSocketFrame(fin: true, opcode: .binary, data: buf), promise: nil)
+    }
+
+    /// Video-frame variant: calls onSent when TCP has accepted the data, providing
+    /// backpressure.  Cancels the connection if TCP stalls for more than 5 seconds.
+    func sendBinaryVideo(_ data: Data, onSent: @escaping () -> Void) {
+        guard ch.isActive else { onSent(); return }
+        var buf = ch.allocator.buffer(capacity: data.count)
+        buf.writeBytes(data)
+
+        let lock = NSLock()
+        var done = false
+        let finish: (Bool) -> Void = { [weak self] cancel in
+            lock.lock(); let already = done; done = true; lock.unlock()
+            guard !already else { return }
+            if cancel { self?.ch.close(promise: nil) }
+            onSent()
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { finish(true) }
+        ch.writeAndFlush(WebSocketFrame(fin: true, opcode: .binary, data: buf))
+            .whenComplete { _ in finish(false) }
+    }
+
+    func close() { ch.close(promise: nil) }
+
+    static func == (lhs: WSClient, rhs: WSClient) -> Bool {
+        lhs.ch === (rhs.ch as AnyObject)
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(ObjectIdentifier(ch as AnyObject))
+    }
+}
+
+// MARK: - Type aliases (keep call sites in Session.swift / main.swift unchanged)
+
+typealias MessageHandler    = (WSClient, String) -> Void
+typealias BinaryHandler     = (WSClient, Data)   -> Void
+typealias DisconnectHandler = (WSClient)          -> Void
+
+// MARK: - WebSocketServer
 
 final class WebSocketServer {
-    var onConnect:    ((NWConnection) -> Void)?
+    var onConnect:    ((WSClient) -> Void)?
     var onText:       MessageHandler?
     var onBinary:     BinaryHandler?
     var onDisconnect: DisconnectHandler?
 
-    /// When set, plain HTTP GET requests on this port are served from this directory.
+    /// When set, plain HTTP GET requests are served from this directory.
     var webDir: URL?
 
-    private var listener: NWListener?
-    private let queue = DispatchQueue(label: "remoter.server", qos: .userInteractive)
+    private var serverChannel: Channel?
+    private let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+
+    deinit { try? group.syncShutdownGracefully() }
 
     func start(port: UInt16) throws {
-        let p = NWEndpoint.Port(rawValue: port)!
-        // TLS (HTTPS/WSS) so browsers get a secure context and can use WebCodecs (H.264).
-        // Falls back to plain TCP if the embedded cert is missing.
-        let tlsParams = Self.makeTLSParameters()
-        let params = tlsParams ?? .tcp
-        let scheme = tlsParams != nil ? "wss/https" : "ws/http"
+        let sslCtx = loadSSLContext()
+        let scheme = sslCtx != nil ? "wss/https" : "ws/http"
         ConnectionLogger.shared.logStep(sessionId: "tls", step: "listen_scheme", detail: scheme)
-        let l = try NWListener(using: params, on: p)
-        l.stateUpdateHandler = { state in
-            switch state {
-            case .ready:        print("[Server] Listening on :\(port) (\(scheme))")
-            case .failed(let e): print("[Server] Failed: \(e)")
-            default: break
+
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(.backlog, value: 256)
+            .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { [weak self] ch in
+                self?.initPipeline(ch, sslCtx: sslCtx)
+                    ?? ch.eventLoop.makeSucceededVoidFuture()
             }
-        }
-        l.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
-        l.start(queue: queue)
-        listener = l
+            .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(.maxMessagesPerRead, value: 16)
+            .childChannelOption(.recvAllocator, value: AdaptiveRecvByteBufferAllocator())
+
+        serverChannel = try bootstrap.bind(host: "0.0.0.0", port: Int(port)).wait()
+        print("[Server] Listening on :\(port) (\(scheme))")
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
+        serverChannel?.close(promise: nil)
+        serverChannel = nil
     }
 
-    // MARK: - TLS
+    // MARK: - Pipeline setup
 
-    private static func makeTLSParameters() -> NWParameters? {
-        guard let identity = loadIdentity() else { return nil }
-        let tlsOptions = NWProtocolTLS.Options()
-        sec_protocol_options_set_local_identity(tlsOptions.securityProtocolOptions, identity)
-        return NWParameters(tls: tlsOptions)
+    private func initPipeline(_ ch: Channel, sslCtx: NIOSSLContext?) -> EventLoopFuture<Void> {
+        let upgrader = NIOWebSocketServerUpgrader(
+            shouldUpgrade: { ch, _ in ch.eventLoop.makeSucceededFuture(HTTPHeaders()) },
+            upgradePipelineHandler: { [weak self] ch, _ in
+                guard let self else { return ch.eventLoop.makeSucceededVoidFuture() }
+                let addr   = ch.remoteAddress?.description ?? "?"
+                let client = WSClient(channel: ch, endpoint: addr)
+                self.onConnect?(client)
+                return ch.pipeline.addHandler(WSFrameHandler(client: client, server: self))
+            }
+        )
+
+        let base: EventLoopFuture<Void>
+        if let ctx = sslCtx, let handler = try? NIOSSLServerHandler(context: ctx) {
+            base = ch.pipeline.addHandler(handler).flatMap {
+                ch.pipeline.configureHTTPServerPipeline(
+                    withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
+                )
+            }
+        } else {
+            base = ch.pipeline.configureHTTPServerPipeline(
+                withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
+            )
+        }
+        return base.flatMap { ch.pipeline.addHandler(HTTPFileHandler(webDir: self.webDir)) }
     }
 
-    // Retain the identity for the process lifetime so NW Framework can access the
-    // private key at any point during TLS handshakes without it being deallocated.
-    private static var tlsIdentity: SecIdentity?
+    // MARK: - TLS — key loaded from PEM bytes, never touches macOS keychain
 
-    /// Load TLS identity into the login keychain, then explicitly strip all
-    /// UI-prompt flags from the private key's ACL.
-    ///
-    /// kSecImportItemAccess (the import-time access option) is deprecated in macOS 12
-    /// and silently ignored on 13+, so the imported key gets the DEFAULT ACL which
-    /// triggers an Allow/Deny dialog on every use. We fix this immediately after
-    /// import by calling SecKeychainItemSetAccess with a zero-prompt SecAccess.
-    private static func loadIdentity() -> sec_identity_t? {
-        guard let p12URL  = Bundle.main.url(forResource: "server", withExtension: "p12"),
-              let p12Data = try? Data(contentsOf: p12URL) else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_not_found")
+    private func loadSSLContext() -> NIOSSLContext? {
+        guard let certURL  = Bundle.main.url(forResource: "server", withExtension: "crt"),
+              let keyURL   = Bundle.main.url(forResource: "server", withExtension: "key"),
+              let certBytes = try? [UInt8](Data(contentsOf: certURL)),
+              let keyBytes  = try? [UInt8](Data(contentsOf: keyURL)) else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "pem_not_found")
             return nil
         }
-
-        var loginKC: SecKeychain?
-        SecKeychainCopyDefault(&loginKC)
-
-        var opts: [String: Any] = [kSecImportExportPassphrase as String: "remoter"]
-        if let kc = loginKC { opts[kSecImportExportKeychain as String] = kc }
-
-        var items: CFArray?
-        let status = SecPKCS12Import(p12Data as CFData, opts as CFDictionary, &items)
-        guard status == errSecSuccess,
-              let arr  = items as? [[String: Any]],
-              let first = arr.first,
-              let id   = first[kSecImportItemIdentity as String] as! SecIdentity? else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "p12_import_failed",
-                detail: "status=\(status)")
+        do {
+            let certs = try NIOSSLCertificate.fromPEMBytes(certBytes)
+            let key   = try NIOSSLPrivateKey(bytes: keyBytes, format: .pem)
+            var cfg   = TLSConfiguration.makeServerConfiguration(
+                certificateChain: certs.map { .certificate($0) },
+                privateKey: .privateKey(key)
+            )
+            cfg.minimumTLSVersion = .tlsv12
+            let ctx = try NIOSSLContext(configuration: cfg)
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok")
+            return ctx
+        } catch {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "ssl_ctx_failed",
+                detail: "\(error)")
             return nil
         }
+    }
+}
 
-        applyNoPromptACL(to: id)
-        tlsIdentity = id
-        ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok")
-        return sec_identity_create(id)
+// MARK: - WebSocket frame handler
+
+private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn   = WebSocketFrame
+    typealias OutboundOut = WebSocketFrame
+
+    private let client: WSClient
+    private weak var server: WebSocketServer?
+    private var closed = false
+
+    init(client: WSClient, server: WebSocketServer) {
+        self.client = client
+        self.server = server
     }
 
-    /// Explicitly set the private key's ACL to allow any application without any dialog.
-    ///
-    /// SecAccessCreate("name", nil) means "all apps allowed, no trusted-app list".
-    /// SecACLSetContents with [] strips every UI-prompt bit (RequirePassphrase,
-    /// Unsigned, etc.) from every ACL entry, making access permanently silent.
-    private static func applyNoPromptACL(to identity: SecIdentity) {
-        var privateKey: SecKey?
-        guard SecIdentityCopyPrivateKey(identity, &privateKey) == errSecSuccess,
-              let key = privateKey else { return }
-
-        var access: SecAccess?
-        guard SecAccessCreate("Remoter TLS" as CFString, nil, &access) == errSecSuccess,
-              let access else { return }
-
-        // Strip all prompt-requirement flags from every ACL entry
-        var aclList: CFArray?
-        SecAccessCopyACLList(access, &aclList)
-        if let acls = aclList as? [SecACL] {
-            for acl in acls {
-                var apps: CFArray?, desc: CFString?
-                var prompt = SecKeychainPromptSelector()
-                SecACLCopyContents(acl, &apps, &desc, &prompt)
-                SecACLSetContents(acl, nil, desc ?? ("" as CFString), [])  // [] = no UI prompts
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var frame = unwrapInboundIn(data)
+        switch frame.opcode {
+        case .text:
+            var buf = frame.unmaskedData
+            if let text = buf.readString(length: buf.readableBytes) {
+                server?.onText?(client, text)
             }
-        }
-
-        // SecKey from login keychain is internally a SecKeychainItem
-        let item = unsafeBitCast(key, to: SecKeychainItem.self)
-        let s = SecKeychainItemSetAccess(item, access)
-        ConnectionLogger.shared.logStep(sessionId: "tls", step: "acl_noprompt",
-            detail: "status=\(s)")
-    }
-
-    func sendText(_ text: String, to conn: NWConnection) {
-        guard let data = text.data(using: .utf8) else { return }
-        sendFrame(opcode: 0x01, payload: data, to: conn)
-    }
-
-    func sendBinary(_ data: Data, to conn: NWConnection) {
-        sendFrame(opcode: 0x02, payload: data, to: conn)
-    }
-
-    /// Video-frame variant: fires onSent when TCP has accepted the data, giving
-    /// the caller real backpressure so frames are never queued ahead of the
-    /// network's actual capacity.
-    func sendBinaryVideo(_ data: Data, to conn: NWConnection, onSent: @escaping () -> Void) {
-        var frame = Data()
-        frame.append(0x82)                          // FIN + binary opcode
-        let len = data.count
-        if len < 126 {
-            frame.append(UInt8(len))
-        } else if len < 65536 {
-            frame.append(126)
-            frame.append(UInt8((len >> 8) & 0xFF))
-            frame.append(UInt8( len       & 0xFF))
-        } else {
-            frame.append(127)
-            for i in (0..<8).reversed() { frame.append(UInt8((len >> (i * 8)) & 0xFF)) }
-        }
-        frame.append(contentsOf: data)
-        // One-shot guard: ensures onSent() fires exactly once even when both
-        // the watchdog and contentProcessed callback race.
-        let lock = NSLock()
-        var completed = false
-        let finish: (Bool) -> Void = { [weak self] cancel in
-            lock.lock()
-            let already = completed
-            completed = true
-            lock.unlock()
-            guard !already else { return }
-            if cancel {
-                ConnectionLogger.shared.logStep(sessionId: "ws", step: "video_send_timeout")
-                conn.cancel()
-                // Immediately notify disconnect via server queue so the session's
-                // encoder stops right away — avoids a flood of video_send_err while
-                // the receive path slowly detects the cancel.
-                self?.queue.async { [weak self] in self?.onDisconnect?(conn) }
-            }
-            onSent()
-        }
-        // Watchdog: if TCP flow-control stalls contentProcessed (client recv buffer full),
-        // cancel the connection after 5s so the client can reconnect cleanly.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { finish(true) }
-        conn.send(content: frame, completion: .contentProcessed { error in
-            if let error {
-                ConnectionLogger.shared.logStep(sessionId: "ws", step: "video_send_err",
-                    detail: "\(error)")
-            }
-            finish(false)
-        })
-    }
-
-    // MARK: - Accept + HTTP/WS dispatch
-
-    private func accept(_ conn: NWConnection) {
-        conn.start(queue: queue)
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, error in
-            guard let self, let data, !data.isEmpty, error == nil else { conn.cancel(); return }
-            let request = String(data: data.prefix(4096), encoding: .ascii) ?? ""
-            if let wsKey = Self.extractHeader(request, "Sec-WebSocket-Key") {
-                self.upgradeWS(conn: conn, key: wsKey)
-            } else {
-                self.serveHTTP(request: request, conn: conn)
-            }
+        case .binary:
+            var buf = frame.unmaskedData
+            server?.onBinary?(client, Data(buf.readableBytesView))
+        case .connectionClose:
+            if !closed { closed = true; server?.onDisconnect?(client) }
+            context.close(promise: nil)
+        case .ping:
+            var pong = frame; pong.opcode = .pong
+            context.writeAndFlush(wrapOutboundOut(pong), promise: nil)
+        default:
+            break
         }
     }
 
-    // MARK: - WebSocket upgrade + frame loop
-
-    private func upgradeWS(conn: NWConnection, key: String) {
-        let combined = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-        let accept   = Data(Insecure.SHA1.hash(data: Data(combined.utf8))).base64EncodedString()
-        let resp     = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
-        conn.send(content: Data(resp.utf8), completion: .contentProcessed { [weak self] _ in
-            self?.onConnect?(conn)        // 握手完成即通知，不等第一条消息
-            self?.recvFrames(conn: conn, reader: WsFrameReader())
-        })
+    func channelInactive(context: ChannelHandlerContext) {
+        if !closed { closed = true; server?.onDisconnect?(client) }
     }
 
-    private func recvFrames(conn: NWConnection, reader: WsFrameReader) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
-            guard let self else { return }
-            guard let data, !data.isEmpty, error == nil else {
-                ConnectionLogger.shared.logStep(sessionId: "ws", step: "recv_disconnect",
-                    detail: "err=\(String(describing: error)) emptyData=\(data?.isEmpty ?? true)")
-                self.onDisconnect?(conn); return
-            }
-            var close = false
-            reader.feed(data) { opcode, payload in
-                switch opcode {
-                case 0x01:
-                    if let text = String(data: payload, encoding: .utf8) { self.onText?(conn, text) }
-                case 0x02:
-                    self.onBinary?(conn, payload)
-                case 0x08:
-                    close = true
-                case 0x09: // ping → pong
-                    self.sendFrame(opcode: 0x0A, payload: payload, to: conn)
-                default: break
-                }
-            }
-            if close {
-                ConnectionLogger.shared.logStep(sessionId: "ws", step: "client_close_frame")
-                self.onDisconnect?(conn); conn.cancel()
-            }
-            else { self.recvFrames(conn: conn, reader: reader) }
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
+    }
+}
+
+// MARK: - HTTP static-file handler
+
+private final class HTTPFileHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn   = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    private let webDir: URL?
+    private var pendingHead: HTTPRequestHead?
+
+    init(webDir: URL?) { self.webDir = webDir }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        switch unwrapInboundIn(data) {
+        case .head(let h): pendingHead = h
+        case .end:
+            if let h = pendingHead { serve(context: context, head: h) }
+            pendingHead = nil
+        case .body: break
         }
     }
 
-    private func sendFrame(opcode: UInt8, payload: Data, to conn: NWConnection) {
-        var frame = Data()
-        frame.append(0x80 | opcode)
-        let len = payload.count
-        if len < 126 {
-            frame.append(UInt8(len))
-        } else if len < 65536 {
-            frame.append(126)
-            frame.append(UInt8((len >> 8) & 0xFF))
-            frame.append(UInt8( len       & 0xFF))
-        } else {
-            frame.append(127)
-            for i in (0..<8).reversed() { frame.append(UInt8((len >> (i * 8)) & 0xFF)) }
+    private func serve(context: ChannelHandlerContext, head: HTTPRequestHead) {
+        guard let webDir, head.method == .GET else {
+            respond(context: context, version: head.version, status: .notFound, body: nil)
+            return
         }
-        frame.append(contentsOf: payload)
-        conn.send(content: frame, completion: .idempotent)
-    }
-
-    // MARK: - HTTP file serving
-
-    private func serveHTTP(request: String, conn: NWConnection) {
-        guard let webDir else { conn.cancel(); return }
-        let firstLine = request.components(separatedBy: "\r\n").first ?? ""
-        let parts     = firstLine.components(separatedBy: " ")
-        guard parts.count >= 2, parts[0] == "GET" else { conn.cancel(); return }
-
-        let rawPath = parts[1].components(separatedBy: "?").first ?? "/"
-        let rel     = rawPath == "/" ? "index.html" : String(rawPath.drop(while: { $0 == "/" }))
+        let rawPath = head.uri.components(separatedBy: "?").first ?? "/"
+        let rel = rawPath == "/" ? "index.html" : String(rawPath.drop { $0 == "/" })
         var fileURL = webDir.appendingPathComponent(rel)
         if !FileManager.default.fileExists(atPath: fileURL.path) {
             fileURL = webDir.appendingPathComponent("index.html")
         }
         guard let body = try? Data(contentsOf: fileURL) else {
-            let r = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
-            conn.send(content: Data(r.utf8), completion: .contentProcessed { _ in conn.cancel() })
+            respond(context: context, version: head.version, status: .notFound, body: nil)
             return
         }
-        let mime   = Self.mimeType(for: fileURL.pathExtension)
-        let header = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
-        var response = Data(header.utf8)
-        response.append(body)
-        conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+        respond(context: context, version: head.version, status: .ok,
+                body: body, contentType: mime(ext: fileURL.pathExtension))
     }
 
-    private static func mimeType(for ext: String) -> String {
+    private func respond(context: ChannelHandlerContext, version: HTTPVersion,
+                         status: HTTPResponseStatus, body: Data?,
+                         contentType: String = "application/octet-stream") {
+        var headers = HTTPHeaders()
+        if let body {
+            headers.add(name: "Content-Type",   value: contentType)
+            headers.add(name: "Content-Length", value: "\(body.count)")
+        }
+        headers.add(name: "Cache-Control", value: "no-cache")
+        headers.add(name: "Connection",    value: "close")
+
+        context.write(wrapOutboundOut(.head(
+            HTTPResponseHead(version: version, status: status, headers: headers)
+        )), promise: nil)
+
+        if let body {
+            var buf = context.channel.allocator.buffer(capacity: body.count)
+            buf.writeBytes(body)
+            context.write(wrapOutboundOut(.body(.byteBuffer(buf))), promise: nil)
+        }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)))
+            .whenComplete { _ in context.close(promise: nil) }
+    }
+
+    private func mime(ext: String) -> String {
         switch ext.lowercased() {
-        case "html":         return "text/html; charset=utf-8"
-        case "js", "mjs":    return "application/javascript"
-        case "css":          return "text/css"
-        case "ico":          return "image/x-icon"
-        case "png":          return "image/png"
-        case "jpg", "jpeg":  return "image/jpeg"
-        case "svg":          return "image/svg+xml"
-        case "woff2":        return "font/woff2"
-        case "woff":         return "font/woff"
-        case "json":         return "application/json"
-        default:             return "application/octet-stream"
+        case "html":        return "text/html; charset=utf-8"
+        case "js", "mjs":  return "application/javascript"
+        case "css":         return "text/css"
+        case "ico":         return "image/x-icon"
+        case "png":         return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "svg":         return "image/svg+xml"
+        case "woff2":       return "font/woff2"
+        case "woff":        return "font/woff"
+        case "json":        return "application/json"
+        default:            return "application/octet-stream"
         }
-    }
-
-    // MARK: - Helpers
-
-    private static func extractHeader(_ request: String, _ name: String) -> String? {
-        let prefix = name.lowercased() + ": "
-        for line in request.components(separatedBy: "\r\n") {
-            if line.lowercased().hasPrefix(prefix) {
-                return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
-    }
-}
-
-// MARK: - WebSocket frame accumulator (handles fragmented TCP reads)
-
-final class WsFrameReader {
-    private var buf = Data()
-
-    func feed(_ data: Data, handler: (UInt8, Data) -> Void) {
-        buf.append(data)
-        while tryParse(handler: handler) { }
-    }
-
-    private func tryParse(handler: (UInt8, Data) -> Void) -> Bool {
-        guard buf.count >= 2 else { return false }
-        let masked     = (buf[1] & 0x80) != 0
-        var headerLen  = 2
-        var payloadLen = Int(buf[1] & 0x7F)
-        if payloadLen == 126 {
-            guard buf.count >= 4 else { return false }
-            payloadLen = (Int(buf[2]) << 8) | Int(buf[3])
-            headerLen  = 4
-        } else if payloadLen == 127 {
-            guard buf.count >= 10 else { return false }
-            payloadLen = 0
-            for i in 2..<10 { payloadLen = (payloadLen << 8) | Int(buf[i]) }
-            headerLen  = 10
-        }
-        let maskLen = masked ? 4 : 0
-        let total   = headerLen + maskLen + payloadLen
-        guard buf.count >= total else { return false }
-
-        let opcode     = buf[0] & 0x0F
-        let maskStart  = headerLen
-        var payload    = Data(buf[(maskStart + maskLen) ..< total])
-        if masked {
-            for i in 0..<payload.count { payload[i] ^= buf[maskStart + (i % 4)] }
-        }
-        buf = Data(buf[total...])
-        handler(opcode, payload)
-        return true
     }
 }

@@ -7,8 +7,9 @@ let package = Package(
         .macOS(.v14)
     ],
     dependencies: [
-        // Google WebRTC prebuilt framework (stasel/WebRTC)
-        .package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "114.0.0"))
+        .package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "114.0.0")),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
     ],
     targets: [
         .target(
@@ -21,7 +22,13 @@ let package = Package(
             name: "RemoterAgent",
             dependencies: [
                 .product(name: "WebRTC", package: "WebRTC"),
-                "PamAuthHelper"
+                "PamAuthHelper",
+                .product(name: "NIO",          package: "swift-nio"),
+                .product(name: "NIOCore",      package: "swift-nio"),
+                .product(name: "NIOPosix",     package: "swift-nio"),
+                .product(name: "NIOHTTP1",     package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+                .product(name: "NIOSSL",       package: "swift-nio-ssl"),
             ],
             path: "Sources/RemoterAgent"
         )

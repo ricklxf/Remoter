@@ -117,6 +117,13 @@ final class WebSocketServer {
 
     private func initPipeline(_ ch: Channel, sslCtx: NIOSSLContext?) -> EventLoopFuture<Void> {
         let webDir = self.webDir
+        // Keep a reference so upgradePipelineHandler can insert WSFrameHandler BEFORE it.
+        // After WebSocket upgrade the inbound order becomes:
+        //   NIOSSL → WS dec → WSFrameHandler → HTTPFileHandler (tail)
+        // WSFrameHandler consumes every WebSocketFrame and does NOT call fireChannelRead,
+        // so HTTPFileHandler only ever sees HTTPServerRequestPart from normal HTTP requests.
+        let httpHandler = HTTPFileHandler(webDir: webDir)
+
         let upgrader = NIOWebSocketServerUpgrader(
             shouldUpgrade: { ch, _ in ch.eventLoop.makeSucceededFuture(HTTPHeaders()) },
             upgradePipelineHandler: { [weak self] ch, _ in
@@ -124,35 +131,24 @@ final class WebSocketServer {
                 let addr   = ch.remoteAddress?.description ?? "?"
                 let client = WSClient(channel: ch, endpoint: addr)
                 self.onConnect?(client)
-                return ch.pipeline.addHandler(WSFrameHandler(client: client, server: self))
+                // Insert BEFORE httpHandler so WS frames never reach it.
+                return ch.pipeline.addHandler(
+                    WSFrameHandler(client: client, server: self),
+                    position: .before(httpHandler)
+                )
             }
         )
-
-        // HTTPFileHandler is added in completionHandler, NOT in initPipeline.
-        //
-        // Reason: NIOWebSocketServerUpgrader adds WS decoder at pipeline tail (.last),
-        // so during WebSocket upgrade the order becomes:
-        //   NIOSSL → [HTTP handlers removed] → HTTPFileHandler → WS decoder → ...
-        // NIOSSL.doFlushReadData then fires channelRead directly into HTTPFileHandler
-        // (wrong type → NIOAny.forceAs fatalError).
-        //
-        // completionHandler is called BEFORE buffered messages are replayed downstream
-        // (non-upgrade path) and AFTER the pipeline is fully rearranged (upgrade path),
-        // so HTTPFileHandler is absent during the dangerous window.
-        let completionHandler: (ChannelHandlerContext) -> Void = { ctx in
-            _ = ctx.pipeline.addHandler(HTTPFileHandler(webDir: webDir))
-        }
 
         if let ctx = sslCtx, let handler = try? NIOSSLServerHandler(context: ctx) {
             return ch.pipeline.addHandler(handler).flatMap {
                 ch.pipeline.configureHTTPServerPipeline(
-                    withServerUpgrade: (upgraders: [upgrader], completionHandler: completionHandler)
+                    withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
                 )
-            }
+            }.flatMap { ch.pipeline.addHandler(httpHandler) }
         } else {
             return ch.pipeline.configureHTTPServerPipeline(
-                withServerUpgrade: (upgraders: [upgrader], completionHandler: completionHandler)
-            )
+                withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
+            ).flatMap { ch.pipeline.addHandler(httpHandler) }
         }
     }
 

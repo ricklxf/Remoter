@@ -143,6 +143,9 @@ openssl pkcs12 -export -legacy -out "$P12_PATH" \
 security delete-keychain "$KC_PATH" 2>/dev/null || true
 security create-keychain -p "$KC_PASS" "$KC_PATH"
 security import "$P12_PATH" -k "$KC_PATH" -P "remoter" -A 2>/dev/null
+# macOS Sierra+ 新增 partition list 层：即使设了 -A，没有 apple: 分区许可仍会弹框。
+# set-key-partition-list 让所有 Apple 签名进程（包括 NW Framework TLS 的 secd）无需弹框使用私钥。
+security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC_PATH" 2>/dev/null || true
 security set-keychain-settings -t 0 "$KC_PATH" 2>/dev/null || true
 
 mkdir -p "$RESOURCES_DIR"

@@ -114,7 +114,7 @@ export default function App() {
     if (!conn) return
     const label = params.label
       ?? (params.mode === 'direct'
-        ? (params.directUrl ?? '').replace('ws://', '').split(':')[0] || '新连接'
+        ? (params.directUrl ?? '').replace(/^wss?:\/\//, '').split(':')[0] || '新连接'
         : params.sessionId || '新连接')
     setTabs(prev => prev.map(t => t.id === tabId ? { ...t, label, errorMsg: '' } : t))
     conn.connect(params)

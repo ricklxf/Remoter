@@ -115,15 +115,24 @@ final class WebSocketServer {
 
     // MARK: - Pipeline setup
 
+    private static let httpHandlerName = "remoter-http"
+
     private func initPipeline(_ ch: Channel, sslCtx: NIOSSLContext?) -> EventLoopFuture<Void> {
         let upgrader = NIOWebSocketServerUpgrader(
             shouldUpgrade: { ch, _ in ch.eventLoop.makeSucceededFuture(HTTPHeaders()) },
             upgradePipelineHandler: { [weak self] ch, _ in
                 guard let self else { return ch.eventLoop.makeSucceededVoidFuture() }
+                // Remove the HTTP file handler before adding WebSocket handler —
+                // it must not remain in the pipeline after upgrade because NIOSSL
+                // flushes buffered bytes directly, causing a type-mismatch fatalError.
+                let remove = ch.pipeline.removeHandler(name: Self.httpHandlerName)
+                    .flatMapError { _ in ch.eventLoop.makeSucceededVoidFuture() }
                 let addr   = ch.remoteAddress?.description ?? "?"
                 let client = WSClient(channel: ch, endpoint: addr)
                 self.onConnect?(client)
-                return ch.pipeline.addHandler(WSFrameHandler(client: client, server: self))
+                return remove.flatMap {
+                    ch.pipeline.addHandler(WSFrameHandler(client: client, server: self))
+                }
             }
         )
 
@@ -139,7 +148,11 @@ final class WebSocketServer {
                 withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
             )
         }
-        return base.flatMap { ch.pipeline.addHandler(HTTPFileHandler(webDir: self.webDir)) }
+        return base.flatMap {
+            ch.pipeline.addHandler(
+                HTTPFileHandler(webDir: self.webDir), name: Self.httpHandlerName
+            )
+        }
     }
 
     // MARK: - TLS — key loaded from PEM bytes, never touches macOS keychain
@@ -187,7 +200,7 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        var frame = unwrapInboundIn(data)
+        let frame = unwrapInboundIn(data)
         switch frame.opcode {
         case .text:
             var buf = frame.unmaskedData
@@ -195,7 +208,7 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
                 server?.onText?(client, text)
             }
         case .binary:
-            var buf = frame.unmaskedData
+            let buf = frame.unmaskedData
             server?.onBinary?(client, Data(buf.readableBytesView))
         case .connectionClose:
             if !closed { closed = true; server?.onDisconnect?(client) }

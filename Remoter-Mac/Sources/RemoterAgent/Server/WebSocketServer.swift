@@ -54,56 +54,98 @@ final class WebSocketServer {
         return NWParameters(tls: tlsOptions)
     }
 
-    // Kept alive so NW Framework can access the private key for the full server lifetime.
-    private static var tempKeychain: SecKeychain?
+    // Retain so NW Framework can access the private key for the full server lifetime.
+    private static var tlsIdentity: SecIdentity?
 
-    /// Load the TLS identity from the pre-configured keychain bundled in Resources.
+    /// Load the TLS identity from PEM files bundled in Resources.
     ///
-    /// The keychain (server.keychain-db) is created at build time by build-app.sh using
-    /// `security import -A`, which sets an open ACL ("allow any application without prompting").
-    /// At runtime we just open + unlock it — no SecPKCS12Import, no authorization dialog.
+    /// Uses Data Protection Keychain (kSecUseDataProtectionKeychain) to avoid the
+    /// secd authorization dialog that legacy SecKeychain triggers on every TLS handshake.
     private static func loadIdentity() -> sec_identity_t? {
-        guard let kcURL = Bundle.main.url(forResource: "server", withExtension: "keychain-db") else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_not_found")
+        guard let certURL = Bundle.main.url(forResource: "cert", withExtension: "pem"),
+              let keyURL  = Bundle.main.url(forResource: "key",  withExtension: "pem"),
+              let certPEM = try? String(contentsOf: certURL, encoding: .utf8),
+              let keyPEM  = try? String(contentsOf: keyURL,  encoding: .utf8) else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "pem_not_found")
             return nil
         }
 
-        // App bundle is read-only; copy to temp so SecKeychain can write lock state.
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let tempPath = NSTemporaryDirectory() + "remoter_ks_\(pid).keychain-db"
-        try? FileManager.default.removeItem(atPath: tempPath)
-        guard (try? FileManager.default.copyItem(at: kcURL, to: URL(fileURLWithPath: tempPath))) != nil else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_copy_failed")
+        guard let certDER = pemDecode(certPEM),
+              let keyDER  = pemDecode(keyPEM) else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "pem_decode_failed")
             return nil
         }
 
-        var kc: SecKeychain?
-        guard SecKeychainOpen(tempPath, &kc) == errSecSuccess, let kc else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_open_failed")
+        guard let cert = SecCertificateCreateWithData(nil, certDER as CFData) else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "cert_create_failed")
             return nil
         }
-        let ksPass = "remoter_ks"
-        SecKeychainUnlock(kc, UInt32(ksPass.utf8.count), ksPass, true)
 
-        // Query the identity — ACL was set to -A at build time, so no prompt.
-        let query: [String: Any] = [
+        var cfErr: Unmanaged<CFError>?
+        guard let privateKey = SecKeyCreateWithData(keyDER as CFData, [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+        ] as CFDictionary, &cfErr) else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "key_create_failed",
+                detail: cfErr?.takeRetainedValue().localizedDescription ?? "")
+            return nil
+        }
+
+        // Store in Data Protection Keychain — kSecAttrAccessibleAfterFirstUnlock means
+        // no prompt when secd uses the key for TLS handshake (unlike legacy SecKeychain).
+        let label = "Remoter TLS"
+        for cls in [kSecClassCertificate as CFString, kSecClassKey as CFString] {
+            SecItemDelete([kSecClass as String: cls,
+                           kSecAttrLabel as String: label,
+                           kSecUseDataProtectionKeychain as String: true] as CFDictionary)
+        }
+
+        let certStatus = SecItemAdd([
+            kSecClass as String: kSecClassCertificate,
+            kSecValueRef as String: cert,
+            kSecAttrLabel as String: label,
+            kSecUseDataProtectionKeychain as String: true,
+        ] as CFDictionary, nil)
+
+        let keyStatus = SecItemAdd([
+            kSecClass as String: kSecClassKey,
+            kSecValueRef as String: privateKey,
+            kSecAttrLabel as String: label,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecUseDataProtectionKeychain as String: true,
+        ] as CFDictionary, nil)
+
+        guard certStatus == errSecSuccess, keyStatus == errSecSuccess else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "dp_store_failed",
+                detail: "cert=\(certStatus) key=\(keyStatus)")
+            return nil
+        }
+
+        var identRef: CFTypeRef?
+        let status = SecItemCopyMatching([
             kSecClass as String: kSecClassIdentity,
-            kSecMatchSearchList as String: [kc] as CFArray,
+            kSecAttrLabel as String: label,
             kSecReturnRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let result else {
-            ConnectionLogger.shared.logStep(sessionId: "tls", step: "kc_identity_not_found",
-                                            detail: "status=\(status)")
-            SecKeychainDelete(kc)
+            kSecUseDataProtectionKeychain as String: true,
+        ] as CFDictionary, &identRef)
+        guard status == errSecSuccess, let identRef else {
+            ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_retrieve_failed",
+                detail: "status=\(status)")
             return nil
         }
 
-        tempKeychain = kc  // retain so the key stays accessible via NW Framework
-        let identity = result as! SecIdentity
-        return sec_identity_create(identity)
+        let secIdentity = identRef as! SecIdentity
+        tlsIdentity = secIdentity
+        ConnectionLogger.shared.logStep(sessionId: "tls", step: "identity_ok")
+        return sec_identity_create(secIdentity)
+    }
+
+    private static func pemDecode(_ pem: String) -> Data? {
+        let b64 = pem.components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") && !$0.isEmpty }
+            .joined()
+        return Data(base64Encoded: b64)
     }
 
     func sendText(_ text: String, to conn: NWConnection) {

@@ -113,9 +113,6 @@ fi
 # WebCodecs(H.264 解码) 需要安全上下文(HTTPS)；自签证书首次访问需手动信任。
 # 证书持久保存在 Remoter-Mac/certs/，存在则复用 → 只需信任一次。
 CERT_DIR="$PKG_DIR/certs"
-P12_PATH="$CERT_DIR/server.p12"
-KC_PATH="$CERT_DIR/server.keychain-db"
-KC_PASS="remoter_ks"
 
 if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
     echo ""
@@ -135,22 +132,12 @@ if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
     echo "  ✓ 证书生成 → $CERT_DIR/cert.pem"
 fi
 
-# 每次构建都重新打包 keychain（-legacy 格式兼容 security import；证书本身不变，无需重新信任）
-# -A 让所有应用无需弹框即可访问私钥，避免运行时触发 macOS 授权弹框
-openssl pkcs12 -export -legacy -out "$P12_PATH" \
-    -inkey "$CERT_DIR/key.pem" -in "$CERT_DIR/cert.pem" \
-    -passout pass:remoter 2>/dev/null
-security delete-keychain "$KC_PATH" 2>/dev/null || true
-security create-keychain -p "$KC_PASS" "$KC_PATH"
-security import "$P12_PATH" -k "$KC_PATH" -P "remoter" -A 2>/dev/null
-# macOS Sierra+ 新增 partition list 层：即使设了 -A，没有 apple: 分区许可仍会弹框。
-# set-key-partition-list 让所有 Apple 签名进程（包括 NW Framework TLS 的 secd）无需弹框使用私钥。
-security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC_PATH" 2>/dev/null || true
-security set-keychain-settings -t 0 "$KC_PATH" 2>/dev/null || true
-
+# 直接嵌入 PEM 文件；运行时通过 Data Protection Keychain 加载（kSecUseDataProtectionKeychain），
+# 完全绕开 legacy SecKeychain 在 TLS 握手时触发的 secd 授权弹框。
 mkdir -p "$RESOURCES_DIR"
-cp "$KC_PATH" "$RESOURCES_DIR/server.keychain-db"
-echo "✅ TLS 证书已嵌入"
+cp "$CERT_DIR/cert.pem" "$RESOURCES_DIR/cert.pem"
+cp "$CERT_DIR/key.pem"  "$RESOURCES_DIR/key.pem"
+echo "✅ TLS 证书已嵌入（PEM 格式）"
 echo ""
 
 # ── 代码签名 ─────────────────────────────────────────────────────────────

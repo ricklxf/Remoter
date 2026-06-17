@@ -131,11 +131,14 @@ final class WebSocketServer {
                 let addr   = ch.remoteAddress?.description ?? "?"
                 let client = WSClient(channel: ch, endpoint: addr)
                 self.onConnect?(client)
-                // Insert BEFORE httpHandler so WS frames never reach it.
-                return ch.pipeline.addHandler(
-                    WSFrameHandler(client: client, server: self),
-                    position: .before(httpHandler)
-                )
+                // NIOWebSocketServerUpgrader adds WS dec/enc at .last (AFTER httpHandler).
+                // Remove httpHandler first so WSFrameHandler lands after WS dec/enc:
+                //   NIOSSL → WS dec → WS enc → WSFrameHandler   (after HTTP handlers removed)
+                // If .last were used without removal the order would be wrong:
+                //   NIOSSL → httpHandler → WS dec → WS enc → WSFrameHandler → crash
+                return ch.pipeline.removeHandler(name: "http-file")
+                    .flatMapError { _ in ch.eventLoop.makeSucceededVoidFuture() }
+                    .flatMap { ch.pipeline.addHandler(WSFrameHandler(client: client, server: self)) }
             }
         )
 
@@ -144,11 +147,11 @@ final class WebSocketServer {
                 ch.pipeline.configureHTTPServerPipeline(
                     withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
                 )
-            }.flatMap { ch.pipeline.addHandler(httpHandler) }
+            }.flatMap { ch.pipeline.addHandler(httpHandler, name: "http-file") }
         } else {
             return ch.pipeline.configureHTTPServerPipeline(
                 withServerUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
-            ).flatMap { ch.pipeline.addHandler(httpHandler) }
+            ).flatMap { ch.pipeline.addHandler(httpHandler, name: "http-file") }
         }
     }
 

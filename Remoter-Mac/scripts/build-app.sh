@@ -132,12 +132,16 @@ if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
     echo "  ✓ 证书生成 → $CERT_DIR/cert.pem"
 fi
 
-# 直接嵌入 PEM 文件；运行时通过 Data Protection Keychain 加载（kSecUseDataProtectionKeychain），
-# 完全绕开 legacy SecKeychain 在 TLS 握手时触发的 secd 授权弹框。
+# 打包为 p12，运行时 SecPKCS12Import 导入到 login keychain。
+# login keychain 用户登录期间始终解锁，同时传 keychain+access(nil) 导入时无弹框。
+P12_PATH="$CERT_DIR/server.p12"
+openssl pkcs12 -export -legacy -out "$P12_PATH" \
+    -inkey "$CERT_DIR/key.pem" -in "$CERT_DIR/cert.pem" \
+    -passout pass:remoter 2>/dev/null
+
 mkdir -p "$RESOURCES_DIR"
-cp "$CERT_DIR/cert.pem" "$RESOURCES_DIR/cert.pem"
-cp "$CERT_DIR/key.pem"  "$RESOURCES_DIR/key.pem"
-echo "✅ TLS 证书已嵌入（PEM 格式）"
+cp "$P12_PATH" "$RESOURCES_DIR/server.p12"
+echo "✅ TLS 证书已嵌入（p12 格式）"
 echo ""
 
 # ── 代码签名 ─────────────────────────────────────────────────────────────

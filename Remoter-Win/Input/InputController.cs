@@ -106,11 +106,6 @@ sealed class InputController
             SendKey(vk, down);
         else
             AppLog.Write($"[Input] Unknown key code: {code}");
-
-        if (!down)
-        {
-            foreach (var mod in modifiers) SendKey(ModVk(mod), down: false);
-        }
     }
 
     private static ushort ModVk(string mod) => mod switch

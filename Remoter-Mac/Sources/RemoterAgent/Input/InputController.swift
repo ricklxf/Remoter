@@ -7,6 +7,7 @@ final class InputController {
     var screenWidth: Int
     var screenHeight: Int
     private var loggedAccessibility = false
+    private var pressedKeys = Set<CGKeyCode>()
 
     init(screenWidth: Int, screenHeight: Int) {
         self.screenWidth = screenWidth
@@ -110,6 +111,19 @@ final class InputController {
         }
         e.flags = flags
         e.post(tap: .cgAnnotatedSessionEventTap)
+
+        if down { pressedKeys.insert(keyCode) } else { pressedKeys.remove(keyCode) }
+    }
+
+    func releaseAllKeys() {
+        guard !pressedKeys.isEmpty else { return }
+        let src = CGEventSource(stateID: .hidSystemState)
+        for keyCode in pressedKeys {
+            guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false) else { continue }
+            e.flags = []
+            e.post(tap: .cgAnnotatedSessionEventTap)
+        }
+        pressedKeys.removeAll()
     }
 
     // MARK: - Private

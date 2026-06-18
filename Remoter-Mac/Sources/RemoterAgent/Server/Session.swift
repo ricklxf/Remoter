@@ -134,6 +134,7 @@ final class Session {
                 bytesRecvMB: Double(bytesRecv) / 1_048_576
             )
         }
+        input?.releaseAllKeys()
         stopKeepalive()
         stopClipboardMonitor()
         encoder?.close()

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
+import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
 
 interface Props {
   conn: Connection
@@ -51,6 +52,7 @@ export function Toolbar({
       />
 
       <ControlMenu conn={conn} />
+      <KeymapMenu />
 
       <div style={s.sep} />
 

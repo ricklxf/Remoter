@@ -25,7 +25,7 @@ final class InputController {
             print("[Input] mouseMove: CGEvent creation failed")
             return
         }
-        e.post(tap: .cgSessionEventTap)
+        e.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     func mouseButton(button: String, down: Bool, x: Double, y: Double) {
@@ -41,7 +41,7 @@ final class InputController {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
-        e.post(tap: .cgSessionEventTap)
+        e.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     func mouseDoubleClick(button: String, x: Double, y: Double) {
@@ -52,19 +52,19 @@ final class InputController {
         guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
         e.setIntegerValueField(.mouseEventClickState, value: 2)
-        e.post(tap: .cgSessionEventTap)
+        e.post(tap: .cgAnnotatedSessionEventTap)
         guard let eu = CGEvent(mouseEventSource: src,
                                mouseType: button == "right" ? .rightMouseUp : .leftMouseUp,
                                mouseCursorPosition: pt, mouseButton: btn) else { return }
         eu.setIntegerValueField(.mouseEventClickState, value: 2)
-        eu.post(tap: .cgSessionEventTap)
+        eu.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     func mouseScroll(dx: Int, dy: Int) {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(scrollWheelEvent2Source: src, units: .line,
                               wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0) else { return }
-        e.post(tap: .cgSessionEventTap)
+        e.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
@@ -78,11 +78,11 @@ final class InputController {
                 let newFlags: CGEventFlags = capsCurrentlyOn ? [] : .maskAlphaShift
                 if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: true) {
                     e.flags = newFlags
-                    e.post(tap: .cgSessionEventTap)
+                    e.post(tap: .cgAnnotatedSessionEventTap)
                 }
                 if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: false) {
                     e.flags = newFlags
-                    e.post(tap: .cgSessionEventTap)
+                    e.post(tap: .cgAnnotatedSessionEventTap)
                 }
             }
             return
@@ -109,7 +109,7 @@ final class InputController {
             }
         }
         e.flags = flags
-        e.post(tap: .cgSessionEventTap)
+        e.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     // MARK: - Private

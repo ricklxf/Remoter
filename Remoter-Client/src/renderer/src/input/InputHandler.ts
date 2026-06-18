@@ -1,4 +1,5 @@
 import { Connection } from '../network/Connection'
+import { getKeymap, mapKeyCode, mapModifiers } from '../utils/keymap'
 
 // Translates DOM mouse/keyboard events to remote input commands.
 // All coordinates are normalized [0,1] relative to the remote screen.
@@ -168,7 +169,8 @@ export class InputHandler {
       return
     }
 
-    this.conn.sendKey(ke.code, true, collectModifiers(ke))
+    const km = getKeymap()
+    this.conn.sendKey(mapKeyCode(ke.code, km), true, mapModifiers(collectModifiers(ke), km))
     this.pressedKeys.add(ke.code)
   }
 
@@ -182,12 +184,14 @@ export class InputHandler {
     if (!this.pressedKeys.has(ke.code)) return
     ke.preventDefault()
     this.pressedKeys.delete(ke.code)
-    this.conn.sendKey(ke.code, false, collectModifiers(ke))
+    const km = getKeymap()
+    this.conn.sendKey(mapKeyCode(ke.code, km), false, mapModifiers(collectModifiers(ke), km))
   }
 
   private releaseAllKeys(): void {
+    const km = getKeymap()
     for (const code of this.pressedKeys) {
-      this.conn.sendKey(code, false, [])
+      this.conn.sendKey(mapKeyCode(code, km), false, [])
     }
     this.pressedKeys.clear()
   }

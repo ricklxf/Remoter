@@ -26,6 +26,7 @@ export type ConnectionState =
   | 'connecting'
   | 'authenticating'
   | 'streaming'
+  | 'reconnecting'
   | 'disconnected'
   | 'error'
 

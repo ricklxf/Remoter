@@ -13,10 +13,11 @@ interface Props {
   initialCodec?: VideoCodec | 'jpeg'
   stats: ConnStats
   transfers: FileTransfer[]
+  isReconnecting?: boolean
   onDisconnect: () => void
 }
 
-export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, transfers, onDisconnect }: Props) {
+export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, transfers, isReconnecting = false, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
@@ -68,6 +69,12 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         />
       )}
 
+      {isReconnecting && (
+        <div style={styles.reconnectBanner}>
+          <span style={{ marginRight: 8 }}>⟳</span>正在重连…
+        </div>
+      )}
+
       {/* Web-only: disconnect button */}
       {isWeb && (
         <button style={styles.webDisconnect} onClick={onDisconnect} title="断开连接">
@@ -110,6 +117,22 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
 
 const styles: Record<string, React.CSSProperties> = {
   wrap: { position: 'relative', width: '100%', height: '100%', background: '#000', overflow: 'hidden' },
+  reconnectBanner: {
+    position: 'absolute',
+    top: 12,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 200,
+    padding: '6px 18px',
+    borderRadius: 20,
+    background: 'rgba(0,0,0,0.72)',
+    color: '#fff',
+    fontSize: 13,
+    backdropFilter: 'blur(4px)',
+    display: 'flex',
+    alignItems: 'center',
+    pointerEvents: 'none',
+  },
   toolbarWrap: { pointerEvents: 'auto' },
   floatTrigger: {
     position: 'absolute',

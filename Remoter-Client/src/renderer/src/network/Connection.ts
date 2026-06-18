@@ -49,6 +49,12 @@ export class Connection {
   private _lastRecvTs = 0    // timestamp of last received WebSocket message
   private _inputLogN = 0
 
+  private intentionalClose = false
+  private wasStreaming = false
+  private reconnectCount = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly MAX_RECONNECTS = 5
+
   private streamWidth  = 0
   private streamHeight = 0
 
@@ -70,6 +76,15 @@ export class Connection {
   // MARK: - 连接 / 断开
 
   connect(params: ConnectParams): void {
+    this.intentionalClose = false
+    this.wasStreaming = false
+    this.reconnectCount = 0
+    this._openWS(params)
+  }
+
+  private _openWS(params: ConnectParams): void {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
+
     // 关闭旧连接（清空事件回调，防止 onclose 触发 disconnected 事件）
     if (this.ws) {
       this.ws.onopen    = null
@@ -91,7 +106,9 @@ export class Connection {
     this.sendQueue = Promise.resolve()
     this._lastRecvTs = Date.now()
     this._inputLogN = 0
-    this.emit({ type: 'state', state: 'connecting' })
+    if (this.reconnectCount === 0) {
+      this.emit({ type: 'state', state: 'connecting' })
+    }
 
     let url: string
     if (params.mode === 'direct') {
@@ -131,7 +148,23 @@ export class Connection {
       this.webrtc?.close()
       this.webrtc = null
       this.stopStats()
-      this.emit({ type: 'state', state: 'disconnected' })
+      this.stopClipboardSync()
+
+      const canReconnect = !this.intentionalClose
+        && this.wasStreaming
+        && this.params !== null
+        && this.reconnectCount < Connection.MAX_RECONNECTS
+      if (canReconnect) {
+        this.reconnectCount++
+        const delay = Math.min(500 * Math.pow(2, this.reconnectCount - 1), 5000)
+        console.log(`[WS] reconnecting in ${delay}ms (attempt ${this.reconnectCount}/${Connection.MAX_RECONNECTS})`)
+        this.emit({ type: 'state', state: 'reconnecting' })
+        this.reconnectTimer = setTimeout(() => {
+          if (!this.intentionalClose && this.params) this._openWS(this.params)
+        }, delay)
+      } else {
+        this.emit({ type: 'state', state: 'disconnected' })
+      }
     }
     ws.onerror = (ev) => {
       console.error('[WS] error event:', ev)
@@ -141,6 +174,10 @@ export class Connection {
   }
 
   disconnect(): void {
+    this.intentionalClose = true
+    this.wasStreaming = false
+    this.reconnectCount = 0
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     this.stopStats()
     this.stopClipboardSync()
     this.webrtc?.close()
@@ -484,6 +521,8 @@ export class Connection {
       }
 
       case 'stream_started': {
+        this.wasStreaming = true
+        this.reconnectCount = 0
         this.streamWidth  = msg.width  as number
         this.streamHeight = msg.height as number
         const codec = (msg.codec as VideoCodec | undefined) ?? 'h264'

@@ -205,7 +205,7 @@ export default function App() {
       )}
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab && (
-          activeTab.state === 'streaming' && activeTab.streamInfo && activeConn ? (
+          (activeTab.state === 'streaming' || activeTab.state === 'reconnecting') && activeTab.streamInfo && activeConn ? (
             <DesktopPage
               key={activeTab.id}
               conn={activeConn}
@@ -213,6 +213,7 @@ export default function App() {
               initialCodec={activeTab.codec}
               stats={activeTab.stats}
               transfers={activeTab.transfers}
+              isReconnecting={activeTab.state === 'reconnecting'}
               onDisconnect={() => handleDisconnect(activeTab.id)}
             />
           ) : (

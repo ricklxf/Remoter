@@ -29,8 +29,16 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
       const cw = el.clientWidth, ch = el.clientHeight
       if (!cw || !ch) return
       const ar = streamInfo.width / streamInfo.height
-      if (cw / ch > ar) setCssSize({ w: ch * ar, h: ch })
-      else              setCssSize({ w: cw, h: cw / ar })
+      let w: number, h: number
+      if (cw / ch > ar) { w = ch * ar; h = ch }
+      else              { w = cw; h = cw / ar }
+      // Never upscale past native resolution (1 CSS px × DPR = 1 stream px) —
+      // beyond that the source has no more detail to show, only blur.
+      const dpr  = window.devicePixelRatio || 1
+      const maxW = streamInfo.width  / dpr
+      const maxH = streamInfo.height / dpr
+      if (w > maxW) { w = maxW; h = maxH }
+      setCssSize({ w, h })
     }
     update()
     const ro = new ResizeObserver(update)

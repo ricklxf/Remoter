@@ -48,11 +48,11 @@ function SignalBars({ rttMs }: { rttMs: number }) {
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: '未连接', connecting: '连接中…', authenticating: '验证中…',
-  streaming: '串流中', disconnected: '已断开', error: '连接失败',
+  streaming: '串流中', reconnecting: '重连中…', disconnected: '已断开', error: '连接失败',
 }
 const STATE_DOT: Record<ConnectionState, string> = {
   idle: '#aaa', connecting: '#d97706', authenticating: '#d97706',
-  streaming: '#22c55e', disconnected: '#aaa', error: '#dc2626',
+  streaming: '#22c55e', reconnecting: '#d97706', disconnected: '#aaa', error: '#dc2626',
 }
 
 function formatDuration(startTime: number | null): string {

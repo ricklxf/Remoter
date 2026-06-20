@@ -203,7 +203,7 @@ export default function App() {
           onAdd={addTab}
         />
       )}
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      <div id="remoter-content" style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab && (
           (activeTab.state === 'streaming' || activeTab.state === 'reconnecting') && activeTab.streamInfo && activeConn ? (
             <DesktopPage

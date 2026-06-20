@@ -9,8 +9,13 @@ if (!window.remoterAPI) {
   window.remoterAPI = {
     platform: 'web',
     toggleFullscreen: () => {
+      // Fullscreen the content container, not the whole <html> — fullscreening
+      // documentElement has been observed to break hit-testing for pointer
+      // events on its descendants in some browsers, while keyboard (which
+      // bubbles via document, not positional hit-testing) kept working.
+      const target = document.getElementById('remoter-content') ?? document.documentElement
       if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {})
+        target.requestFullscreen().catch(() => {})
       } else {
         document.exitFullscreen()
       }

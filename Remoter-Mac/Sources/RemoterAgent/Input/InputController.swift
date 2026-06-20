@@ -42,6 +42,9 @@ final class InputController {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
+        // Without an explicit click count, some apps' tracking areas/gesture
+        // recognizers ignore the synthetic down/up as not a "real" click.
+        e.setIntegerValueField(.mouseEventClickState, value: 1)
         e.post(tap: .cgSessionEventTap)
     }
 

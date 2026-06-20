@@ -31,6 +31,8 @@ sealed class ScreenCapturer : IDisposable
 
     private readonly ImageCodecInfo    _jpegCodec;
     private readonly EncoderParameters _jpegParams;
+    // 复用同一个 MemoryStream 编码 JPEG，避免每帧重新分配/扩容内部缓冲区
+    private readonly MemoryStream      _jpegBuf = new();
 
     private const int DXGI_ERROR_WAIT_TIMEOUT = unchecked((int)0x887A0027);
     private const int DXGI_ERROR_ACCESS_LOST  = unchecked((int)0x887A0026);
@@ -152,9 +154,9 @@ sealed class ScreenCapturer : IDisposable
             try
             {
                 using var bmp = new Bitmap(Width, Height, mapped.RowPitch, PixelFormat.Format32bppArgb, mapped.DataPointer);
-                using var ms  = new MemoryStream(Width * Height / 3);
-                bmp.Save(ms, _jpegCodec, _jpegParams);
-                return ms.ToArray();
+                _jpegBuf.SetLength(0);
+                bmp.Save(_jpegBuf, _jpegCodec, _jpegParams);
+                return _jpegBuf.ToArray();
             }
             finally { _context.Unmap(_staging, 0); }
         }
@@ -246,9 +248,9 @@ sealed class ScreenCapturer : IDisposable
             using var g = Graphics.FromImage(_gdiBmp);
             g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
             DrawCursorOnGraphics(g);
-            using var ms = new MemoryStream(Width * Height / 3);
-            _gdiBmp.Save(ms, _jpegCodec, _jpegParams);
-            return ms.ToArray();
+            _jpegBuf.SetLength(0);
+            _gdiBmp.Save(_jpegBuf, _jpegCodec, _jpegParams);
+            return _jpegBuf.ToArray();
         }
         catch (Exception ex)
         {
@@ -271,5 +273,6 @@ sealed class ScreenCapturer : IDisposable
         _device?.Dispose();
         _gdiBmp?.Dispose();
         _jpegParams.Dispose();
+        _jpegBuf.Dispose();
     }
 }

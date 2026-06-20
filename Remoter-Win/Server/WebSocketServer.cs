@@ -132,6 +132,9 @@ sealed class WebSocketServer
         }
     }
 
+    // 单帧/累计 payload 上限，防止客户端声称超大长度耗尽内存（DoS）
+    private const long MaxFrameBytes = 32 * 1024 * 1024; // 32 MB
+
     // Returns (opcode, unmasked payload). Handles fragmented frames.
     private static async Task<(int opcode, byte[] payload)> ReadFrameAsync(NetworkStream stream)
     {
@@ -158,6 +161,9 @@ sealed class WebSocketServer
                 len = 0;
                 for (int i = 0; i < 8; i++) len = (len << 8) | tmp[i];
             }
+
+            if (len < 0 || len > MaxFrameBytes || fullPayload.Length + len > MaxFrameBytes)
+                throw new InvalidOperationException($"WS frame too large: {len} bytes");
 
             byte[]? mask = masked ? await ReadExactAsync(stream, 4) : null;
             var payload  = await ReadExactAsync(stream, (int)len);

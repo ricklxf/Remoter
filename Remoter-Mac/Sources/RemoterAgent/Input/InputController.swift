@@ -26,7 +26,7 @@ final class InputController {
             print("[Input] mouseMove: CGEvent creation failed")
             return
         }
-        e.post(tap: .cgAnnotatedSessionEventTap)
+        e.post(tap: .cgSessionEventTap)
     }
 
     func mouseButton(button: String, down: Bool, x: Double, y: Double) {
@@ -42,7 +42,7 @@ final class InputController {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
-        e.post(tap: .cgAnnotatedSessionEventTap)
+        e.post(tap: .cgSessionEventTap)
     }
 
     func mouseDoubleClick(button: String, x: Double, y: Double) {
@@ -53,19 +53,19 @@ final class InputController {
         guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
         e.setIntegerValueField(.mouseEventClickState, value: 2)
-        e.post(tap: .cgAnnotatedSessionEventTap)
+        e.post(tap: .cgSessionEventTap)
         guard let eu = CGEvent(mouseEventSource: src,
                                mouseType: button == "right" ? .rightMouseUp : .leftMouseUp,
                                mouseCursorPosition: pt, mouseButton: btn) else { return }
         eu.setIntegerValueField(.mouseEventClickState, value: 2)
-        eu.post(tap: .cgAnnotatedSessionEventTap)
+        eu.post(tap: .cgSessionEventTap)
     }
 
     func mouseScroll(dx: Int, dy: Int) {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(scrollWheelEvent2Source: src, units: .line,
                               wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0) else { return }
-        e.post(tap: .cgAnnotatedSessionEventTap)
+        e.post(tap: .cgSessionEventTap)
     }
 
     func keyEvent(code: String, down: Bool, modifiers: [String]) {

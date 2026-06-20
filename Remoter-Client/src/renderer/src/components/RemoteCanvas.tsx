@@ -43,7 +43,15 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCurs
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)
-    return () => ro.disconnect()
+    // Fullscreen transition can settle layout a frame after the resize fires,
+    // leaving cssSize computed from a stale (pre-transition) rect — force a
+    // recompute once the transition completes.
+    const onFullscreenChange = () => requestAnimationFrame(update)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => {
+      ro.disconnect()
+      document.removeEventListener('fullscreenchange', onFullscreenChange)
+    }
   }, [streamInfo.width, streamInfo.height])
 
   useEffect(() => {

@@ -156,7 +156,8 @@ export class InputHandler {
     if (!this.enabled) return
     if (!this.hovering && !this.locked && !this.captured) return
     const ke = e as KeyboardEvent
-    if (ke.code === 'F11') return
+    // Never intercept these — let the browser handle its own fullscreen toggle/exit.
+    if (ke.code === 'F11' || ke.code === 'Escape') return
     ke.preventDefault()
 
     if (ke.code === 'CapsLock') {

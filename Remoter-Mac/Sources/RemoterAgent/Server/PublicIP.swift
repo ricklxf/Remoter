@@ -48,10 +48,19 @@ actor PublicIPResolver {
         ip.contains(":") ? "[\(ip)]" : ip
     }
 
+    // Called after every refresh (first one included) so callers can react to
+    // an IP that's newly known or that changed (e.g. rewrite turnserver.conf).
+    private var onRefreshed: ((String?) -> Void)?
+
+    func setOnRefreshed(_ cb: @escaping (String?) -> Void) {
+        onRefreshed = cb
+    }
+
     func startPeriodicRefresh() {
         Task {
             while true {
                 await refresh()
+                onRefreshed?(cached)
                 try? await Task.sleep(nanoseconds: 10 * 60 * 1_000_000_000) // 10 min
             }
         }

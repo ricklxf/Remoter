@@ -34,9 +34,10 @@ final class Session {
     // while keeping the pipe full. Excess frames are dropped (backpressure).
     private let wsSendSem = DispatchSemaphore(value: 4)
 
-    // Sent-frame diagnostics
+    // Sent-frame diagnostics (shared across WebRTC/WebSocket video paths)
     private var sentFrames = 0
     private var sentTick = Date()
+    private var usingWebRTCVideo = false
 
     // For disconnection logging
     private var connectTime: Date?
@@ -427,23 +428,35 @@ final class Session {
             enc.onEncodedFrame = { [weak self] data, isKeyframe in
                 guard let self else { return }
                 guard self.connection.isActive else { return }
-                guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
 
                 let fid = self.frameId
                 self.frameId &+= 1
                 self.bytesSent += Int64(data.count)
 
-                let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
-                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
-                self.connection.sendBinaryVideo(pkt) {
-                    self.wsSendSem.signal()
-                    self.sentFrames += 1
-                    let dt = Date().timeIntervalSince(self.sentTick)
-                    if dt >= 5 {
+                // Prefer WebRTC's unreliable-ish DataChannel (frame-level drop on
+                // congestion, no TCP head-of-line blocking) whenever it's actually
+                // open; re-checked per frame so a mid-session ICE failure falls
+                // back to the always-available WebSocket path transparently.
+                if let webrtc = self.webrtc, webrtc.isVideoChannelOpen {
+                    if !self.usingWebRTCVideo {
+                        self.usingWebRTCVideo = true
                         ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "sent_5s", detail: "sent=\(self.sentFrames) fps=\(String(format: "%.0f", Double(self.sentFrames)/dt))")
-                        self.sentFrames = 0
-                        self.sentTick = Date()
+                            step: "video_transport", detail: "webrtc")
+                    }
+                    webrtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid)
+                    self.recordSentFrame()
+                } else {
+                    if self.usingWebRTCVideo {
+                        self.usingWebRTCVideo = false
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "video_transport", detail: "websocket")
+                    }
+                    guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
+                    let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
+                    let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
+                    self.connection.sendBinaryVideo(pkt) {
+                        self.wsSendSem.signal()
+                        self.recordSentFrame()
                     }
                 }
 
@@ -500,6 +513,18 @@ final class Session {
             self.connection.sendBinaryVideo(pkt) {
                 self.wsSendSem.signal()
             }
+        }
+    }
+
+    /// 统一的发送计数/FPS 日志，WebRTC 和 WebSocket 两条视频路径共用。
+    private func recordSentFrame() {
+        sentFrames += 1
+        let dt = Date().timeIntervalSince(sentTick)
+        if dt >= 5 {
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws")")
+            sentFrames = 0
+            sentTick = Date()
         }
     }
 

@@ -2,6 +2,8 @@ import Foundation
 import CoreGraphics
 import AppKit
 import ApplicationServices
+import IOKit
+import IOKit.hidsystem
 
 final class InputController {
     var screenWidth: Int
@@ -72,22 +74,20 @@ final class InputController {
     }
 
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
-        // CapsLock requires special handling on macOS: must set maskAlphaShift correctly.
+        // CapsLock is a lock key, not a momentary one: posting a synthetic CGEvent with
+        // .maskAlphaShift only flags that single event, it does not flip the system's
+        // persisted lock state. Toggling it for real requires IOHIDSystem.
         // Client already deduplicates and sends one down+up pair per toggle.
         if code == "CapsLock" {
             if down {
-                let src = CGEventSource(stateID: .hidSystemState)
-                // Read the current CapsLock state from the system to determine the new state.
-                let capsCurrentlyOn = NSEvent.modifierFlags.contains(.capsLock)
-                let newFlags: CGEventFlags = capsCurrentlyOn ? [] : .maskAlphaShift
-                if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: true) {
-                    e.flags = newFlags
-                    e.post(tap: .cgAnnotatedSessionEventTap)
-                }
-                if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: false) {
-                    e.flags = newFlags
-                    e.post(tap: .cgAnnotatedSessionEventTap)
-                }
+                var ioConnect: io_connect_t = 0
+                let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass))
+                IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &ioConnect)
+                IOObjectRelease(service)
+                var capsCurrentlyOn: Bool = false
+                IOHIDGetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), &capsCurrentlyOn)
+                IOHIDSetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), !capsCurrentlyOn)
+                IOServiceClose(ioConnect)
             }
             return
         }

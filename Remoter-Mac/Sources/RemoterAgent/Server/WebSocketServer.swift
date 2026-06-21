@@ -127,6 +127,7 @@ final class WebSocketServer {
         let httpHandler = HTTPFileHandler(webDir: webDir)
 
         let upgrader = NIOWebSocketServerUpgrader(
+            maxFrameSize: 32 * 1024 * 1024,
             shouldUpgrade: { ch, _ in ch.eventLoop.makeSucceededFuture(HTTPHeaders()) },
             upgradePipelineHandler: { [weak self] ch, _ in
                 guard let self else { return ch.eventLoop.makeSucceededVoidFuture() }

@@ -72,6 +72,8 @@ final class RemoterAgent {
         wsServer.webDir = webDir
         try wsServer.start(port: config.port)
 
+        Task { await PublicIPResolver.shared.startPeriodicRefresh() }
+
         let ips    = getLocalIPs()
         let vpnIPs = getVPNIPs()
         print("╔══════════════════════════════════╗")

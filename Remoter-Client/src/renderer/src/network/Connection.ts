@@ -43,6 +43,10 @@ export class Connection {
   private statsTimer: ReturnType<typeof setInterval> | null = null
   private readonly e2e = new E2ECrypto()
   private serverOs = ''
+  // TURN relay info from the agent's hello message (empty until/unless the
+  // agent resolved its public IP) — passed into WebRTCClient.createOffer so
+  // P2P can fall back to relay when direct/STUN connectivity fails.
+  private turnServers: RTCIceServer[] = []
 
   private sendQueue: Promise<void> = Promise.resolve()
   private queueGen = 0        // incremented on disconnect to abort stale queue items
@@ -358,7 +362,7 @@ export class Connection {
     rtc.onDisconnected = () => { console.log('[WebRTC] P2P 断开') }
     rtc.onICECandidate = (json) => { this.sendJson({ type: 'webrtc_ice', candidate: json }) }
 
-    const offerSdp = await rtc.createOffer()
+    const offerSdp = await rtc.createOffer({ iceServers: this.turnServers })
     this.sendJson({ type: 'webrtc_offer', sdp: offerSdp })
   }
 
@@ -457,6 +461,8 @@ export class Connection {
       case 'hello': {
         const macPubkey = msg.pubkey as string | undefined
         this.serverOs = (msg.os as string | undefined) ?? ''
+        const turn = msg.turn as { urls: string[]; username: string; credential: string } | undefined
+        this.turnServers = turn ? [{ urls: turn.urls, username: turn.username, credential: turn.credential }] : []
         if (this.params?.mode === 'direct' && this.params.directUrl) {
           const computerName = (msg.computerName as string | undefined) ?? ''
           const modelId = (msg.modelId as string | undefined) ?? ''

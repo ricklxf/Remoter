@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 import ApplicationServices
 import SystemConfiguration
 import PamAuthHelper
+import WebRTC
 
 // Manages one connected client: auth → capture → encode → stream
 // Video: JPEG over WebSocket (bypasses VideoToolbox which hangs on macOS 26)
@@ -64,11 +65,29 @@ final class Session {
         let remote = "\(connection.endpoint)"
         ConnectionLogger.shared.logClientConnected(sessionId: id.uuidString, remoteAddr: remote)
 
-        // Include our E2E public key so client can initiate handshake
-        sendJsonRaw(["type": "hello", "version": "1.0", "os": "macOS",
-                     "pubkey": crypto.publicKeyBase64,
-                     "computerName": Self.computerName(),
-                     "modelId": Self.modelId()])
+        Task {
+            var hello: [String: Any] = [
+                "type": "hello", "version": "1.0", "os": "macOS",
+                "pubkey": crypto.publicKeyBase64,
+                "computerName": Self.computerName(),
+                "modelId": Self.modelId()
+            ]
+            // TURN info lets the client's WebRTC offer include a relay candidate —
+            // without it, P2P only works when STUN/direct already succeeds (LAN,
+            // or no symmetric NAT in the way). Omitted gracefully if the public IP
+            // hasn't resolved yet; video just stays on the WebSocket fallback.
+            if let ip = await PublicIPResolver.shared.current() {
+                let cred = TurnCredentials.generate()
+                let host = PublicIPResolver.shared.bracketedForURI(ip)
+                hello["turn"] = [
+                    "urls": ["turn:\(host):3478"],
+                    "username": cred.username,
+                    "credential": cred.password
+                ]
+            }
+            // Include our E2E public key so client can initiate handshake
+            sendJsonRaw(hello)
+        }
     }
 
     private static func computerName() -> String {
@@ -390,7 +409,20 @@ final class Session {
         }
 
         self.webrtc = agent
-        agent.handleOffer(offerSDP)
+
+        Task {
+            var turnServers: [RTCIceServer] = []
+            if let ip = await PublicIPResolver.shared.current() {
+                let cred = TurnCredentials.generate()
+                let host = PublicIPResolver.shared.bracketedForURI(ip)
+                turnServers = [RTCIceServer(
+                    urlStrings: ["turn:\(host):3478"],
+                    username: cred.username,
+                    credential: cred.password
+                )]
+            }
+            agent.handleOffer(offerSDP, turnServers: turnServers)
+        }
     }
 
     // MARK: - 采集与 JPEG 编码

@@ -13,7 +13,11 @@
     <!-- DXGI Desktop Duplication for GPU-side screen capture -->
     <PackageReference Include="Vortice.Direct3D11" Version="3.5.0" />
     <PackageReference Include="Vortice.DXGI"       Version="3.5.0" />
-    <!-- JPEG encoding via GDI+ (zero-copy from staging texture) -->
+    <!-- Hardware H.264 encoding (NVENC/QuickSync/AMD VCE via Media Foundation,
+         falls back to MF's bundled software encoder if no hardware MFT found) -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.5.0" />
+    <!-- JPEG encoding via GDI+ (zero-copy from staging texture); kept as the
+         fallback path when H.264 init fails -->
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 

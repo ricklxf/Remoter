@@ -16,6 +16,8 @@ sealed class Session
     private ScreenCapturer?   _capturer;
     private InputController?  _input;
     private FileReceiver?     _fileRecv;
+    private H264Encoder?      _encoder;       // null ⇒ JPEG fallback (init failed or unsupported)
+    private int               _targetBitrateBps = 4_000_000;
 
     private bool   _authed    = false;
     private bool   _inputEnabled = true;
@@ -364,8 +366,23 @@ sealed class Session
             _connectTime = DateTime.UtcNow;
             _cts        = new CancellationTokenSource();
 
-            Send(new { type = "stream_started", width = c.Width, height = c.Height, codec = "jpeg", fps = _currentFps });
-            ConnectionLogger.Shared.LogConnected(_id, "jpeg", _crypto.IsReady);
+            string codec = "jpeg";
+            try
+            {
+                var enc = new H264Encoder();
+                enc.Initialize(c.Width, c.Height, _currentFps, _targetBitrateBps);
+                _encoder = enc;
+                codec = "h264";
+                AppLog.Write($"[Session] H264Encoder ready (hardware={enc.IsHardware}), using h264 codec");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[Session] H264Encoder init failed, falling back to jpeg: {ex.Message}");
+                _encoder = null;
+            }
+
+            Send(new { type = "stream_started", width = c.Width, height = c.Height, codec, fps = _currentFps });
+            ConnectionLogger.Shared.LogConnected(_id, codec, _crypto.IsReady);
             StartClipboard();
 
             await CaptureLoopAsync(_cts.Token);
@@ -381,6 +398,8 @@ sealed class Session
             // Always dispose here — Close() only cancels the token, never disposes directly
             c.Dispose();
             _capturer = null;
+            _encoder?.Dispose();
+            _encoder = null;
         }
     }
 
@@ -422,10 +441,20 @@ sealed class Session
                 break;
             }
             
-            byte[]? jpeg;
+            byte[]? payload;
+            bool keyframe = true; // every JPEG is a full frame; h264 overrides below
+            var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
             try
             {
-                jpeg = _capturer.CaptureJpeg(timeoutMs: 1);
+                if (_encoder != null)
+                {
+                    var bgra = _capturer.CaptureBgra(timeoutMs: 1);
+                    payload = bgra != null ? _encoder.Encode(bgra, pts, out keyframe) : null;
+                }
+                else
+                {
+                    payload = _capturer.CaptureJpeg(timeoutMs: 1);
+                }
                 consecutiveErrors = 0;
             }
             catch (OperationCanceledException)
@@ -437,7 +466,7 @@ sealed class Session
             {
                 consecutiveErrors++;
                 AppLog.Write($"[Session] Capture error (x{consecutiveErrors}): {ex.Message}");
-                if (consecutiveErrors > 30) 
+                if (consecutiveErrors > 30)
                 {
                     AppLog.Write("[Session] Too many consecutive errors, exiting capture loop");
                     break;
@@ -446,12 +475,12 @@ sealed class Session
                 continue;
             }
 
-            if (jpeg == null) continue;
+            if (payload == null) continue;
 
             var fid = _frameId++;
-            var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
-            var pkt = FrameBuilder.VideoFramePacket(jpeg, fid, pts, keyframe: true);
+            var pkt = FrameBuilder.VideoFramePacket(payload, fid, pts, keyframe);
             _bytesSent += pkt.Length;
+            if (fid == 0) AppLog.Write($"[Session] first frame sent: {payload.Length}B keyframe={keyframe} codec={(_encoder != null ? "h264" : "jpeg")}");
             
             // Send overlay info to client (embedded in frame metadata)
             SendOverlayInfo();
@@ -495,6 +524,17 @@ sealed class Session
             return $"{bytesPerSecond / (1024 * 1024):F1} MB/s";
     }
     
+    // Maps the existing JPEG-quality knob (30..80) onto an H.264 bitrate range
+    // (2..8 Mbps) so the same ABR loop drives whichever codec is active —
+    // _capturer.SetQuality is a no-op while h264 is active (and vice versa).
+    private void ApplyBitrateFromQuality()
+    {
+        if (_encoder == null) return;
+        double t = (double)(_currentQuality - MIN_QUALITY) / (MAX_QUALITY - MIN_QUALITY);
+        _targetBitrateBps = (int)(2_000_000 + t * (8_000_000 - 2_000_000));
+        _encoder.SetBitrate(_targetBitrateBps);
+    }
+
     private void AdjustQualityAndFps()
     {
         // 检查CPU限制
@@ -531,6 +571,7 @@ sealed class Session
                 _currentQuality += 2; // Increase by 2 each time
                 if (_currentQuality > MAX_QUALITY) _currentQuality = MAX_QUALITY;
                 _capturer?.SetQuality(_currentQuality);
+                ApplyBitrateFromQuality();
                 AppLog.Write($"[Session] Quality increased to {_currentQuality}");
             }
             else if (_currentFps < MAX_FPS)
@@ -554,6 +595,7 @@ sealed class Session
                 _currentQuality -= 2; // Decrease by 2 each time
                 if (_currentQuality < 50) _currentQuality = 50;
                 _capturer?.SetQuality(_currentQuality);
+                ApplyBitrateFromQuality();
                 AppLog.Write($"[Session] Quality decreased to {_currentQuality}");
             }
             else if (_currentFps > MIN_FPS)

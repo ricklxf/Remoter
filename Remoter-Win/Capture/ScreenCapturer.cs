@@ -33,6 +33,8 @@ sealed class ScreenCapturer : IDisposable
     private readonly EncoderParameters _jpegParams;
     // 复用同一个 MemoryStream 编码 JPEG，避免每帧重新分配/扩容内部缓冲区
     private readonly MemoryStream      _jpegBuf = new();
+    // 复用同一块紧密排列的 BGRA 缓冲区（H.264 路径用），避免每帧重新分配
+    private byte[]? _bgraBuf;
 
     private const int DXGI_ERROR_WAIT_TIMEOUT = unchecked((int)0x887A0027);
     private const int DXGI_ERROR_ACCESS_LOST  = unchecked((int)0x887A0026);
@@ -167,6 +169,105 @@ sealed class ScreenCapturer : IDisposable
         }
     }
 
+    // Same acquire/copy path as CaptureDxgi, but returns tightly-packed BGRA32
+    // bytes instead of a JPEG (for the H.264 encoder, which needs raw pixels).
+    private byte[]? CaptureBgraDxgi(int timeoutMs)
+    {
+        if (_dup == null || _staging == null || _context == null)
+        {
+            TryReinitDuplication();
+            return null;
+        }
+
+        var hr = _dup.AcquireNextFrame(timeoutMs, out _, out var resource);
+        if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT) return null;
+
+        if (hr.Code == DXGI_ERROR_ACCESS_LOST || hr.Code == ERROR_INVALID_HANDLE)
+        {
+            AppLog.Write($"[Capturer] DXGI access lost or invalid handle (0x{hr.Code:X8}), attempting reinitialization");
+            TryReinitDuplication();
+            return null;
+        }
+
+        try { hr.CheckError(); }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] DXGI AcquireNextFrame failed: 0x{hr.Code:X8}, {ex.Message}");
+            return null;
+        }
+
+        try
+        {
+            using var frameTex = resource.QueryInterface<ID3D11Texture2D>();
+            _context.CopyResource(_staging, frameTex);
+        }
+        finally { resource.Dispose(); _dup.ReleaseFrame(); }
+
+        try
+        {
+            var mapped = _context.Map(_staging, 0, MapMode.Read, D3D11MapFlags.None);
+            try
+            {
+                _bgraBuf ??= new byte[Width * Height * 4];
+                CompactRows(mapped.DataPointer, mapped.RowPitch, Width, Height, _bgraBuf);
+                return _bgraBuf;
+            }
+            finally { _context.Unmap(_staging, 0); }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] DXGI BGRA frame processing failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    private byte[]? CaptureBgraGdi(int targetFps = 30)
+    {
+        long now      = Environment.TickCount64;
+        long interval = 1000 / Math.Max(targetFps, 1);
+        if (now - _lastGdiTick < interval) return null;
+        _lastGdiTick = now;
+
+        if (_gdiBmp == null) return null;
+
+        try
+        {
+            using var g = Graphics.FromImage(_gdiBmp);
+            g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
+            DrawCursorOnGraphics(g);
+
+            var rect = new Rectangle(0, 0, Width, Height);
+            var data = _gdiBmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                _bgraBuf ??= new byte[Width * Height * 4];
+                CompactRows(data.Scan0, data.Stride, Width, Height, _bgraBuf);
+                return _bgraBuf;
+            }
+            finally { _gdiBmp.UnlockBits(data); }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] GDI BGRA frame error: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Copies a row-padded BGRA buffer (rowPitch may exceed width*4 due to GPU/
+    // driver alignment) into a tightly packed destination the encoder expects.
+    private static unsafe void CompactRows(nint src, int rowPitch, int width, int height, byte[] dst)
+    {
+        int rowBytes = width * 4;
+        if (rowPitch == rowBytes)
+        {
+            Marshal.Copy(src, dst, 0, rowBytes * height);
+            return;
+        }
+        var s = (byte*)src;
+        for (int y = 0; y < height; y++)
+            Marshal.Copy((nint)(s + (long)y * rowPitch), dst, y * rowBytes, rowBytes);
+    }
+
     private void TryReinitDuplication()
     {
         try
@@ -264,6 +365,12 @@ sealed class ScreenCapturer : IDisposable
 
     public byte[]? CaptureJpeg(int timeoutMs = 33) =>
         _useGdi ? CaptureGdi() : CaptureDxgi(timeoutMs);
+
+    // Raw BGRA32, tightly packed (width*height*4 bytes), for the H.264 path.
+    // Returned buffer is reused across calls — caller must consume before the
+    // next call (Session's capture loop already processes synchronously).
+    public byte[]? CaptureBgra(int timeoutMs = 33) =>
+        _useGdi ? CaptureBgraGdi() : CaptureBgraDxgi(timeoutMs);
 
     public void Dispose()
     {

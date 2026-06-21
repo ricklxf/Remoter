@@ -1,4 +1,5 @@
 using System.Windows.Forms;
+using Vortice.MediaFoundation;
 
 namespace RemoterWin;
 
@@ -7,6 +8,17 @@ public class Program
     [STAThread]
     public static void Main()
     {
+        try
+        {
+            MediaFactory.MFStartup(MediaFactory.MF_VERSION);
+        }
+        catch (Exception ex)
+        {
+            // H264Encoder.Initialize will fail loudly per-session if MF truly
+            // isn't usable; don't block the whole app from starting over this.
+            AppLog.Write($"[Global] MFStartup failed: {ex.Message}");
+        }
+
         // Register global exception handlers
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (sender, args) =>

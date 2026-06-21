@@ -79,8 +79,11 @@ final class Session {
             if let ip = await PublicIPResolver.shared.current() {
                 let cred = TurnCredentials.generate()
                 let host = PublicIPResolver.shared.bracketedForURI(ip)
+                // TURN 信令复用 WS 端口号（UDP，跟 TCP:port 的 WebSocket 不冲突，
+                // 路由器只用转发一个端口号）。turnserver.conf 的 listening-port
+                // 改了的话这里要跟着改——目前是手动保持一致，还没接到 config.port。
                 hello["turn"] = [
-                    "urls": ["turn:\(host):3478"],
+                    "urls": ["turn:\(host):7788?transport=udp"],
                     "username": cred.username,
                     "credential": cred.password
                 ]
@@ -416,7 +419,7 @@ final class Session {
                 let cred = TurnCredentials.generate()
                 let host = PublicIPResolver.shared.bracketedForURI(ip)
                 turnServers = [RTCIceServer(
-                    urlStrings: ["turn:\(host):3478"],
+                    urlStrings: ["turn:\(host):7788?transport=udp"],
                     username: cred.username,
                     credential: cred.password
                 )]

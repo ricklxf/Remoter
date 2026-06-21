@@ -6,6 +6,9 @@ struct AgentConfig: Codable {
     var port: UInt16 = 7788
     var pin: String  = ""
     var relayUrl: String = ""
+    // TURN（coturn）共享密钥，首次启动随机生成（见 TurnCredentials.ensureSecret），
+    // 不写死在源码里——这个文件不进 git，跟 pin 一样只留在本机。
+    var turnSecret: String = ""
 
     private static let fileURL: URL = {
         let dir = FileManager.default

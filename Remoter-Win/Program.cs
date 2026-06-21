@@ -10,7 +10,7 @@ public class Program
     {
         try
         {
-            MediaFactory.MFStartup(MediaFactory.MF_VERSION);
+            MediaFactory.MFStartup();
         }
         catch (Exception ex)
         {

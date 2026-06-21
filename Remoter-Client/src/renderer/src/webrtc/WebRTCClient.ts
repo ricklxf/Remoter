@@ -16,7 +16,6 @@ export interface WebRTCConfig {
 export class WebRTCClient {
   private pc: RTCPeerConnection | null = null
   private videoChannel: RTCDataChannel | null = null
-  private controlChannel: RTCDataChannel | null = null
 
   // 收到视频帧时的回调（与 WebSocket 路径共用同一 Decoder）
   onVideoFrame:   ((data: ArrayBuffer, keyframe: boolean, bytes: number) => void) | null = null
@@ -50,8 +49,9 @@ export class WebRTCClient {
     this.videoChannel.onopen    = () => console.log('[WebRTC] Video channel open')
     this.videoChannel.onclose   = () => console.log('[WebRTC] Video channel closed')
 
-    // 控制 DataChannel：有序、可靠（备用，当前控制消息仍走 WebSocket）
-    this.controlChannel = pc.createDataChannel('control', { ordered: true })
+    // 控制 DataChannel：有序、可靠（备用，当前控制消息仍走 WebSocket）。
+    // 仍需创建以保持 SDP 协商包含 m=application，故保留调用但不持有引用。
+    pc.createDataChannel('control', { ordered: true })
 
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return
@@ -94,7 +94,6 @@ export class WebRTCClient {
     this.pc?.close()
     this.pc = null
     this.videoChannel = null
-    this.controlChannel = null
     this.frameBuffer.clear()
   }
 

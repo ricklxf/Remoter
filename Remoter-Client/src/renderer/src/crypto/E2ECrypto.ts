@@ -93,7 +93,9 @@ export class E2ECrypto {
     const ct    = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv: nonce },
       this.symmetricKey,
-      plaintext
+      // TS 5.7+ types Uint8Array as Uint8Array<ArrayBufferLike>; WebCrypto wants
+      // an ArrayBuffer-backed view. Safe here — never a SharedArrayBuffer.
+      plaintext as BufferSource
     )
     const out = new Uint8Array(NONCE_LEN + ct.byteLength)
     out.set(nonce, 0)

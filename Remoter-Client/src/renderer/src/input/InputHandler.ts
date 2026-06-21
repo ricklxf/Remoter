@@ -13,8 +13,6 @@ export class InputHandler {
 
   // Pointer lock state
   private locked = false
-  private accX = 0
-  private accY = 0
   private curNormX = 0.5
   private curNormY = 0.5
 

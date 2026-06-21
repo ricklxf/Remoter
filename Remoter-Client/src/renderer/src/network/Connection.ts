@@ -2,7 +2,7 @@ import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry } fr
 import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
-import { VideoDecoder_, VideoCodec } from '../video/Decoder'
+import { VideoCodec } from '../video/Decoder'
 
 export interface ConnStats {
   fps: number

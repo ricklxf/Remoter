@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { StreamInfo, FileTransfer } from '../types'
-import { ConnStats } from '../network/Connection'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
@@ -11,13 +10,12 @@ interface Props {
   conn: Connection
   streamInfo: StreamInfo
   initialCodec?: VideoCodec | 'jpeg'
-  stats: ConnStats
   transfers: FileTransfer[]
   isReconnecting?: boolean
   onDisconnect: () => void
 }
 
-export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, transfers, isReconnecting = false, onDisconnect }: Props) {
+export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
@@ -58,7 +56,6 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', stats, tr
         conn={conn}
         streamInfo={streamInfo}
         initialCodec={initialCodec}
-        showCursor={true}
       />
 
       {showTransfers && (

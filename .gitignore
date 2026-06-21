@@ -21,6 +21,9 @@ Remoter-Client/dist-web/
 Remoter-Server/public/
 Remoter-Server/dist/
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Env
 .env
 .env.local

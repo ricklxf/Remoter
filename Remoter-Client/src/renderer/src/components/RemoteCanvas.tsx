@@ -9,10 +9,9 @@ interface Props {
   conn: Connection
   streamInfo: StreamInfo
   initialCodec?: VideoCodec | 'jpeg'
-  showCursor: boolean
 }
 
-export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', showCursor }: Props) {
+export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264' }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())

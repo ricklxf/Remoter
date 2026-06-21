@@ -24,7 +24,7 @@ if (!window.remoterAPI) {
     unmaximize: () => {},
     saveFileDialog: async (name: string) => name,
     saveFile: async (_path: string, data: Uint8Array) => {
-      const blob = new Blob([data])
+      const blob = new Blob([data as BlobPart])
       const url  = URL.createObjectURL(blob)
       const a    = Object.assign(document.createElement('a'), { href: url, download: _path })
       a.click()

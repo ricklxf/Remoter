@@ -268,7 +268,7 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
     for (const name of files) {
       try {
         const data = await window.remoterAPI!.readFile(localPath + '/' + name)
-        const file = new File([data], name)
+        const file = new File([data as BlobPart], name)
         addLog(`↑ 开始发送: ${name} (${fmtBytes(data.byteLength)})`)
         await conn.sendFile(file)
         addLog(`↑ 发送完成: ${name}`)

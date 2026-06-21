@@ -211,7 +211,6 @@ export default function App() {
               conn={activeConn}
               streamInfo={activeTab.streamInfo}
               initialCodec={activeTab.codec}
-              stats={activeTab.stats}
               transfers={activeTab.transfers}
               isReconnecting={activeTab.state === 'reconnecting'}
               onDisconnect={() => handleDisconnect(activeTab.id)}

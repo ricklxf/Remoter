@@ -52,6 +52,7 @@ export function Toolbar({
       />
 
       <ControlMenu conn={conn} />
+      <ShortcutMenu conn={conn} />
       <KeymapMenu />
 
       <div style={s.sep} />
@@ -108,15 +109,6 @@ function ControlMenu({ conn }: { conn: Connection }) {
 
       {open && (
         <div style={{ ...s.dropdown, minWidth: 200 }}>
-          {/* Ctrl+Alt+Delete */}
-          <button style={s.ctrlItem} onClick={() => { conn.sendCtrlAltDel(); setOpen(false) }}>
-            <span style={s.ctrlItemIcon}>⌨</span>
-            <span style={{ flex: 1 }}>Ctrl + Alt + Delete</span>
-            <span style={s.shortcut}>发送</span>
-          </button>
-
-          <div style={s.menuSep} />
-
           {/* Clipboard sync toggle */}
           <div style={s.ctrlItem}>
             <span style={s.ctrlItemIcon}>📋</span>
@@ -150,6 +142,52 @@ function ControlMenu({ conn }: { conn: Connection }) {
             <span style={s.ctrlItemIcon}>🔄</span>
             <span>重启计算机</span>
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Shortcut keys menu ───────────────────────────────────────────────
+// Keys the local browser reserves for itself (fullscreen, DevTools) or that the
+// local OS intercepts before they reach the page (Ctrl+Alt+Delete) never make it
+// through the normal keyboard capture path — send them explicitly instead.
+
+const SHORTCUTS: Array<{ label: string; send: (conn: Connection) => void }> = [
+  { label: 'Ctrl + Alt + Delete', send: conn => conn.sendCtrlAltDel() },
+  { label: 'F11', send: conn => { conn.sendKey('F11', true, []); conn.sendKey('F11', false, []) } },
+  { label: 'F12', send: conn => { conn.sendKey('F12', true, []); conn.sendKey('F12', false, []) } },
+]
+
+function ShortcutMenu({ conn }: { conn: Connection }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, gap: 5 }} onClick={() => setOpen(v => !v)}>
+        <span>快捷键</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{ ...s.dropdown, minWidth: 200 }}>
+          {SHORTCUTS.map(({ label, send }) => (
+            <button key={label} style={s.ctrlItem} onClick={() => { send(conn); setOpen(false) }}>
+              <span style={s.ctrlItemIcon}>⌨</span>
+              <span style={{ flex: 1 }}>{label}</span>
+              <span style={s.shortcut}>发送</span>
+            </button>
+          ))}
         </div>
       )}
     </div>

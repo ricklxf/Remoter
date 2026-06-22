@@ -52,14 +52,18 @@ if errorlevel 1 (
 echo       OK: Build successful
 echo.
 
-REM Copy web directory to output
+REM Copy web directory to output — pulls from Remoter-Server/public, the
+REM single source of truth produced by `npm run build:web` in Remoter-Client.
+REM (Used to vendor a stale hand-copied snapshot in Remoter-Win\web — that
+REM drifted out of sync with every client-side fix; removed.)
 echo [5/6] Copying web directory...
 set "outputDir=%~dp0bin\Release\net8.0-windows"
-set "webSource=%~dp0web"
+set "webSource=%~dp0..\Remoter-Server\public"
 set "webDest=%outputDir%\web"
 
 if not exist "%webSource%" (
-    echo       WARN: web directory not found at %webSource%
+    echo       WARN: web build not found at %webSource%
+    echo       Run "npm run build:web" in Remoter-Client first
     echo       Skipping web copy
     goto :build_complete
 )

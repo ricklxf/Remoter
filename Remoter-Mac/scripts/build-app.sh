@@ -14,18 +14,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # Remoter-Mac/
-ROOT_DIR="$(cd "$PKG_DIR/.." && pwd)"
 OUT_DIR="$PKG_DIR/build"
 APP_DIR="$OUT_DIR/RemoterAgent.app"
 MACOS_DIR="$APP_DIR/Contents/MacOS"
 FW_DIR="$APP_DIR/Contents/Frameworks"
-
-# ── 同步版本号 ──────────────────────────────────────────────────────────
-# AppVersion.swift 是构建产物（不进 git，见 .gitignore）：每台机器各自构建
-# 都会改写它，提交进版本库只会导致两边版本号在 git pull 时打架冲突。
-VERSION=$(node -p "require('$ROOT_DIR/Remoter-Client/package.json').version")
-echo "let kAppVersion = \"$VERSION\"" > "$PKG_DIR/Sources/RemoterAgent/AppVersion.swift"
-echo "  ✓ AppVersion.swift → $VERSION"
+# AppVersion.swift is synced at commit time (pre-commit hook, alongside
+# package.json) — not rewritten here, so a build between commits doesn't
+# touch a tracked file and fight with `git pull`.
 
 # ── 解析参数 ──────────────────────────────────────────────────────────────
 CONFIG="debug"

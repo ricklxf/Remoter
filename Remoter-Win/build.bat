@@ -6,17 +6,9 @@ REM Usage: Compile Remoter-Win project with UI
 echo ===== Remoter-Win Build Script =====
 echo.
 
-REM AppVersion.cs is a build artifact (not in git, see .gitignore) — every
-REM machine's own build rewrites it; committing it just makes pulls conflict
-REM whenever two machines have built independently.
-echo [0/6] Syncing version...
-for /f "delims=" %%v in ('node -p "require(''%~dp0..\Remoter-Client\package.json'').version"') do set APP_VERSION=%%v
-> "%~dp0AppVersion.cs" (
-    echo namespace RemoterWin;
-    echo static class AppVersion { public const string Current = "%APP_VERSION%"; }
-)
-echo       OK: AppVersion.cs -^> %APP_VERSION%
-echo.
+REM AppVersion.cs is synced at commit time (pre-commit hook, alongside
+REM package.json) — not rewritten here, so a build between commits doesn't
+REM touch a tracked file and fight with `git pull`.
 
 REM Kill running process before build
 echo [1/6] Stopping running process...

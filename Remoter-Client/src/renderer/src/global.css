@@ -26,9 +26,9 @@
   --ov-shadow:      0 8px 24px rgba(0,0,0,0.15);
 
   /* area around the remote canvas when its aspect ratio doesn't fill the
-     window (letterboxing) — white + a teal edge so the boundary reads
-     clearly against the page; dark theme keeps plain black, no edge. */
-  --canvas-surround: #ffffff;
+     window (letterboxing) — pale teal tint + a stronger teal edge so the
+     boundary reads clearly; dark theme keeps plain black, no edge. */
+  --canvas-surround: #e6f7f5;
   --canvas-edge:     #0fb8ab;
 }
 

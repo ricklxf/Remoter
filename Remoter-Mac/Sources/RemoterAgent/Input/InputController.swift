@@ -2,8 +2,6 @@ import Foundation
 import CoreGraphics
 import AppKit
 import ApplicationServices
-import IOKit
-import IOKit.hidsystem
 
 final class InputController {
     var screenWidth: Int
@@ -86,32 +84,17 @@ final class InputController {
         e.post(tap: .cgSessionEventTap)
     }
 
+    // Software-simulated Caps Lock: on modern macOS, neither IOHIDSetModifierLockState
+    // nor a synthetic HID keyDown/keyUp for virtualKey 57 actually flips the system's
+    // persisted lock state anymore (confirmed not to work even as root) — Apple has
+    // locked this down, with no lightweight public replacement. So instead of toggling
+    // real OS state, we track our own flag and force-apply Shift to subsequent letter
+    // keys ourselves, same as how a real CapsLock+Shift combo behaves.
+    private var virtualCapsLockOn = false
+
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
-        // CapsLock is a lock key, not a momentary one: posting a synthetic CGEvent with
-        // .maskAlphaShift only flags that single event, it does not flip the system's
-        // persisted lock state. Toggling it for real requires IOHIDSystem.
-        // Client already deduplicates and sends one down+up pair per toggle.
         if code == "CapsLock" {
-            if down {
-                let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass))
-                if service == 0 {
-                    NSLog("[Input] CapsLock: IOServiceGetMatchingService found no kIOHIDSystemClass service")
-                    return
-                }
-                var ioConnect: io_connect_t = 0
-                let openErr = IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &ioConnect)
-                IOObjectRelease(service)
-                if openErr != KERN_SUCCESS {
-                    NSLog("[Input] CapsLock: IOServiceOpen failed err=%d", openErr)
-                    return
-                }
-                var capsCurrentlyOn: Bool = false
-                let getErr = IOHIDGetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), &capsCurrentlyOn)
-                let setErr = IOHIDSetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), !capsCurrentlyOn)
-                NSLog("[Input] CapsLock: getErr=%d currentlyOn=%d setErr=%d newState=%d",
-                      getErr, capsCurrentlyOn ? 1 : 0, setErr, !capsCurrentlyOn ? 1 : 0)
-                IOServiceClose(ioConnect)
-            }
+            if down { virtualCapsLockOn.toggle() }
             return
         }
 
@@ -125,16 +108,20 @@ final class InputController {
             return
         }
 
+        var shiftActive = modifiers.contains("shift")
+        if virtualCapsLockOn && code.hasPrefix("Key") { shiftActive.toggle() }
+
         var flags = CGEventFlags()
         for mod in modifiers {
             switch mod {
             case "meta", "cmd": flags.insert(.maskCommand)
-            case "shift":       flags.insert(.maskShift)
+            case "shift":       break // handled via shiftActive below
             case "alt":         flags.insert(.maskAlternate)
             case "ctrl":        flags.insert(.maskControl)
             default: break
             }
         }
+        if shiftActive { flags.insert(.maskShift) }
         e.flags = flags
         e.post(tap: .cgAnnotatedSessionEventTap)
 

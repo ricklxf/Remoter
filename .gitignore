@@ -24,6 +24,12 @@ Remoter-Server/dist/
 # TypeScript incremental build cache
 *.tsbuildinfo
 
+# Build-generated version files — every machine's own build rewrites these
+# from Remoter-Client/package.json; tracking them just makes git pull
+# conflict whenever two machines have built independently in between.
+Remoter-Mac/Sources/RemoterAgent/AppVersion.swift
+Remoter-Win/AppVersion.cs
+
 # Env
 .env
 .env.local

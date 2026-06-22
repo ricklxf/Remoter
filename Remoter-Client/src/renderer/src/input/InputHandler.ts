@@ -89,15 +89,20 @@ export class InputHandler {
     if (!this.enabled) return
     const me = e as MouseEvent
     me.preventDefault()
+    // me.buttons is a bitmask of buttons currently held during this move —
+    // without it the remote side can't tell "moving" from "dragging", and
+    // anything that listens for a drag specifically (text selection, sliders,
+    // drag-and-drop) never sees it, even though plain clicks still work.
+    const dragging = buttonsToDragName(me.buttons)
 
     if (this.locked) {
       // Pointer lock: accumulate raw deltas
       this.curNormX = clamp(this.curNormX + me.movementX / this.remoteW, 0, 1)
       this.curNormY = clamp(this.curNormY + me.movementY / this.remoteH, 0, 1)
-      this.conn.sendMouseMove(this.curNormX, this.curNormY)
+      this.conn.sendMouseMove(this.curNormX, this.curNormY, dragging)
     } else if (this.el) {
       const { nx, ny } = this.getCoords(me)
-      this.conn.sendMouseMove(nx, ny)
+      this.conn.sendMouseMove(nx, ny, dragging)
     }
   }
 
@@ -229,6 +234,15 @@ export class InputHandler {
 
 function buttonName(b: number): string {
   return b === 2 ? 'right' : b === 1 ? 'middle' : 'left'
+}
+
+// MouseEvent.buttons is a bitmask (1=left, 2=right, 4=middle), unrelated to
+// MouseEvent.button's index encoding above — don't reuse buttonName here.
+function buttonsToDragName(buttons: number): string | undefined {
+  if (buttons & 1) return 'left'
+  if (buttons & 2) return 'right'
+  if (buttons & 4) return 'middle'
+  return undefined
 }
 
 function collectModifiers(e: KeyboardEvent): string[] {

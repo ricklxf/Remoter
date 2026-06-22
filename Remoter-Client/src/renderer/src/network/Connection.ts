@@ -193,9 +193,9 @@ export class Connection {
 
   // MARK: - 输入事件
 
-  sendMouseMove(x: number, y: number): void {
+  sendMouseMove(x: number, y: number, dragging?: string): void {
     if (this._inputLogN++ < 3) console.log('[Conn] sendMouseMove', x.toFixed(3), y.toFixed(3), 'e2e=', this.e2e.isReady)
-    this.sendJson({ type: 'mouse_move', x, y })
+    this.sendJson(dragging ? { type: 'mouse_move', x, y, dragging } : { type: 'mouse_move', x, y })
   }
   sendMouseButton(button: string, down: boolean, x: number, y: number): void {
     this.sendJson({ type: 'mouse_button', button, down, x, y })

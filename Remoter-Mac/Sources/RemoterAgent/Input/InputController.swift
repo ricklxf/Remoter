@@ -16,15 +16,28 @@ final class InputController {
         self.screenHeight = screenHeight
     }
 
-    func mouseMove(x: Double, y: Double) {
+    // dragging: nil while no button is held (plain hover), or "left"/"right"/
+    // "middle" while one is — macOS distinguishes .mouseMoved from
+    // .leftMouseDragged etc. as separate event TYPES, not a move event plus
+    // a button-state flag. Controls that select-by-drag (text fields, the
+    // browser's address bar, sliders) specifically listen for the dragged
+    // type, so without this they never see a drag — only disconnected
+    // moves + a separate down/up, which looks like a click, not a drag.
+    func mouseMove(x: Double, y: Double, dragging: String? = nil) {
         if !loggedAccessibility {
             loggedAccessibility = true
             NSLog("[Input] accessibility trusted=%d", AXIsProcessTrusted() ? 1 : 0)
         }
         let pt = cgPoint(x: x, y: y)
         let src = CGEventSource(stateID: .hidSystemState)
-        guard let e = CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
-                              mouseCursorPosition: pt, mouseButton: .left) else {
+        let (type, btn): (CGEventType, CGMouseButton) = switch dragging {
+        case "right":  (.rightMouseDragged, .right)
+        case "middle": (.otherMouseDragged, .center)
+        case "left":   (.leftMouseDragged,  .left)
+        default:       (.mouseMoved,        .left)
+        }
+        guard let e = CGEvent(mouseEventSource: src, mouseType: type,
+                              mouseCursorPosition: pt, mouseButton: btn) else {
             print("[Input] mouseMove: CGEvent creation failed")
             return
         }

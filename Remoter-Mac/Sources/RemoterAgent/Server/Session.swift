@@ -238,14 +238,14 @@ final class Session {
         switch msg {
 
         // ── 输入事件 ───────────────────────────────────────────
-        case .mouseMove(let x, let y):
+        case .mouseMove(let x, let y, let dragging):
             guard inputEnabled else { break }
             if !loggedFirstInput {
                 loggedFirstInput = true
                 ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "first_input",
                                                 detail: "input=\(input != nil), ax=\(AXIsProcessTrusted())")
             }
-            input?.mouseMove(x: x, y: y)
+            input?.mouseMove(x: x, y: y, dragging: dragging)
 
         case .mouseButton(let btn, let down, let x, let y):
             guard inputEnabled else { break }

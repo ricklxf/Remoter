@@ -9,7 +9,7 @@ enum FrameType: UInt8 {
 // Incoming JSON message types from client
 enum ClientMessage {
     case auth(pin: String)
-    case mouseMove(x: Double, y: Double)
+    case mouseMove(x: Double, y: Double, dragging: String?)
     case mouseButton(button: String, down: Bool, x: Double, y: Double)
     case mouseDoubleClick(button: String, x: Double, y: Double)
     case mouseScroll(dx: Int, dy: Int)
@@ -46,7 +46,8 @@ enum ClientMessage {
         case "mouse_move":
             return .mouseMove(
                 x: json["x"] as? Double ?? 0,
-                y: json["y"] as? Double ?? 0
+                y: json["y"] as? Double ?? 0,
+                dragging: json["dragging"] as? String
             )
         case "mouse_button":
             return .mouseButton(

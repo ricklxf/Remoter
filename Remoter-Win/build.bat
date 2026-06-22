@@ -91,6 +91,23 @@ if errorlevel 1 (
 echo.
 
 ::build_complete
+REM Start the freshly built exe (old instance was already killed in step [1/6])
+echo Starting new build...
+set "exePath=%outputDir%\RemoterWin.exe"
+if exist "%exePath%" (
+    start "" "%exePath%"
+    timeout /t 2 >nul
+    tasklist /FI "IMAGENAME eq RemoterWin.exe" 2>nul | find /I "RemoterWin.exe" >nul
+    if %errorLevel% == 0 (
+        echo       OK: Program started successfully
+    ) else (
+        echo       WARN: Build succeeded but process did not stay running — check remoter.log
+    )
+) else (
+    echo       WARN: Executable not found at %exePath%, skipping auto-start
+)
+echo.
+
 REM Show output path
 echo ===== Build successful! =====
 echo.
@@ -99,7 +116,5 @@ echo Executable: RemoterWin.exe
 echo.
 echo Self-contained package: %~dp0publish\
 echo   (Can run without .NET Runtime installed)
-echo.
-echo Hint: Run run.bat to start the program with UI
 echo.
 pause

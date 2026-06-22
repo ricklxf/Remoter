@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 
@@ -78,24 +77,39 @@ sealed class H264Encoder : IDisposable
         {
             uint flags = (hardware ? MFT_ENUM_FLAG_HARDWARE : MFT_ENUM_FLAG_SYNCMFT) | MFT_ENUM_FLAG_SORTANDFILTER;
 
-            using var activates = MediaFactory.MFTEnumEx(
+            // MFTEnumEx has no typed wrapper in Vortice.MediaFoundation (unlike e.g.
+            // MFEnumDeviceSources) — it's the raw native signature: an IMFActivate**
+            // array (pppActivate) we own and must free, plus a count.
+            MediaFactory.MFTEnumEx(
                 MftCategoryVideoEncoder, flags,
                 inputType:  null,
-                outputType: new RegisterTypeInfo { GuidMajorType = MfMediaTypeVideo, GuidSubtype = VideoFormatGuids.H264 });
+                outputType: new RegisterTypeInfo { GuidMajorType = MfMediaTypeVideo, GuidSubtype = VideoFormatGuids.H264 },
+                out nint pppActivate, out uint count);
 
-            var activate = activates.FirstOrDefault();
-            int count = activates.Count();
-
-            if (activate == null)
+            if (count == 0)
             {
                 AppLog.Write($"[H264Encoder] MFTEnumEx found 0 candidates (hardware={hardware})");
                 return false;
             }
 
-            // activates[0] is MFTEnumEx's own quality-sorted pick (SortAndFilter).
-            _transform = activate.ActivateObject<IMFTransform>();
-            IsHardware = hardware;
-            AppLog.Write($"[H264Encoder] picked MFT #0/{count} candidates, hardware={hardware}");
+            try
+            {
+                // pppActivate[0] is MFTEnumEx's own quality-sorted pick (SortAndFilter).
+                // Release every other candidate's reference — we only keep the first.
+                using var activate = new IMFActivate(Marshal.ReadIntPtr(pppActivate, 0));
+                for (uint i = 1; i < count; i++)
+                {
+                    Marshal.Release(Marshal.ReadIntPtr(pppActivate, (int)i * IntPtr.Size));
+                }
+
+                _transform = activate.ActivateObject<IMFTransform>();
+                IsHardware = hardware;
+                AppLog.Write($"[H264Encoder] picked MFT #0/{count} candidates, hardware={hardware}");
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(pppActivate);
+            }
 
             ConfigureTypes(width, height, fps, bitrateBps);
             return true;

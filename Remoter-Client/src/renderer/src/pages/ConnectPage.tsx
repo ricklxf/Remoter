@@ -10,27 +10,37 @@ interface Props {
   errorMsg: string
 }
 
+// Agent now always serves over TLS (self-signed cert embedded at build time —
+// see Remoter-Mac/scripts/build-app.sh), so any direct connection must be wss://.
+// Plain ws:// gets the TLS handshake closed before it ever completes (looks
+// like "Connection closed before receiving a handshake response" in devtools).
+function upgradeToWss(url: string): string {
+  return url.startsWith('ws://') ? 'wss://' + url.slice('ws://'.length) : url
+}
+
 function inferInitial(): { mode: ConnectMode; directUrl: string; relayUrl: string } {
+  // Migrate anything saved before TLS was added — a stale ws:// here would
+  // otherwise silently fail forever even after this default is fixed.
   const savedDirect = localStorage.getItem('remoter-direct-url')
   const savedRelay  = localStorage.getItem('remoter-relay-url')
 
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   let defaults: { mode: ConnectMode; directUrl: string; relayUrl: string }
   if (!isWeb) {
-    defaults = { mode: 'direct', directUrl: 'ws://192.168.1.144:7788', relayUrl: 'ws://your-relay-server:7789' }
+    defaults = { mode: 'direct', directUrl: 'wss://192.168.1.144:7788', relayUrl: 'wss://your-relay-server:7789' }
   } else {
     const { hostname, port, protocol } = window.location
     const scheme = protocol === 'https:' ? 'wss' : 'ws'
-    if (port === '7789')      defaults = { mode: 'relay',  directUrl: 'ws://192.168.1.144:7788',      relayUrl: `${scheme}://${hostname}:7789` }
-    else if (port === '7788') defaults = { mode: 'direct', directUrl: `${scheme}://${hostname}:7788`, relayUrl: 'ws://your-relay-server:7789' }
-    else if (port === '')     defaults = { mode: 'direct', directUrl: `${scheme}://${hostname}`,      relayUrl: 'ws://your-relay-server:7789' }
-    else                      defaults = { mode: 'direct', directUrl: 'ws://192.168.1.144:7788',      relayUrl: 'ws://your-relay-server:7789' }
+    if (port === '7789')      defaults = { mode: 'relay',  directUrl: 'wss://192.168.1.144:7788',     relayUrl: `${scheme}://${hostname}:7789` }
+    else if (port === '7788') defaults = { mode: 'direct', directUrl: `${scheme}://${hostname}:7788`, relayUrl: 'wss://your-relay-server:7789' }
+    else if (port === '')     defaults = { mode: 'direct', directUrl: `${scheme}://${hostname}`,      relayUrl: 'wss://your-relay-server:7789' }
+    else                      defaults = { mode: 'direct', directUrl: 'wss://192.168.1.144:7788',      relayUrl: 'wss://your-relay-server:7789' }
   }
 
   return {
     mode:      defaults.mode,
-    directUrl: savedDirect ?? defaults.directUrl,
-    relayUrl:  savedRelay  ?? defaults.relayUrl,
+    directUrl: upgradeToWss(savedDirect ?? defaults.directUrl),
+    relayUrl:  upgradeToWss(savedRelay  ?? defaults.relayUrl),
   }
 }
 
@@ -152,14 +162,14 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
             <label style={s.label}>
               <span>被控端地址</span>
               <input value={directUrl} onChange={e => setDirectUrl(e.target.value)}
-                placeholder="ws://192.168.1.100:7788" required />
+                placeholder="wss://192.168.1.100:7788" required />
             </label>
           ) : (
             <>
               <label style={s.label}>
                 <span>中继服务器地址</span>
                 <input value={relayUrl} onChange={e => setRelayUrl(e.target.value)}
-                  placeholder="ws://your-relay:7789" required />
+                  placeholder="wss://your-relay:7789" required />
               </label>
               <label style={s.label}>
                 <span>会话 ID</span>

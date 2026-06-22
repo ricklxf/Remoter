@@ -24,6 +24,12 @@
   --ov-popup-bg:    rgba(255,255,255,0.97);
   --ov-popup-bdr:   rgba(0,0,0,0.1);
   --ov-shadow:      0 8px 24px rgba(0,0,0,0.15);
+
+  /* area around the remote canvas when its aspect ratio doesn't fill the
+     window (letterboxing) — white + a teal edge so the boundary reads
+     clearly against the page; dark theme keeps plain black, no edge. */
+  --canvas-surround: #ffffff;
+  --canvas-edge:     #0fb8ab;
 }
 
 [data-theme="dark"] {
@@ -35,6 +41,9 @@
   --text2:  #a0a0b0;
   --border: #333344;
   --shadow: 0 4px 24px rgba(0,0,0,0.5);
+
+  --canvas-surround: #000000;
+  --canvas-edge:     #000000;
 
   --ov-bg:          rgba(20,20,36,0.94);
   --ov-text:        #eaeaea;

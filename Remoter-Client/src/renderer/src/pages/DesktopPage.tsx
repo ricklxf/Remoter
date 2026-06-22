@@ -113,7 +113,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrap: { position: 'relative', width: '100%', height: '100%', background: '#000', overflow: 'hidden' },
+  wrap: { position: 'relative', width: '100%', height: '100%', background: 'var(--canvas-surround)', overflow: 'hidden' },
   reconnectBanner: {
     position: 'absolute',
     top: 12,

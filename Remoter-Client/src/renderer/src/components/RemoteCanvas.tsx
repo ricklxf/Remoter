@@ -137,7 +137,9 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264' }: Props)
           width:  cssSize ? cssSize.w : '100%',
           height: cssSize ? cssSize.h : '100%',
           cursor: 'default',
-          outline: 'none',
+          // outline (not border) — drawn outside the box, doesn't eat into
+          // the canvas's own layout size or distort the rendered video.
+          outline: '1px solid var(--canvas-edge)',
         }}
       />
     </div>

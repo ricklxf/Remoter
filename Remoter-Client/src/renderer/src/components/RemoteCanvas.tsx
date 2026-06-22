@@ -77,6 +77,12 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264' }: Props)
       decoderRef.current = decoder
       decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch(console.error)
       console.log('[RemoteCanvas] H.264 mode, decoder initializing')
+      // This decoder is brand new and won't decode anything until it gets a
+      // keyframe (Decoder.ts buffers/drops delta frames until then) — ask the
+      // encoder for one now instead of waiting for its next scheduled one
+      // (up to 2s away), which is what made switching tabs show a black
+      // screen for a few seconds.
+      conn.sendRequestKeyframe()
     }
 
     inputRef.current.attach(canvas, streamInfo.width, streamInfo.height)

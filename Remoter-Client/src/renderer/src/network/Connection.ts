@@ -217,6 +217,14 @@ export class Connection {
     this.sendJson({ type: 'quality', fps, bitrate })
   }
 
+  // Forces the encoder to emit a keyframe right away instead of waiting for
+  // its next scheduled one (up to 2s) — call whenever a fresh decoder
+  // attaches (e.g. switching back to a tab) so it isn't stuck on a black
+  // screen until the interval comes around on its own.
+  sendRequestKeyframe(): void {
+    this.sendJson({ type: 'request_keyframe' })
+  }
+
   sendMute(muted: boolean): void {
     this.sendJson({ type: 'set_muted', muted })
   }

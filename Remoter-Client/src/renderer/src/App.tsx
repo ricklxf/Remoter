@@ -108,6 +108,19 @@ export default function App() {
     })
   }, [tabs])
 
+  // Drag a tab to reposition it
+  const reorderTabs = useCallback((draggedId: string, targetId: string) => {
+    setTabs(prev => {
+      const from = prev.findIndex(t => t.id === draggedId)
+      const to   = prev.findIndex(t => t.id === targetId)
+      if (from === -1 || to === -1 || from === to) return prev
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }, [])
+
   // Connect active tab
   function handleConnect(tabId: string, params: ConnectParams) {
     const conn = connMapRef.current.get(tabId)
@@ -201,6 +214,7 @@ export default function App() {
           onDisconnect={handleDisconnect}
           onToggleMute={handleToggleMute}
           onAdd={addTab}
+          onReorder={reorderTabs}
         />
       )}
       <div id="remoter-content" style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>

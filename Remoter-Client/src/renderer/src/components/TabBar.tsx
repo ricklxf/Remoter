@@ -19,6 +19,7 @@ interface Props {
   onDisconnect: (id: string) => void
   onToggleMute: (id: string) => void
   onAdd: () => void
+  onReorder: (draggedId: string, targetId: string) => void
 }
 
 const isMac = window.remoterAPI?.platform === 'darwin'
@@ -137,7 +138,7 @@ function StatRow({ label, value, color }: { label: string; value: string; color:
 
 // ─── Tab item ────────────────────────────────────────────────────────
 
-function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onToggleMute, onHover, onHoverEnd }: {
+function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onToggleMute, onHover, onHoverEnd, onReorder }: {
   tab: TabInfo
   active: boolean
   canClose: boolean
@@ -147,19 +148,35 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
   onToggleMute: () => void
   onHover: (e: React.MouseEvent<HTMLDivElement>) => void
   onHoverEnd: () => void
+  onReorder: (draggedId: string, targetId: string) => void
 }) {
   const streaming = tab.state === 'streaming'
   const rtt = tab.stats.rttMs
   const handleX = canClose ? onClose : onDisconnect
   const xTitle  = canClose ? '关闭标签页' : '断开连接'
   const textColor = active ? 'var(--text)' : 'rgba(255,255,255,0.88)'
+  const [dragOver, setDragOver] = useState(false)
 
   return (
     <div
-      style={{ ...s.tab, background: active ? 'var(--bg)' : 'rgba(255,255,255,0.14)' }}
+      style={{
+        ...s.tab,
+        background: active ? 'var(--bg)' : 'rgba(255,255,255,0.14)',
+        boxShadow: dragOver ? 'inset 2px 0 0 #fff' : undefined,
+      }}
       onClick={onSelect}
       onMouseEnter={onHover}
       onMouseLeave={onHoverEnd}
+      draggable
+      onDragStart={e => e.dataTransfer.setData('text/x-tab-id', tab.id)}
+      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={e => {
+        e.preventDefault()
+        setDragOver(false)
+        const draggedId = e.dataTransfer.getData('text/x-tab-id')
+        if (draggedId && draggedId !== tab.id) onReorder(draggedId, tab.id)
+      }}
       // @ts-ignore
       WebkitAppRegion="no-drag"
     >
@@ -196,7 +213,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
 
 // ─── Tab bar ────────────────────────────────────────────────────────
 
-export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd }: Props) {
+export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd, onReorder }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [popupPos, setPopupPos]   = useState<{ left: number; top: number } | null>(null)
   const hoveredTab = hoveredId ? (tabs.find(t => t.id === hoveredId) ?? null) : null
@@ -228,6 +245,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
               setPopupPos({ left: rect.left + rect.width / 2, top: rect.bottom })
             }}
             onHoverEnd={() => setHoveredId(null)}
+            onReorder={onReorder}
           />
         ))}
 

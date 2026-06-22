@@ -16,6 +16,7 @@ public abstract record ClientMsg
     public record FileEnd(string Id) : ClientMsg;
     public record QualitySet(int Fps, int Bitrate) : ClientMsg;
     public record Ping : ClientMsg;
+    public record RequestKeyframe : ClientMsg;
     public record WebRtcOffer(string Sdp) : ClientMsg;
     public record WebRtcIce(string Candidate) : ClientMsg;
     public record ClientStats(double Fps, int RttMs) : ClientMsg;
@@ -51,6 +52,7 @@ public abstract record ClientMsg
             "file_end"          => new FileEnd(e.Str("id")),
             "quality"           => new QualitySet(e.Int("fps"), e.Int("bitrate")),
             "ping"              => new Ping(),
+            "request_keyframe"  => new RequestKeyframe(),
             "webrtc_offer"      => new WebRtcOffer(e.Str("sdp")),
             "webrtc_ice"        => new WebRtcIce(e.Str("candidate")),
             "client_stats"      => new ClientStats(e.Dbl("fps"), e.Int("rtt_ms")),

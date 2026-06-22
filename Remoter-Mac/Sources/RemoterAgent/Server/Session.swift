@@ -294,6 +294,9 @@ final class Session {
         case .ping:
             sendJson(["type": "pong"])
 
+        case .requestKeyframe:
+            encoder?.forceKeyframe()
+
         // ── WebRTC 信令 ────────────────────────────────────────
         case .webrtcOffer(let sdp):
             setupWebRTC(offerSDP: sdp)

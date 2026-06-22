@@ -142,6 +142,36 @@ sealed class H264Encoder : IDisposable
         AppLog.Write($"[H264Encoder] SetBitrate({bps}) ignored — hardware MFT bitrate is fixed at init time");
     }
 
+    // Forces an immediate keyframe instead of waiting for whatever interval
+    // the MFT picked on its own — used when a client (re)attaches a fresh
+    // decoder (e.g. switching back to a tab) so it isn't stuck on a black
+    // screen until the next one comes around naturally.
+    //
+    // No ICodecAPI here either (same reason as SetBitrate above), so this
+    // can't set CODECAPI_AVEncVideoForceKeyFrame directly. Instead it cycles
+    // NotifyEndOfStream → NotifyBeginStreaming/StartOfStream, which resets the
+    // MFT's internal sequence — encoders treat the first frame of a new
+    // sequence as a keyframe by construction (it has to be, for a decoder to
+    // start from it at all), so this gets the same effect through a message
+    // pair already proven to work (used in Initialize/Dispose).
+    public void ForceKeyframe()
+    {
+        if (_transform == null) return;
+        lock (_lock)
+        {
+            try
+            {
+                _transform.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
+                _transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+                _transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[H264Encoder] ForceKeyframe failed (non-fatal): {ex.Message}");
+            }
+        }
+    }
+
     // bgra: tightly-packed BGRA32, width*height*4 bytes (matches the staging
     // texture ScreenCapturer maps). Returns Annex-B H.264 bytes, or null if the
     // MFT swallowed the frame without producing output yet (it buffers a little

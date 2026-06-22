@@ -326,6 +326,9 @@ sealed class Session
             case ClientMsg.Ping:
                 Send(new { type = "pong" }); break;
 
+            case ClientMsg.RequestKeyframe:
+                _encoder?.ForceKeyframe(); break;
+
             case ClientMsg.QualitySet q:
                 // TODO: adjust capture FPS
                 _ = q; break;

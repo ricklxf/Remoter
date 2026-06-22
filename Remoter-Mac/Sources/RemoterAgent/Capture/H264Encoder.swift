@@ -11,6 +11,15 @@ final class H264Encoder {
 
     private var session: VTCompressionSession?
     private var frameIndex: Int64 = 0
+    private var forceKeyframeNext = false
+
+    /// Forces the *next* encode() call to emit a keyframe immediately,
+    /// instead of waiting for the next scheduled one (up to 2s away) — used
+    /// when a client (re)attaches a fresh decoder, e.g. switching back to a
+    /// tab, and would otherwise show a black screen until the next interval.
+    func forceKeyframe() {
+        forceKeyframeNext = true
+    }
 
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
         var s: VTCompressionSession?
@@ -63,12 +72,18 @@ final class H264Encoder {
         frameIndex += 1
         let pts  = CMTime(value: idx, timescale: 60)
 
+        var frameProperties: CFDictionary?
+        if forceKeyframeNext {
+            forceKeyframeNext = false
+            frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
+        }
+
         VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pb,
             presentationTimeStamp: pts,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: frameProperties,
             infoFlagsOut: nil
         ) { [weak self] status, _, sample in
             guard let self, status == noErr, let sample else {

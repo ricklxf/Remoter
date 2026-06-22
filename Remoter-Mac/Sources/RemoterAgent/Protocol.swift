@@ -19,6 +19,7 @@ enum ClientMessage {
     case fileEnd(id: String)
     case qualitySet(fps: Int, bitrate: Int)
     case ping
+    case requestKeyframe
     case webrtcOffer(sdp: String)
     case webrtcICE(json: String)
     case clientStats(fps: Double, rttMs: Int)
@@ -90,6 +91,8 @@ enum ClientMessage {
             )
         case "ping":
             return .ping
+        case "request_keyframe":
+            return .requestKeyframe
         case "webrtc_offer":
             return .webrtcOffer(sdp: json["sdp"] as? String ?? "")
         case "webrtc_ice":

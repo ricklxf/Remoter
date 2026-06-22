@@ -102,6 +102,15 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  // F12 (and Cmd/Ctrl+Shift+I) toggle DevTools — Electron doesn't bind this
+  // itself like a browser does; without it there's no way to see renderer
+  // console output/errors at all.
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    const isToggle = input.key === 'F12' ||
+      (input.key.toLowerCase() === 'i' && input.shift && (input.control || input.meta))
+    if (isToggle) mainWindow?.webContents.toggleDevTools()
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {

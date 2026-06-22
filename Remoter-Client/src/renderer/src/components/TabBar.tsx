@@ -162,7 +162,9 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
       style={{
         ...s.tab,
         background: active ? 'var(--bg)' : 'rgba(255,255,255,0.14)',
-        boxShadow: dragOver ? 'inset 2px 0 0 #fff' : undefined,
+        boxShadow: dragOver
+          ? 'inset 2px 0 0 #fff'
+          : active ? `inset 0 2px 0 ${TEAL_DARK}` : undefined,
       }}
       onClick={onSelect}
       onMouseEnter={onHover}

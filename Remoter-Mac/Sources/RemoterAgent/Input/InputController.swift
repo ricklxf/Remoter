@@ -93,13 +93,23 @@ final class InputController {
         // Client already deduplicates and sends one down+up pair per toggle.
         if code == "CapsLock" {
             if down {
-                var ioConnect: io_connect_t = 0
                 let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass))
-                IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &ioConnect)
+                if service == 0 {
+                    NSLog("[Input] CapsLock: IOServiceGetMatchingService found no kIOHIDSystemClass service")
+                    return
+                }
+                var ioConnect: io_connect_t = 0
+                let openErr = IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &ioConnect)
                 IOObjectRelease(service)
+                if openErr != KERN_SUCCESS {
+                    NSLog("[Input] CapsLock: IOServiceOpen failed err=%d", openErr)
+                    return
+                }
                 var capsCurrentlyOn: Bool = false
-                IOHIDGetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), &capsCurrentlyOn)
-                IOHIDSetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), !capsCurrentlyOn)
+                let getErr = IOHIDGetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), &capsCurrentlyOn)
+                let setErr = IOHIDSetModifierLockState(ioConnect, Int32(kIOHIDCapsLockState), !capsCurrentlyOn)
+                NSLog("[Input] CapsLock: getErr=%d currentlyOn=%d setErr=%d newState=%d",
+                      getErr, capsCurrentlyOn ? 1 : 0, setErr, !capsCurrentlyOn ? 1 : 0)
                 IOServiceClose(ioConnect)
             }
             return

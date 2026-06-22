@@ -18,6 +18,7 @@ final class Session {
 
     private var capturer: ScreenCapturer?
     private var encoder: H264Encoder?
+    private var lastFrame: CGImage?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
     private var webrtc: WebRTCAgent?
@@ -296,6 +297,12 @@ final class Session {
 
         case .requestKeyframe:
             encoder?.forceKeyframe()
+            // CGDisplayStream only calls onFrame when the screen content actually
+            // changes — if it's static, forceKeyframe's flag would sit unused
+            // indefinitely. Re-push the last captured frame right away so the
+            // forced keyframe goes out immediately instead of waiting for the
+            // next real screen change.
+            if let last = lastFrame { encoder?.encode(last) }
 
         // ── WebRTC 信令 ────────────────────────────────────────
         case .webrtcOffer(let sdp):
@@ -506,6 +513,7 @@ final class Session {
 
             c.onFrame = { [weak self] cgImage, _, _ in
                 guard let self else { return }
+                self.lastFrame = cgImage
                 self.encoder?.encode(cgImage)
             }
 

@@ -167,6 +167,7 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
           : active ? `inset 0 2px 0 ${TEAL_DARK}` : undefined,
       }}
       onClick={onSelect}
+      onMouseDown={e => { if (e.button === 1) { e.preventDefault(); handleX() } }}
       onMouseEnter={onHover}
       onMouseLeave={onHoverEnd}
       draggable

@@ -50,8 +50,16 @@ actor TurnServerManager {
             try task.run()
             task.waitUntilExit()
             let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            ConnectionLogger.shared.logStep(sessionId: "turn", step: "coturn_restarted",
-                detail: "exit=\(task.terminationStatus) \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if task.terminationStatus == 0 {
+                ConnectionLogger.shared.logStep(sessionId: "turn", step: "coturn_restarted", detail: trimmed)
+            } else {
+                // Most common cause: coturn isn't installed on this machine at all —
+                // not an error, TURN is just unavailable here. WebRTC falls back to
+                // STUN/direct, then WebSocket; nothing else is affected.
+                ConnectionLogger.shared.logStep(sessionId: "turn", step: "coturn_unavailable",
+                    detail: "exit=\(task.terminationStatus) \(trimmed)")
+            }
         } catch {
             // Not fatal — coturn just keeps running with whatever config it last
             // loaded (or isn't installed at all, in which case TURN is simply

@@ -296,6 +296,8 @@ final class Session {
             sendJson(["type": "pong"])
 
         case .requestKeyframe:
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "DEBUG_request_keyframe",
+                detail: "encoder=\(encoder != nil) lastFrame=\(lastFrame != nil)")
             encoder?.forceKeyframe()
             // CGDisplayStream only calls onFrame when the screen content actually
             // changes — if it's static, forceKeyframe's flag would sit unused

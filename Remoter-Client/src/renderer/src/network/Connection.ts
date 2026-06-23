@@ -222,7 +222,6 @@ export class Connection {
   // attaches (e.g. switching back to a tab) so it isn't stuck on a black
   // screen until the interval comes around on its own.
   sendRequestKeyframe(): void {
-    console.log('[Conn] DEBUG sendRequestKeyframe called, ws state=', this.ws?.readyState, 'e2e=', this.e2e.isReady)
     this.sendJson({ type: 'request_keyframe' })
   }
 

@@ -61,7 +61,6 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [authMode, setAuthMode]       = useState<AuthMethod>('pin')
   const [username, setUsername]       = useState('')
   const [password, setPassword]       = useState('')
-  const [savedList, setSavedList]     = useState<SavedAccount[]>([])
   const [selectedSaved, setSelectedSaved] = useState<SavedAccount | null>(null)
   const [machineName, setMachineName] = useState('')
   const [machineInfo, setMachineInfo] = useState<MachineInfo | null>(null)
@@ -78,7 +77,6 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   // 不用先手动输入地址再从该地址下的账户列表里选。
   function pickGlobalAccount(a: SavedAccount) {
     setDirectUrl(a.address)
-    setSavedList(getSavedAccounts(a.address))
     setSelectedSaved(a)
     setAuthMode('token')
     const name = getMachineName(a.address)
@@ -90,9 +88,8 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
   // Load saved accounts, PIN, and machine name whenever address changes
   useEffect(() => {
-    if (mode !== 'direct') { setSavedList([]); setSelectedSaved(null); setMachineName(''); setMachineInfo(null); setIsEditingNote(false); return }
+    if (mode !== 'direct') { setSelectedSaved(null); setMachineName(''); setMachineInfo(null); setIsEditingNote(false); return }
     const accounts = getSavedAccounts(directUrl)
-    setSavedList(accounts)
     if (accounts.length > 0) {
       setSelectedSaved(accounts[0])
       setAuthMode('token')
@@ -130,10 +127,9 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
 
   function forgetAccount() {
     if (!selectedSaved) return
-    removeSavedAccount(directUrl, selectedSaved.username)
-    const remaining = getSavedAccounts(directUrl)
-    setSavedList(remaining)
+    removeSavedAccount(selectedSaved.address, selectedSaved.username)
     setAllAccounts(getAllSavedAccounts())
+    const remaining = getSavedAccounts(directUrl)
     if (remaining.length > 0) {
       setSelectedSaved(remaining[0])
     } else {
@@ -182,28 +178,6 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} style={s.form}>
-          {/* Quick pick: jump straight to a previously used 用户名(IP) without typing the address */}
-          {mode === 'direct' && allAccounts.length > 0 && (
-            <label style={s.label}>
-              <span>快速选择</span>
-              <select
-                style={s.savedSelect}
-                value="__pick__"
-                onChange={e => {
-                  const acct = allAccounts.find(a => `${a.address}|${a.username}` === e.target.value)
-                  if (acct) pickGlobalAccount(acct)
-                }}
-              >
-                <option value="__pick__" disabled>选择曾经登录过的账户…</option>
-                {allAccounts.map(a => (
-                  <option key={`${a.address}|${a.username}`} value={`${a.address}|${a.username}`}>
-                    {(a.username === '__pin__' ? 'PIN 码' : a.username)} ({addressHost(a.address)})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
           {/* Address */}
           {mode === 'direct' ? (
             <label style={s.label}>
@@ -231,7 +205,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
           {mode === 'direct' && (
             <>
               {/* Connection card: machine info + saved accounts (only when accounts exist) */}
-              {savedList.length > 0 && (
+              {allAccounts.length > 0 && (
               <div style={{ ...s.savedBanner, borderColor: 'var(--primary)' }}>
                 {machineInfo && (machineInfo.computerName || machineInfo.modelId) && selectedSaved !== null && (
                   <>
@@ -260,22 +234,25 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
                     <span style={s.savedIcon}>👤</span>
                     <select
                       style={s.savedSelect}
-                      value={selectedSaved?.username ?? '__new__'}
+                      value={selectedSaved ? `${selectedSaved.address}|${selectedSaved.username}` : '__new__'}
                       onChange={e => {
                         if (e.target.value === '__new__') {
                           setSelectedSaved(null)
                           setAuthMode('pin')
                         } else {
-                          const acct = savedList.find(a => a.username === e.target.value)
-                          if (acct) { setSelectedSaved(acct); setAuthMode('token') }
+                          const acct = allAccounts.find(a => `${a.address}|${a.username}` === e.target.value)
+                          if (acct) pickGlobalAccount(acct)
                         }
                       }}
                     >
-                      {savedList.map(a => (
-                        <option key={a.username} value={a.username}>
-                          {a.username === '__pin__' ? (machineName || 'PIN 码') : (machineName || a.username)}
-                        </option>
-                      ))}
+                      {allAccounts.map(a => {
+                        const name = getMachineName(a.address) || (a.username === '__pin__' ? 'PIN 码' : a.username)
+                        return (
+                          <option key={`${a.address}|${a.username}`} value={`${a.address}|${a.username}`}>
+                            {name} ({addressHost(a.address)})
+                          </option>
+                        )
+                      })}
                       <option value="__new__">+ 使用其他账户…</option>
                     </select>
                     <button type="button"

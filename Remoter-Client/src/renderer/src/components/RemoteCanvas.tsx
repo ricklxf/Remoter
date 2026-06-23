@@ -9,9 +9,10 @@ interface Props {
   conn: Connection
   streamInfo: StreamInfo
   initialCodec?: VideoCodec | 'jpeg'
+  isActive?: boolean
 }
 
-export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264' }: Props) {
+export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())
@@ -95,6 +96,13 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264' }: Props)
       ctx2dRef.current = null
     }
   }, [streamInfo, initialCodec])
+
+  // Tab switched away: this canvas stays mounted (decoder keeps decoding in
+  // the background, see App.tsx), but its keyboard capture must not — else
+  // it keeps eating keystrokes meant for whichever tab you switched to.
+  useEffect(() => {
+    if (!isActive) inputRef.current.deactivate()
+  }, [isActive])
 
   // Wire up video frames + codec_changed events
   useEffect(() => {

@@ -12,10 +12,11 @@ interface Props {
   initialCodec?: VideoCodec | 'jpeg'
   transfers: FileTransfer[]
   isReconnecting?: boolean
+  isActive?: boolean
   onDisconnect: () => void
 }
 
-export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, onDisconnect }: Props) {
+export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, isActive = true, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [fps, setFps]         = useState(60)
   const [bitrate, setBitrate] = useState(15_000_000)
@@ -56,6 +57,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
         conn={conn}
         streamInfo={streamInfo}
         initialCodec={initialCodec}
+        isActive={isActive}
       />
 
       {showTransfers && (

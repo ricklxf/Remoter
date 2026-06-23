@@ -49,6 +49,19 @@ export class InputHandler {
     if (this.locked) document.exitPointerLock?.()
   }
 
+  // Like detach() but keeps listeners attached — for a tab that's hidden
+  // (not closed) while other tabs keep streaming in the background. Without
+  // this, a tab left in "captured" state when you switch away keeps eating
+  // keystrokes meant for whichever tab you switched to, since its document-
+  // level keydown listener is still alive (the whole point of staying
+  // mounted — its decoder keeps decoding too).
+  deactivate(): void {
+    this.hovering = false
+    this.captured = false
+    this.releaseAllKeys()
+    if (this.locked) document.exitPointerLock?.()
+  }
+
   setRemoteSize(w: number, h: number): void {
     this.remoteW = w
     this.remoteH = h

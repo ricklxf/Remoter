@@ -218,25 +218,39 @@ export default function App() {
         />
       )}
       <div id="remoter-content" style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-        {activeTab && (
-          (activeTab.state === 'streaming' || activeTab.state === 'reconnecting') && activeTab.streamInfo && activeConn ? (
-            <DesktopPage
-              key={activeTab.id}
-              conn={activeConn}
-              streamInfo={activeTab.streamInfo}
-              initialCodec={activeTab.codec}
-              transfers={activeTab.transfers}
-              isReconnecting={activeTab.state === 'reconnecting'}
-              onDisconnect={() => handleDisconnect(activeTab.id)}
-            />
-          ) : (
-            <ConnectPage
-              key={activeTab.id}
-              onConnect={(params) => handleConnect(activeTab.id, params)}
-              isConnecting={activeTab.state === 'connecting' || activeTab.state === 'authenticating'}
-              errorMsg={activeTab.errorMsg}
-            />
+        {/* Every streaming tab stays mounted (just hidden via CSS) so its
+            WebCodecs decoder keeps decoding in the background — switching
+            tabs is then an instant visibility toggle, not a decoder
+            teardown/rebuild + wait-for-keyframe cycle (that's what caused
+            the black flash / ~1s stutter on every switch). Trade-off: each
+            background streaming tab keeps decoding (CPU/GPU cost) even
+            while hidden — fine for the handful of tabs this app is meant
+            for, not for dozens. */}
+        {tabs.map(tab => {
+          const conn = connMapRef.current.get(tab.id)
+          const isStreaming = (tab.state === 'streaming' || tab.state === 'reconnecting') && tab.streamInfo && conn
+          if (!isStreaming) return null
+          return (
+            <div key={tab.id} style={{ position: 'absolute', inset: 0, display: tab.id === activeId ? 'block' : 'none' }}>
+              <DesktopPage
+                conn={conn!}
+                streamInfo={tab.streamInfo!}
+                initialCodec={tab.codec}
+                transfers={tab.transfers}
+                isReconnecting={tab.state === 'reconnecting'}
+                isActive={tab.id === activeId}
+                onDisconnect={() => handleDisconnect(tab.id)}
+              />
+            </div>
           )
+        })}
+        {activeTab && !((activeTab.state === 'streaming' || activeTab.state === 'reconnecting') && activeTab.streamInfo && activeConn) && (
+          <ConnectPage
+            key={activeTab.id}
+            onConnect={(params) => handleConnect(activeTab.id, params)}
+            isConnecting={activeTab.state === 'connecting' || activeTab.state === 'authenticating'}
+            errorMsg={activeTab.errorMsg}
+          />
         )}
       </div>
     </div>

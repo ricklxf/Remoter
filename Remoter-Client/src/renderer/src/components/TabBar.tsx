@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { ConnectionState } from '../types'
 import { ConnStats } from '../network/Connection'
 
@@ -216,10 +216,19 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
 
 // ─── Tab bar ────────────────────────────────────────────────────────
 
+// Edge's tab hover preview waits ~500ms before showing, so a quick pass over
+// several tabs doesn't pop up a card for every one of them.
+const HOVER_DELAY_MS = 500
+
 export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd, onReorder }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [popupPos, setPopupPos]   = useState<{ left: number; top: number } | null>(null)
   const hoveredTab = hoveredId ? (tabs.find(t => t.id === hoveredId) ?? null) : null
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const cancelHoverTimer = () => {
+    if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null }
+  }
 
   // Position and color of the active-tab connector strip
   const spacerW       = isMac ? 72 : 8
@@ -244,10 +253,14 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onTogg
             onToggleMute={() => onToggleMute(tab.id)}
             onHover={e => {
               const rect = e.currentTarget.getBoundingClientRect()
-              setHoveredId(tab.id)
-              setPopupPos({ left: rect.left + rect.width / 2, top: rect.bottom })
+              const pos = { left: rect.left + rect.width / 2, top: rect.bottom }
+              cancelHoverTimer()
+              hoverTimer.current = setTimeout(() => {
+                setHoveredId(tab.id)
+                setPopupPos(pos)
+              }, HOVER_DELAY_MS)
             }}
-            onHoverEnd={() => setHoveredId(null)}
+            onHoverEnd={() => { cancelHoverTimer(); setHoveredId(null) }}
             onReorder={onReorder}
           />
         ))}

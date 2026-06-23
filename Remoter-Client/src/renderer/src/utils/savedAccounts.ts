@@ -23,6 +23,14 @@ export function getSavedAccount(address: string): SavedAccount | null {
   return getSavedAccounts(address)[0] ?? null
 }
 
+/** 跨所有地址的全部已记住账户，按最新在前排序——用于"快速选择"下拉 */
+export function getAllSavedAccounts(): SavedAccount[] {
+  try {
+    const all: SavedAccount[] = JSON.parse(localStorage.getItem(KEY) ?? '[]')
+    return all.sort((a, b) => b.savedAt - a.savedAt)
+  } catch { return [] }
+}
+
 /** 按 (address, username) upsert，同一用户重复登录只保留最新 token */
 export function saveAccount(address: string, username: string, token: string): void {
   try {

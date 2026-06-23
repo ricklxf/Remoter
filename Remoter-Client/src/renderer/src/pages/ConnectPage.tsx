@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { ConnectParams, ConnectMode, AuthMethod } from '../types'
-import { getSavedAccounts, removeSavedAccount, SavedAccount,
+import { getSavedAccounts, getAllSavedAccounts, removeSavedAccount, SavedAccount,
          getMachineName, saveMachineName,
          getMachineInfo, MachineInfo } from '../utils/savedAccounts'
 
@@ -16,6 +16,11 @@ interface Props {
 // like "Connection closed before receiving a handshake response" in devtools).
 function upgradeToWss(url: string): string {
   return url.startsWith('ws://') ? 'wss://' + url.slice('ws://'.length) : url
+}
+
+// "wss://192.168.1.144:7788" → "192.168.1.144"，下拉里只展示这部分作为 (ip) 标识
+function addressHost(address: string): string {
+  try { return new URL(address).hostname } catch { return address }
 }
 
 function inferInitial(): { mode: ConnectMode; directUrl: string; relayUrl: string } {
@@ -63,6 +68,25 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
   const [rememberDevice, setRememberDevice] = useState(false)
   const [isEditingNote, setIsEditingNote] = useState(false)
   const [noteValue, setNoteValue] = useState('')
+  const [allAccounts, setAllAccounts] = useState<SavedAccount[]>([])
+
+  useEffect(() => {
+    if (mode === 'direct') setAllAccounts(getAllSavedAccounts())
+  }, [mode])
+
+  // 全局"快速选择"：直接挑一个曾经登录过的 用户名(IP)，自动填好地址 + 账户，
+  // 不用先手动输入地址再从该地址下的账户列表里选。
+  function pickGlobalAccount(a: SavedAccount) {
+    setDirectUrl(a.address)
+    setSavedList(getSavedAccounts(a.address))
+    setSelectedSaved(a)
+    setAuthMode('token')
+    const name = getMachineName(a.address)
+    setMachineName(name)
+    setNoteValue(name)
+    setMachineInfo(getMachineInfo(a.address))
+    setIsEditingNote(false)
+  }
 
   // Load saved accounts, PIN, and machine name whenever address changes
   useEffect(() => {
@@ -109,6 +133,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
     removeSavedAccount(directUrl, selectedSaved.username)
     const remaining = getSavedAccounts(directUrl)
     setSavedList(remaining)
+    setAllAccounts(getAllSavedAccounts())
     if (remaining.length > 0) {
       setSelectedSaved(remaining[0])
     } else {
@@ -157,6 +182,28 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} style={s.form}>
+          {/* Quick pick: jump straight to a previously used 用户名(IP) without typing the address */}
+          {mode === 'direct' && allAccounts.length > 0 && (
+            <label style={s.label}>
+              <span>快速选择</span>
+              <select
+                style={s.savedSelect}
+                value="__pick__"
+                onChange={e => {
+                  const acct = allAccounts.find(a => `${a.address}|${a.username}` === e.target.value)
+                  if (acct) pickGlobalAccount(acct)
+                }}
+              >
+                <option value="__pick__" disabled>选择曾经登录过的账户…</option>
+                {allAccounts.map(a => (
+                  <option key={`${a.address}|${a.username}`} value={`${a.address}|${a.username}`}>
+                    {(a.username === '__pin__' ? 'PIN 码' : a.username)} ({addressHost(a.address)})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {/* Address */}
           {mode === 'direct' ? (
             <label style={s.label}>

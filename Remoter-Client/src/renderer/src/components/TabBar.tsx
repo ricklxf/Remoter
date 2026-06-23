@@ -216,9 +216,8 @@ function TabItem({ tab, active, canClose, onSelect, onClose, onDisconnect, onTog
 
 // ─── Tab bar ────────────────────────────────────────────────────────
 
-// Edge's tab hover preview waits ~500ms before showing, so a quick pass over
-// several tabs doesn't pop up a card for every one of them.
-const HOVER_DELAY_MS = 500
+// A quick pass over several tabs shouldn't pop up a card for every one of them.
+const HOVER_DELAY_MS = 1000
 
 export function TabBar({ tabs, activeId, onSelect, onClose, onDisconnect, onToggleMute, onAdd, onReorder }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)

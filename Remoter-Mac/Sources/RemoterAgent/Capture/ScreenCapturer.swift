@@ -43,13 +43,23 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     private var statFrames:   Int = 0
     private var statTick:     CFAbsoluteTime = 0
 
-    func start(fps: Int = 60) async throws {
+    /// maxDimension caps the longer side (preserving aspect ratio) — e.g.
+    /// 1920 for "1080p", 2560 for "2K". nil/omitted uses the physical
+    /// display resolution as-is. Never upscales past physical regardless of
+    /// the cap given.
+    func start(fps: Int = 60, maxDimension: Int? = nil) async throws {
         let displayID = CGMainDisplayID()
         physWidth    = Int(CGDisplayPixelsWide(displayID))
         physHeight   = Int(CGDisplayPixelsHigh(displayID))
-        // Full resolution: H.264 handles 1080p at 60fps well within normal bandwidth
-        screenWidth  = physWidth
-        screenHeight = physHeight
+        if let maxDimension, maxDimension < max(physWidth, physHeight) {
+            let scale = Double(maxDimension) / Double(max(physWidth, physHeight))
+            // SCStreamConfiguration wants even dimensions.
+            screenWidth  = Int(Double(physWidth)  * scale) & ~1
+            screenHeight = Int(Double(physHeight) * scale) & ~1
+        } else {
+            screenWidth  = physWidth
+            screenHeight = physHeight
+        }
         statTick     = CFAbsoluteTimeGetCurrent()
 
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",

@@ -10,6 +10,8 @@ interface Props {
   fps: number
   bitrate: number
   onQualityChange: (fps: number, bitrate: number) => void
+  resolution: '1080' | '2k'
+  onResolutionChange: (tier: '1080' | '2k') => void
   transferCount: number
   onToggleTransfers: () => void
   showTransfers: boolean
@@ -19,12 +21,18 @@ interface Props {
 
 // First entry is the auto-adjusting tier (server steps it based on the
 // client's own decode-overload feedback) — must stay first, QualitySelect
-// identifies it by index.
+// identifies it by index. Labels don't mention resolution — that's now a
+// separate, independent control (see RESOLUTION_OPTIONS below).
 const QUALITY_PRESETS = [
-  { label: '自动 · 1080 · 30fps', fps: 30, bitrate:  2_000_000 },
-  { label: '2K · 60fps',          fps: 60, bitrate: 15_000_000 },
-  { label: '1080 · 60fps',        fps: 60, bitrate:  8_000_000 },
-  { label: '1080 · 30fps',        fps: 30, bitrate:  4_000_000 },
+  { label: '自动',           fps: 30, bitrate:  2_000_000 },
+  { label: '60fps · 高码率', fps: 60, bitrate: 15_000_000 },
+  { label: '60fps · 中码率', fps: 60, bitrate:  8_000_000 },
+  { label: '30fps · 中码率', fps: 30, bitrate:  4_000_000 },
+]
+
+const RESOLUTION_OPTIONS: Array<{ label: string; tier: '1080' | '2k' }> = [
+  { label: '1080p', tier: '1080' },
+  { label: '2K',    tier: '2k'   },
 ]
 
 const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
@@ -34,6 +42,7 @@ const THEME_LABEL: Record<Theme, string> = { system: '跟随系统', light: '浅
 export function Toolbar({
   conn, onHide, onToggleFullscreen,
   fps, bitrate, onQualityChange,
+  resolution, onResolutionChange,
   transferCount, onToggleTransfers, showTransfers,
   onMouseEnter, onMouseLeave,
 }: Props) {
@@ -50,6 +59,14 @@ export function Toolbar({
         onChange={(f, b, auto) => {
           onQualityChange(f, b)
           conn.sendQuality(f, b, auto)
+        }}
+      />
+
+      <ResolutionSelect
+        value={resolution}
+        onChange={tier => {
+          onResolutionChange(tier)
+          conn.sendResolution(tier)
         }}
       />
 
@@ -331,6 +348,52 @@ function QualitySelect({ value, onChange }: { value: string; onChange: (fps: num
                 onClick={() => { onChange(p.fps, p.bitrate, i === 0); setOpen(false) }}
               >
                 <span>{p.label}</span>
+                {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Resolution dropdown ────────────────────────────────────────────
+// Unlike fps/bitrate, resolution can't change on a live encoder — the
+// server tears down and rebuilds capture+encode at the new size (a brief
+// visible gap), so this stays a plain manual choice, never auto-adjusted.
+
+function ResolutionSelect({ value, onChange }: { value: '1080' | '2k'; onChange: (tier: '1080' | '2k') => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const current = RESOLUTION_OPTIONS.find(o => o.tier === value) ?? RESOLUTION_OPTIONS[0]
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={s.selectBtn} onClick={() => setOpen(v => !v)}>
+        <span>{current.label}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={s.dropdown}>
+          {RESOLUTION_OPTIONS.map(o => {
+            const active = o.tier === value
+            return (
+              <button
+                key={o.tier}
+                style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
+                onClick={() => { onChange(o.tier); setOpen(false) }}
+              >
+                <span>{o.label}</span>
                 {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
               </button>
             )

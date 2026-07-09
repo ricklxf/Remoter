@@ -20,6 +20,10 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [fps, setFps]         = useState(30)
   const [bitrate, setBitrate] = useState(2_000_000)
+  // Matches the server's own default (resolutionMaxDimension = 1920) — no
+  // need to send this on mount like the quality/auto default, since both
+  // sides already agree without a message.
+  const [resolution, setResolution] = useState<'1080' | '2k'>('1080')
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -125,6 +129,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             fps={fps}
             bitrate={bitrate}
             onQualityChange={handleQualityChange}
+            resolution={resolution}
+            onResolutionChange={setResolution}
             transferCount={transfers.filter(t => !t.done).length}
             onToggleTransfers={() => setShowTransfers(v => !v)}
             showTransfers={showTransfers}

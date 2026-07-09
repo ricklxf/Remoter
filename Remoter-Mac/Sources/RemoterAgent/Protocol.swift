@@ -18,6 +18,7 @@ enum ClientMessage {
     case fileStart(id: String, name: String, size: Int64)
     case fileEnd(id: String)
     case qualitySet(fps: Int, bitrate: Int, auto: Bool)
+    case resolutionSet(tier: String)
     case ping
     case requestKeyframe
     case webrtcOffer(sdp: String)
@@ -90,6 +91,8 @@ enum ClientMessage {
                 bitrate: json["bitrate"] as? Int ?? 10_000_000,
                 auto: json["auto"] as? Bool ?? false
             )
+        case "resolution":
+            return .resolutionSet(tier: json["tier"] as? String ?? "1080")
         case "ping":
             return .ping
         case "request_keyframe":

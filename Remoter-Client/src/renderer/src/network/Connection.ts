@@ -217,6 +217,9 @@ export class Connection {
   sendQuality(fps: number, bitrate: number, auto = false): void {
     this.sendJson({ type: 'quality', fps, bitrate, auto })
   }
+  sendResolution(tier: '1080' | '2k'): void {
+    this.sendJson({ type: 'resolution', tier })
+  }
 
   // Forces the encoder to emit a keyframe right away instead of waiting for
   // its next scheduled one (up to 2s) — call whenever a fresh decoder

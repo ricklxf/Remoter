@@ -19,10 +19,12 @@ interface Props {
 export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, isActive = true, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [fps, setFps]         = useState(30)
+  const [fpsAuto, setFpsAuto] = useState(true)
   const [bitrate, setBitrate] = useState(2_000_000)
+  const [bitrateAuto, setBitrateAuto] = useState(true)
   // Matches the server's own default (resolutionMaxDimension = 1920) — no
-  // need to send this on mount like the quality/auto default, since both
-  // sides already agree without a message.
+  // need to send this on mount like the fps/bitrate auto default, since
+  // both sides already agree without a message.
   const [resolution, setResolution] = useState<'1080' | '2k'>('1080')
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
@@ -48,16 +50,18 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     prevTransfersLen.current = transfers.length
   }, [transfers.length])
 
-  // Default quality is "自动" — tell the server to actually enable auto
+  // Default is "自动" for both — tell the server to actually enable auto
   // stepping (not just apply the floor tier once and leave it fixed).
   // Without this, the server only knows to adapt after the user opens the
-  // quality menu and picks it manually.
+  // menu and picks it manually. fps and bitrate are independent, so both
+  // get enabled separately.
   useEffect(() => {
-    conn.sendQuality(fps, bitrate, true)
+    conn.sendFps(fps, true)
+    conn.sendBitrate(bitrate, true)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Server pushes the tier it's actually running whenever auto mode steps
-  // it up/down, so the toolbar's selection reflects reality instead of
+  // Server pushes the values it's actually running whenever auto mode
+  // steps either one up/down, so the toolbar reflects reality instead of
   // staying stuck on whatever was picked (or the initial default) forever.
   useEffect(() => {
     const prev = conn.onEvent
@@ -71,9 +75,14 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     return () => { conn.onEvent = prev }
   }, [conn])
 
-  function handleQualityChange(f: number, b: number) {
+  function handleFpsChange(f: number, auto: boolean) {
     setFps(f)
+    setFpsAuto(auto)
+  }
+
+  function handleBitrateChange(b: number, auto: boolean) {
     setBitrate(b)
+    setBitrateAuto(auto)
   }
 
   const toggleToolbar = useCallback(() => setToolbarVisible(v => !v), [])
@@ -127,8 +136,11 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             onHide={toggleToolbar}
             onToggleFullscreen={() => window.remoterAPI?.toggleFullscreen()}
             fps={fps}
+            fpsAuto={fpsAuto}
+            onFpsChange={handleFpsChange}
             bitrate={bitrate}
-            onQualityChange={handleQualityChange}
+            bitrateAuto={bitrateAuto}
+            onBitrateChange={handleBitrateChange}
             resolution={resolution}
             onResolutionChange={setResolution}
             transferCount={transfers.filter(t => !t.done).length}

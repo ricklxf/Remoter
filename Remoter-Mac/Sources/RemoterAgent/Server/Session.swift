@@ -40,8 +40,8 @@ final class Session {
     // choice, never silently as part of auto-quality. Defaults to 1080p.
     private var resolutionMaxDimension = 1920
 
-    // Currently-applied fps/bitrate (mirrors whatever applyQuality last set,
-    // whether from auto-stepping or a manual pick) — beginCapture() reads
+    // Currently-applied fps/bitrate (mirrors whatever applyFps/applyBitrate
+    // last set, whether from auto-stepping or a manual pick) — beginCapture() reads
     // these instead of a hardcoded default so a resolution switch (which
     // re-runs the whole capture/encoder setup) doesn't reset quality back
     // to the connection-time starting point.
@@ -77,7 +77,11 @@ final class Session {
     // stuttering before settling.
     private static let autoFpsTiers:     [Int] = [30, 60]
     private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 15_000_000]
-    private var autoQuality = false
+    // Independent — the client can put either on auto while pinning the
+    // other to a manual value, matching the fact they're genuinely two
+    // separate knobs, not one bundled "quality" choice.
+    private var autoFpsEnabled = false
+    private var autoBitrateEnabled = false
     private var autoFpsIndex = 0
     private var autoBitrateIndex = 0
     private var autoFpsCleanStreak = 0
@@ -330,16 +334,24 @@ final class Session {
         case .fileEnd(let fid):
             fileReceiver?.finish(id: fid)
 
-        case .qualitySet(let fps, let bitrate, let auto):
-            autoQuality = auto
+        case .fpsSet(let fps, let auto):
+            autoFpsEnabled = auto
             if auto {
                 autoFpsIndex = 0
-                autoBitrateIndex = 0
                 autoFpsCleanStreak = 0
-                autoBitrateCleanStreak = 0
-                applyQuality(fps: Self.autoFpsTiers[0], bitrate: Self.autoBitrateTiers[0])
+                applyFps(Self.autoFpsTiers[0])
             } else {
-                applyQuality(fps: fps, bitrate: bitrate)
+                applyFps(fps)
+            }
+
+        case .bitrateSet(let bitrate, let auto):
+            autoBitrateEnabled = auto
+            if auto {
+                autoBitrateIndex = 0
+                autoBitrateCleanStreak = 0
+                applyBitrate(Self.autoBitrateTiers[0])
+            } else {
+                applyBitrate(bitrate)
             }
 
         case .resolutionSet(let tier):
@@ -685,7 +697,7 @@ final class Session {
         if dt >= 5 {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws") bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
-            if autoQuality { evaluateAutoQuality() }
+            if autoFpsEnabled || autoBitrateEnabled { evaluateAutoQuality() }
             sentFrames = 0
             backpressureDrops = 0
             keyframesForced = 0
@@ -701,51 +713,66 @@ final class Session {
     /// consecutive clean windows, so it settles instead of oscillating
     /// right at the edge of what the client/link can sustain.
     private func evaluateAutoQuality() {
-        var changed = false
+        var fpsChanged = false
+        var bitrateChanged = false
 
-        if keyframeRequests > 0 {
-            autoFpsCleanStreak = 0
-            if autoFpsIndex > 0 { autoFpsIndex -= 1; changed = true }
-        } else {
-            autoFpsCleanStreak += 1
-            if autoFpsCleanStreak >= 3 && autoFpsIndex < Self.autoFpsTiers.count - 1 {
+        if autoFpsEnabled {
+            if keyframeRequests > 0 {
                 autoFpsCleanStreak = 0
-                autoFpsIndex += 1
-                changed = true
+                if autoFpsIndex > 0 { autoFpsIndex -= 1; fpsChanged = true }
+            } else {
+                autoFpsCleanStreak += 1
+                if autoFpsCleanStreak >= 3 && autoFpsIndex < Self.autoFpsTiers.count - 1 {
+                    autoFpsCleanStreak = 0
+                    autoFpsIndex += 1
+                    fpsChanged = true
+                }
             }
         }
 
-        if backpressureDrops > 0 {
-            autoBitrateCleanStreak = 0
-            if autoBitrateIndex > 0 { autoBitrateIndex -= 1; changed = true }
-        } else {
-            autoBitrateCleanStreak += 1
-            if autoBitrateCleanStreak >= 3 && autoBitrateIndex < Self.autoBitrateTiers.count - 1 {
+        if autoBitrateEnabled {
+            if backpressureDrops > 0 {
                 autoBitrateCleanStreak = 0
-                autoBitrateIndex += 1
-                changed = true
+                if autoBitrateIndex > 0 { autoBitrateIndex -= 1; bitrateChanged = true }
+            } else {
+                autoBitrateCleanStreak += 1
+                if autoBitrateCleanStreak >= 3 && autoBitrateIndex < Self.autoBitrateTiers.count - 1 {
+                    autoBitrateCleanStreak = 0
+                    autoBitrateIndex += 1
+                    bitrateChanged = true
+                }
             }
         }
 
-        guard changed else { return }
-        let fps = Self.autoFpsTiers[autoFpsIndex]
-        let bitrate = Self.autoBitrateTiers[autoBitrateIndex]
+        guard fpsChanged || bitrateChanged else { return }
+        if fpsChanged { applyFps(Self.autoFpsTiers[autoFpsIndex], notify: false) }
+        if bitrateChanged { applyBitrate(Self.autoBitrateTiers[autoBitrateIndex], notify: false) }
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "auto_quality_step",
-            detail: "fps=\(fps) bitrate=\(bitrate)")
-        applyQuality(fps: fps, bitrate: bitrate)
+            detail: "fps=\(currentFps) bitrate=\(currentBitrate)")
+        notifyQualityActive()
     }
 
-    /// Applies a quality tier (used by both manual selection and auto
-    /// stepping) and tells the client what's now actually active — needed
-    /// for auto mode, where the client doesn't otherwise know which tier
-    /// the server landed on.
-    private func applyQuality(fps: Int, bitrate: Int) {
+    /// Applies fps (used by both manual selection and auto stepping).
+    /// notify=false lets evaluateAutoQuality() batch a single combined
+    /// notice when it changes fps and bitrate in the same step, instead of
+    /// sending two back-to-back messages for one logical update.
+    private func applyFps(_ fps: Int, notify: Bool = true) {
         currentFps = fps
-        currentBitrate = bitrate
         capturer?.updateFps(fps)
+        if notify { notifyQualityActive() }
+    }
+
+    private func applyBitrate(_ bitrate: Int, notify: Bool = true) {
+        currentBitrate = bitrate
         jpegQuality = bitrateToJpegQuality(bitrate)
         encoder?.setBitrate(bitrate)
-        sendJson(["type": "quality_active", "fps": fps, "bitrate": bitrate])
+        if notify { notifyQualityActive() }
+    }
+
+    /// Tells the client what's actually active — needed for auto mode,
+    /// where it doesn't otherwise know which tier the server landed on.
+    private func notifyQualityActive() {
+        sendJson(["type": "quality_active", "fps": currentFps, "bitrate": currentBitrate])
     }
 
     /// 码率（bps）→ JPEG 质量，匹配客户端 Toolbar 预设

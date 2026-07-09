@@ -8,8 +8,11 @@ interface Props {
   onHide: () => void
   onToggleFullscreen: () => void
   fps: number
+  fpsAuto: boolean
+  onFpsChange: (fps: number, auto: boolean) => void
   bitrate: number
-  onQualityChange: (fps: number, bitrate: number) => void
+  bitrateAuto: boolean
+  onBitrateChange: (bitrate: number, auto: boolean) => void
   resolution: '1080' | '2k'
   onResolutionChange: (tier: '1080' | '2k') => void
   transferCount: number
@@ -19,16 +22,16 @@ interface Props {
   onMouseLeave?: () => void
 }
 
-// First entry is the auto-adjusting tier (server steps it based on the
-// client's own decode-overload feedback) — must stay first, QualitySelect
-// identifies it by index. Labels don't mention resolution — that's now a
-// separate, independent control (see RESOLUTION_OPTIONS below).
-const QUALITY_PRESETS = [
-  { label: '自动',           fps: 30, bitrate:  2_000_000 },
-  { label: '60fps · 高码率', fps: 60, bitrate: 15_000_000 },
-  { label: '60fps · 中码率', fps: 60, bitrate:  8_000_000 },
-  { label: '30fps · 中码率', fps: 30, bitrate:  4_000_000 },
-]
+// fps and bitrate are independent — each has its own auto-adjusting mode
+// (server steps it based on its own feedback signal: fps on decode-overload,
+// bitrate on network backpressure) plus its own manual tiers.
+const FPS_TIERS = [30, 60]
+const BITRATE_TIERS = [2_000_000, 4_000_000, 8_000_000, 15_000_000]
+
+function formatBitrate(bps: number): string {
+  const mbps = bps / 1_000_000
+  return `${Number.isInteger(mbps) ? mbps : mbps.toFixed(1)}Mbps`
+}
 
 const RESOLUTION_OPTIONS: Array<{ label: string; tier: '1080' | '2k' }> = [
   { label: '1080p', tier: '1080' },
@@ -41,7 +44,8 @@ const THEME_LABEL: Record<Theme, string> = { system: '跟随系统', light: '浅
 
 export function Toolbar({
   conn, onHide, onToggleFullscreen,
-  fps, bitrate, onQualityChange,
+  fps, fpsAuto, onFpsChange,
+  bitrate, bitrateAuto, onBitrateChange,
   resolution, onResolutionChange,
   transferCount, onToggleTransfers, showTransfers,
   onMouseEnter, onMouseLeave,
@@ -54,11 +58,25 @@ export function Toolbar({
 
   return (
     <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
-      <QualitySelect
-        value={`${fps}:${bitrate}`}
-        onChange={(f, b, auto) => {
-          onQualityChange(f, b)
-          conn.sendQuality(f, b, auto)
+      <AutoSelect
+        value={fps}
+        auto={fpsAuto}
+        options={FPS_TIERS}
+        formatValue={v => `${v}fps`}
+        onChange={(f, auto) => {
+          onFpsChange(f, auto)
+          conn.sendFps(f, auto)
+        }}
+      />
+
+      <AutoSelect
+        value={bitrate}
+        auto={bitrateAuto}
+        options={BITRATE_TIERS}
+        formatValue={formatBitrate}
+        onChange={(b, auto) => {
+          onBitrateChange(b, auto)
+          conn.sendBitrate(b, auto)
         }}
       />
 
@@ -314,12 +332,19 @@ function Toggle({ checked, onToggle }: { checked: boolean; onToggle: () => void 
   )
 }
 
-// ─── Custom quality dropdown ──────────────────────────────────────────
+// ─── Generic auto/manual dropdown (used for fps and bitrate) ──────────
+// Each has its own independent "自动" mode — the server steps it based on
+// its own feedback signal — plus a fixed set of manual values.
 
-function QualitySelect({ value, onChange }: { value: string; onChange: (fps: number, bitrate: number, auto: boolean) => void }) {
+function AutoSelect<T>({ value, auto, options, formatValue, onChange }: {
+  value: T
+  auto: boolean
+  options: T[]
+  formatValue: (v: T) => string
+  onChange: (value: T, auto: boolean) => void
+}) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const current = QUALITY_PRESETS.find(p => `${p.fps}:${p.bitrate}` === value) ?? QUALITY_PRESETS[0]
 
   useEffect(() => {
     if (!open) return
@@ -333,21 +358,27 @@ function QualitySelect({ value, onChange }: { value: string; onChange: (fps: num
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button style={s.selectBtn} onClick={() => setOpen(v => !v)}>
-        <span>{current.label}</span>
+        <span>{auto ? `自动 (${formatValue(value)})` : formatValue(value)}</span>
         <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
       </button>
       {open && (
         <div style={s.dropdown}>
-          {QUALITY_PRESETS.map((p, i) => {
-            const v = `${p.fps}:${p.bitrate}`
-            const active = v === value
+          <button
+            style={{ ...s.dropItem, ...(auto ? s.dropItemActive : {}) }}
+            onClick={() => { onChange(value, true); setOpen(false) }}
+          >
+            <span>自动</span>
+            {auto && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+          </button>
+          {options.map(o => {
+            const active = !auto && o === value
             return (
               <button
-                key={p.label}
+                key={formatValue(o)}
                 style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
-                onClick={() => { onChange(p.fps, p.bitrate, i === 0); setOpen(false) }}
+                onClick={() => { onChange(o, false); setOpen(false) }}
               >
-                <span>{p.label}</span>
+                <span>{formatValue(o)}</span>
                 {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
               </button>
             )

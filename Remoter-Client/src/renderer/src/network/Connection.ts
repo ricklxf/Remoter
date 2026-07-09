@@ -214,8 +214,11 @@ export class Connection {
   sendClipboard(text: string): void {
     this.sendJson({ type: 'clipboard_set', text })
   }
-  sendQuality(fps: number, bitrate: number, auto = false): void {
-    this.sendJson({ type: 'quality', fps, bitrate, auto })
+  sendFps(fps: number, auto = false): void {
+    this.sendJson({ type: 'fps', fps, auto })
+  }
+  sendBitrate(bitrate: number, auto = false): void {
+    this.sendJson({ type: 'bitrate', bitrate, auto })
   }
   sendResolution(tier: '1080' | '2k'): void {
     this.sendJson({ type: 'resolution', tier })

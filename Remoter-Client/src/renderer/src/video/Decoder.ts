@@ -9,11 +9,30 @@ const CODEC_STRING: Record<Exclude<VideoCodec, 'jpeg'>, string> = {
   h265: 'hvc1.1.6.L150.B0'  // H.265 Main Profile Level 5.0
 }
 
+// If decode can't keep up with arrival rate (e.g. no hardware decoder
+// available, falling back to software H.264 decode on an underpowered/
+// locked-down machine), WebCodecs just queues chunks — decodeQueueSize grows
+// without bound and what's on screen falls further and further behind real
+// time. Network stats (fps/RTT) look perfectly healthy the whole time since
+// they measure arrival, not decode, which makes this easy to misdiagnose as
+// a network problem. Past this many queued chunks, treat it like a decode
+// error: drop frames until the next keyframe instead of letting the backlog
+// (and visible lag) grow indefinitely.
+const DECODE_QUEUE_OVERLOAD = 4
+
 export class VideoDecoder_ {
   private decoder: VideoDecoder | null = null
   private onFrame: FrameCallback
   private pendingKeyframe = true
   private currentCodec: VideoCodec = 'h264'
+
+  /** Fired (once per recovery cycle) when the decode queue backs up and a fresh keyframe is needed to recover. */
+  onOverloaded: (() => void) | null = null
+
+  // Periodic visibility into decodeQueueSize even when it never crosses the
+  // hard overload threshold — distinguishes "chronically a bit behind" from
+  // "fine, then one sharp spike", which the overload event alone can't tell apart.
+  private lastQueueLogAt = 0
 
   constructor(onFrame: FrameCallback) {
     this.onFrame = onFrame
@@ -61,6 +80,19 @@ export class VideoDecoder_ {
     if (!this.decoder || this.decoder.state === 'closed') return
 
     if (this.pendingKeyframe && !keyframe) return
+
+    const now = performance.now()
+    if (now - this.lastQueueLogAt > 1000) {
+      this.lastQueueLogAt = now
+      console.log(`[Decoder] decodeQueueSize=${this.decoder.decodeQueueSize}`)
+    }
+
+    if (!keyframe && this.decoder.decodeQueueSize > DECODE_QUEUE_OVERLOAD) {
+      this.pendingKeyframe = true
+      this.onOverloaded?.()
+      return
+    }
+
     if (keyframe) this.pendingKeyframe = false
 
     try {

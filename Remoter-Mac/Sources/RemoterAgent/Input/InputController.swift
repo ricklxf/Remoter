@@ -9,9 +9,41 @@ final class InputController {
     private var loggedAccessibility = false
     private var pressedKeys = Set<CGKeyCode>()
 
+    // CGEvent.post() is a synchronous IPC call to WindowServer, made
+    // directly on whatever thread handles the incoming WS message — if it's
+    // ever slow, that thread (and thus reading the next message) is
+    // blocked. Capture-side frame throughput has been repeatedly observed
+    // to collapse the instant input starts, recovering ~60-90s after it
+    // stops, independent of network/decode (confirmed via zero backpressure
+    // drops and zero decode-overload signals in the same window) — this
+    // measures the one remaining unverified link in that chain: whether the
+    // post() call itself is what's slow.
+    private var postCount = 0
+    private var postSlowCount = 0     // > 2ms
+    private var postMaxMs: Double = 0
+    private var postStatTick = Date()
+
     init(screenWidth: Int, screenHeight: Int) {
         self.screenWidth = screenWidth
         self.screenHeight = screenHeight
+    }
+
+    private func timedPost(_ e: CGEvent, tap: CGEventTapLocation) {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        e.post(tap: tap)
+        let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        postCount += 1
+        if ms > 2 { postSlowCount += 1 }
+        if ms > postMaxMs { postMaxMs = ms }
+        let now = Date()
+        if now.timeIntervalSince(postStatTick) >= 5 {
+            ConnectionLogger.shared.logStep(sessionId: "input", step: "post_5s",
+                detail: "count=\(postCount) slow=\(postSlowCount) maxMs=\(String(format: "%.1f", postMaxMs))")
+            postCount = 0
+            postSlowCount = 0
+            postMaxMs = 0
+            postStatTick = now
+        }
     }
 
     // dragging: nil while no button is held (plain hover), or "left"/"right"/
@@ -39,7 +71,7 @@ final class InputController {
             print("[Input] mouseMove: CGEvent creation failed")
             return
         }
-        e.post(tap: .cgSessionEventTap)
+        timedPost(e, tap: .cgSessionEventTap)
     }
 
     func mouseButton(button: String, down: Bool, x: Double, y: Double) {
@@ -58,7 +90,7 @@ final class InputController {
         // Without an explicit click count, some apps' tracking areas/gesture
         // recognizers ignore the synthetic down/up as not a "real" click.
         e.setIntegerValueField(.mouseEventClickState, value: 1)
-        e.post(tap: .cgSessionEventTap)
+        timedPost(e, tap: .cgSessionEventTap)
     }
 
     func mouseDoubleClick(button: String, x: Double, y: Double) {
@@ -69,19 +101,19 @@ final class InputController {
         guard let e = CGEvent(mouseEventSource: src, mouseType: type,
                               mouseCursorPosition: pt, mouseButton: btn) else { return }
         e.setIntegerValueField(.mouseEventClickState, value: 2)
-        e.post(tap: .cgSessionEventTap)
+        timedPost(e, tap: .cgSessionEventTap)
         guard let eu = CGEvent(mouseEventSource: src,
                                mouseType: button == "right" ? .rightMouseUp : .leftMouseUp,
                                mouseCursorPosition: pt, mouseButton: btn) else { return }
         eu.setIntegerValueField(.mouseEventClickState, value: 2)
-        eu.post(tap: .cgSessionEventTap)
+        timedPost(eu, tap: .cgSessionEventTap)
     }
 
     func mouseScroll(dx: Int, dy: Int) {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(scrollWheelEvent2Source: src, units: .line,
                               wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0) else { return }
-        e.post(tap: .cgSessionEventTap)
+        timedPost(e, tap: .cgSessionEventTap)
     }
 
     // Software-simulated Caps Lock: on modern macOS, neither IOHIDSetModifierLockState
@@ -123,7 +155,7 @@ final class InputController {
         }
         if shiftActive { flags.insert(.maskShift) }
         e.flags = flags
-        e.post(tap: .cgAnnotatedSessionEventTap)
+        timedPost(e, tap: .cgAnnotatedSessionEventTap)
 
         if down { pressedKeys.insert(keyCode) } else { pressedKeys.remove(keyCode) }
     }
@@ -134,7 +166,7 @@ final class InputController {
         for keyCode in pressedKeys {
             guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false) else { continue }
             e.flags = []
-            e.post(tap: .cgAnnotatedSessionEventTap)
+            timedPost(e, tap: .cgAnnotatedSessionEventTap)
         }
         pressedKeys.removeAll()
     }

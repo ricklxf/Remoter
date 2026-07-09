@@ -270,12 +270,60 @@ export class Connection {
       console.warn('[Conn] sendJson: ws not open, state=', this.ws?.readyState)
       return
     }
+    if ((obj as { type?: string }).type === 'mouse_move') {
+      // mouse_move is high-frequency and only the latest position matters —
+      // queueing every single one behind the previous one's async encrypt+
+      // send lets the backlog grow unbounded while the mouse is moving, and
+      // anything sent after (e.g. a keypress) inherits that whole backlog
+      // instead of going out promptly. Cap it at one in-flight slot: newer
+      // positions just overwrite the pending one instead of queueing again.
+      this.pendingMouseMove = obj
+      if (this.mouseMoveInFlight) return
+      this.mouseMoveInFlight = true
+      this.enqueueSend(() => {
+        const latest = this.pendingMouseMove!
+        this.pendingMouseMove = null
+        this.mouseMoveInFlight = false
+        return latest
+      })
+      return
+    }
+    if ((obj as { type?: string }).type === 'mouse_scroll') {
+      // Same backlog risk as mouse_move (a trackpad scroll gesture can fire
+      // far more often than 120Hz) — but unlike position, intermediate
+      // deltas matter and must accumulate rather than be discarded.
+      const o = obj as { dx: number; dy: number }
+      if (this.pendingScroll) {
+        this.pendingScroll.dx += o.dx
+        this.pendingScroll.dy += o.dy
+      } else {
+        this.pendingScroll = { dx: o.dx, dy: o.dy }
+      }
+      if (this.scrollInFlight) return
+      this.scrollInFlight = true
+      this.enqueueSend(() => {
+        const latest = this.pendingScroll!
+        this.pendingScroll = null
+        this.scrollInFlight = false
+        return { type: 'mouse_scroll', dx: latest.dx, dy: latest.dy }
+      })
+      return
+    }
+    this.enqueueSend(() => obj)
+  }
+
+  private pendingMouseMove: object | null = null
+  private mouseMoveInFlight = false
+  private pendingScroll: { dx: number; dy: number } | null = null
+  private scrollInFlight = false
+
+  private enqueueSend(getObj: () => object): void {
     if (this.e2e.isReady) {
       const gen = this.queueGen
       this.sendQueue = this.sendQueue.then(async () => {
         if (this.queueGen !== gen) return
         try {
-          const ct = await this.e2e.encryptJson(obj)
+          const ct = await this.e2e.encryptJson(getObj())
           const frame = new Uint8Array(1 + ct.length)
           frame[0] = ENCRYPTED_MSG
           frame.set(ct, 1)
@@ -286,7 +334,7 @@ export class Connection {
       })
     } else {
       try {
-        this.ws.send(JSON.stringify(obj))
+        this.ws!.send(JSON.stringify(getObj()))
       } catch (e) {
         console.warn('[Conn] send failed:', e)
       }

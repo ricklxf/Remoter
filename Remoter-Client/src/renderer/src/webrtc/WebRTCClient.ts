@@ -39,10 +39,13 @@ export class WebRTCClient {
     const pc = new RTCPeerConnection({ iceServers })
     this.pc = pc
 
-    // 视频 DataChannel：无序 + 可靠传输（无 HOL 阻塞，chunk 全部保证到达）
-    // 帧级别的丢帧由 Mac 端 bufferedAmount 检查控制，不依赖 SCTP 丢包
+    // 视频 DataChannel：有序 + 可靠传输。曾经用 ordered:false 图个避免 HOL
+    // 阻塞，但在真实丢包/抖动的链路（WAN/VPN，而非本地局域网）上，无序会让
+    // 后到的帧先于仍在重传的更早的帧被送进解码器 —— 我们的 H.264 没有 B 帧、
+    // 靠前一帧做参考，解码顺序一乱就直接花屏，要等下一个关键帧才能恢复。
+    // 该用 SCTP 原生的有序保证换掉这个正确性问题，多出来的丢包重传延迟可接受。
     this.videoChannel = pc.createDataChannel('video', {
-      ordered: false
+      ordered: true
     })
     this.videoChannel.binaryType = 'arraybuffer'
     this.videoChannel.onmessage = (ev) => this.handleVideoChunk(ev.data as ArrayBuffer)

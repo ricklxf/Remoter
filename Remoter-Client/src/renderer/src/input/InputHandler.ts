@@ -25,6 +25,31 @@ export class InputHandler {
   // Keys that have been sent as keydown — keyup must be sent regardless of hover state
   private pressedKeys = new Set<string>()
 
+  // Mouse-move send throttle: native mousemove can fire 100-240Hz, each one
+  // synchronously injects a CGEvent on the Mac side (an IPC round-trip to
+  // WindowServer — the same process that drives the screen compositor
+  // ScreenCaptureKit reads from). Flooding it makes capture/encode fps dip
+  // while the mouse is actively moving. 120Hz is already more than the eye
+  // can tell apart from native movement, so cap sends there with a
+  // trailing-edge throttle (never drop the final position).
+  private readonly moveThrottleMs = 8
+  private lastMoveSentAt = 0
+  private pendingMove: { nx: number; ny: number; dragging: string | undefined } | null = null
+  private pendingMoveTimer: ReturnType<typeof setTimeout> | null = null
+
+  // Same reasoning and pattern as mouse-move throttling above, for the wheel
+  // event — a scroll fling can fire well past 60Hz, and unlike mouse-move
+  // there was previously *no* source-level throttle for it at all (only a
+  // "don't double-queue a send that's still in flight" guard in Connection,
+  // which barely limits anything since a scroll message resolves in under a
+  // millisecond). Confirmed via server logs this was enough CGEvent traffic
+  // to starve ScreenCaptureKit's own frame delivery through WindowServer.
+  // Deltas accumulate across the throttle window instead of being dropped.
+  private readonly scrollThrottleMs = 16
+  private lastScrollSentAt = 0
+  private pendingScroll: { dx: number; dy: number } | null = null
+  private pendingScrollTimer: ReturnType<typeof setTimeout> | null = null
+
   private boundHandlers: Array<[EventTarget, string, EventListenerOrEventListenerObject]> = []
 
   constructor(conn: Connection) {
@@ -47,6 +72,10 @@ export class InputHandler {
     this.removeListeners()
     this.el = null
     if (this.locked) document.exitPointerLock?.()
+    if (this.pendingMoveTimer) { clearTimeout(this.pendingMoveTimer); this.pendingMoveTimer = null }
+    this.pendingMove = null
+    if (this.pendingScrollTimer) { clearTimeout(this.pendingScrollTimer); this.pendingScrollTimer = null }
+    this.pendingScroll = null
   }
 
   // Like detach() but keeps listeners attached — for a tab that's hidden
@@ -112,11 +141,61 @@ export class InputHandler {
       // Pointer lock: accumulate raw deltas
       this.curNormX = clamp(this.curNormX + me.movementX / this.remoteW, 0, 1)
       this.curNormY = clamp(this.curNormY + me.movementY / this.remoteH, 0, 1)
-      this.conn.sendMouseMove(this.curNormX, this.curNormY, dragging)
+      this.sendMouseMoveThrottled(this.curNormX, this.curNormY, dragging)
     } else if (this.el) {
       const { nx, ny } = this.getCoords(me)
-      this.conn.sendMouseMove(nx, ny, dragging)
+      this.sendMouseMoveThrottled(nx, ny, dragging)
     }
+  }
+
+  private sendMouseMoveThrottled(nx: number, ny: number, dragging: string | undefined): void {
+    const now = performance.now()
+    const elapsed = now - this.lastMoveSentAt
+    if (elapsed >= this.moveThrottleMs) {
+      if (this.pendingMoveTimer) { clearTimeout(this.pendingMoveTimer); this.pendingMoveTimer = null }
+      this.pendingMove = null
+      this.lastMoveSentAt = now
+      this.conn.sendMouseMove(nx, ny, dragging)
+      return
+    }
+    this.pendingMove = { nx, ny, dragging }
+    if (this.pendingMoveTimer) return
+    this.pendingMoveTimer = setTimeout(() => {
+      this.pendingMoveTimer = null
+      if (!this.pendingMove) return
+      const { nx, ny, dragging } = this.pendingMove
+      this.pendingMove = null
+      this.lastMoveSentAt = performance.now()
+      this.conn.sendMouseMove(nx, ny, dragging)
+    }, this.moveThrottleMs - elapsed)
+  }
+
+  private sendScrollThrottled(dx: number, dy: number): void {
+    if (this.pendingScroll) {
+      this.pendingScroll.dx += dx
+      this.pendingScroll.dy += dy
+    } else {
+      this.pendingScroll = { dx, dy }
+    }
+    const now = performance.now()
+    const elapsed = now - this.lastScrollSentAt
+    if (elapsed >= this.scrollThrottleMs) {
+      if (this.pendingScrollTimer) { clearTimeout(this.pendingScrollTimer); this.pendingScrollTimer = null }
+      const { dx: adx, dy: ady } = this.pendingScroll
+      this.pendingScroll = null
+      this.lastScrollSentAt = now
+      this.conn.sendMouseScroll(adx, ady)
+      return
+    }
+    if (this.pendingScrollTimer) return
+    this.pendingScrollTimer = setTimeout(() => {
+      this.pendingScrollTimer = null
+      if (!this.pendingScroll) return
+      const { dx: adx, dy: ady } = this.pendingScroll
+      this.pendingScroll = null
+      this.lastScrollSentAt = performance.now()
+      this.conn.sendMouseScroll(adx, ady)
+    }, this.scrollThrottleMs - elapsed)
   }
 
   private onMouseDown = (e: Event): void => {
@@ -157,7 +236,7 @@ export class InputHandler {
     we.preventDefault()
     const dx = Math.round(we.deltaX / 120)
     const dy = Math.round(we.deltaY / 120)
-    if (dx !== 0 || dy !== 0) this.conn.sendMouseScroll(dx, dy)
+    if (dx !== 0 || dy !== 0) this.sendScrollThrottled(dx, dy)
   }
 
   private onContextMenu = (e: Event): void => e.preventDefault()

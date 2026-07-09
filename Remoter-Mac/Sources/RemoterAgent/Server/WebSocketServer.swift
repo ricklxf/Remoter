@@ -209,12 +209,20 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         schedulePing(context: context)
     }
 
-    // Send a WS PING every 5s; close the channel if no PONG for 15s.
+    // Send a WS PING every 5s; close the channel if no PONG for 30s.
     // Browsers must respond to PING with PONG per RFC 6455 §5.5.3.
+    // Was 15s, which turned out to false-positive: this machine has real,
+    // recurring background CPU contention (other apps competing for the
+    // same cores), which can delay this event loop from processing an
+    // already-received PONG in time — a self-inflicted disconnect, not an
+    // actual dead connection. Each false timeout forces a full WebRTC
+    // renegotiation + fresh decoder keyframe wait, which is far more
+    // disruptive than waiting a little longer to confirm the link is
+    // actually gone.
     private func schedulePing(context: ChannelHandlerContext) {
         pingTask = context.eventLoop.scheduleTask(in: .seconds(5)) { [self] in
             guard !self.closed else { return }
-            if Date().timeIntervalSince(self.lastPong) > 15 {
+            if Date().timeIntervalSince(self.lastPong) > 30 {
                 ConnectionLogger.shared.logStep(sessionId: self.client.endpoint,
                                                 step: "ws_ping_timeout")
                 context.close(promise: nil)

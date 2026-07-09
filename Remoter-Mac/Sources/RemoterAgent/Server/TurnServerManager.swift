@@ -15,8 +15,12 @@ actor TurnServerManager {
 
     private static let confPath = "/opt/homebrew/etc/turnserver.conf"
     private static let port = 7788          // shares the WS port number (UDP only, see no-tcp below)
+    // Small range so all of it can be manually port-forwarded on routers that
+    // only accept single ports per rule (no range support) — this app only
+    // ever needs a handful of concurrent TURN-relayed sessions (friends/family
+    // use), not the hundreds a commercial-scale TURN deployment would want.
     private static let relayMinPort = 49160
-    private static let relayMaxPort = 49260
+    private static let relayMaxPort = 49164
 
     private var lastWrittenContent: String?
 

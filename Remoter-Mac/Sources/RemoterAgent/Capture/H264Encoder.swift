@@ -2,9 +2,8 @@ import Foundation
 import CoreMedia
 import CoreVideo
 import VideoToolbox
-import CoreGraphics
 
-// VTCompressionSession wrapper: CGImage → H.264 Annex-B NAL units.
+// VTCompressionSession wrapper: CVPixelBuffer → H.264 Annex-B NAL units.
 // Output fires on VT's internal queue; caller must be thread-safe.
 final class H264Encoder {
     var onEncodedFrame: ((Data, Bool) -> Void)?
@@ -12,6 +11,16 @@ final class H264Encoder {
     private var session: VTCompressionSession?
     private var frameIndex: Int64 = 0
     private var forceKeyframeNext = false
+
+    // VTCompressionSessionEncodeFrame blocks the *next* submission until its
+    // internal queue has a free slot, which only happens once the previous
+    // frame's completion callback returns. If onEncodedFrame (network send,
+    // chunking, etc.) ran directly on that callback, any slowness downstream
+    // (e.g. WebRTC data channel backpressure) would propagate straight back
+    // into encode submission — exactly the kind of stall that made fps dip
+    // in bursts. Hop off VT's callback thread immediately so it can always
+    // free its queue slot right away, regardless of how long sending takes.
+    private let outputQueue = DispatchQueue(label: "remoter.h264.output", qos: .userInitiated)
 
     /// Forces the *next* encode() call to emit a keyframe immediately,
     /// instead of waiting for the next scheduled one (up to 2s away) — used
@@ -21,14 +30,28 @@ final class H264Encoder {
         forceKeyframeNext = true
     }
 
+    /// Adjusts the live session's target bitrate without tearing it down —
+    /// VideoToolbox supports changing this property mid-stream. Lets the
+    /// client's quality picker (e.g. "流畅优先") actually take effect instead
+    /// of being silently inert, which matters most exactly when it's needed:
+    /// a client whose decode can't keep up with the fixed default bitrate.
+    func setBitrate(_ bitrateBps: Int) {
+        guard let session else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
+                              value: NSNumber(value: bitrateBps))
+    }
+
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
         var s: VTCompressionSession?
+        let encoderSpec: [CFString: Any] = [
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue!
+        ]
         let err = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width:  Int32(width),
             height: Int32(height),
             codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
+            encoderSpecification: encoderSpec as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
             outputCallback: nil,
@@ -60,13 +83,15 @@ final class H264Encoder {
 
         session = s
         frameIndex = 0
+        var usingHW: CFTypeRef?
+        VTSessionCopyProperty(s, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+                               allocator: kCFAllocatorDefault, valueOut: &usingHW)
         ConnectionLogger.shared.logStep(sessionId: "h264", step: "encoder_ready",
-            detail: "\(width)x\(height) \(fps)fps \(bitrateBps/1000)kbps")
+            detail: "\(width)x\(height) \(fps)fps \(bitrateBps/1000)kbps hw=\((usingHW as? Bool) ?? false)")
     }
 
-    func encode(_ cgImage: CGImage) {
+    func encode(_ pb: CVPixelBuffer) {
         guard let session else { return }
-        guard let pb = cgImageToPixelBuffer(cgImage) else { return }
 
         let idx  = frameIndex
         frameIndex += 1
@@ -93,7 +118,7 @@ final class H264Encoder {
                 }
                 return
             }
-            self.handleOutput(sample)
+            self.outputQueue.async { self.handleOutput(sample) }
         }
     }
 
@@ -164,34 +189,4 @@ final class H264Encoder {
         return result.isEmpty ? nil : result
     }
 
-    private func cgImageToPixelBuffer(_ cgImage: CGImage) -> CVPixelBuffer? {
-        let w = cgImage.width
-        let h = cgImage.height
-        let attrs: [CFString: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey:         kCFBooleanTrue!,
-            kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!,
-        ]
-        var pb: CVPixelBuffer?
-        guard CVPixelBufferCreate(kCFAllocatorDefault, w, h,
-                                  kCVPixelFormatType_32BGRA,
-                                  attrs as CFDictionary, &pb) == kCVReturnSuccess,
-              let pb else { return nil }
-
-        CVPixelBufferLockBaseAddress(pb, [])
-        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
-
-        guard let ctx = CGContext(
-            data: CVPixelBufferGetBaseAddress(pb),
-            width: w, height: h,
-            bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(pb),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(rawValue:
-                CGImageAlphaInfo.noneSkipFirst.rawValue |
-                CGBitmapInfo.byteOrder32Little.rawValue).rawValue
-        ) else { return nil }
-
-        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
-        return pb
-    }
 }

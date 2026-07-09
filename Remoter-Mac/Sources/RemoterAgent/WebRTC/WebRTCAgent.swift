@@ -63,20 +63,34 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
     // MARK: - 视频发送（分片 60KB，适配所有 SCTP 实现）
 
-    func sendVideoFrame(_ data: Data, isKeyframe: Bool, frameId: UInt32) {
-        guard let ch = videoChannel, ch.readyState == .open else { return }
+    /// Returns false if the frame was dropped (fully or partially) due to
+    /// send-buffer backpressure — the caller must force the *next* frame to
+    /// be a keyframe when this happens. Our H.264 has no B-frames, so every
+    /// delta frame is decoded against the one before it; silently dropping a
+    /// frame the client never sees breaks that reference chain and the
+    /// decoder keeps producing corrupted/garbled output until the next
+    /// keyframe arrives (up to 2s later on its own schedule) — invisible on
+    /// a fast LAN where the buffer never backs up, but a real bandwidth-
+    /// constrained link (VPN/WAN) hits this path often enough to matter.
+    @discardableResult
+    func sendVideoFrame(_ data: Data, isKeyframe: Bool, frameId: UInt32) -> Bool {
+        guard let ch = videoChannel, ch.readyState == .open else { return false }
 
-        // Drop frame if SCTP send buffer is backing up (prevents latency buildup).
-        // With reliable DataChannel, chunks are never silently dropped — we just
-        // skip entire frames here when the channel is saturated.
         // Threshold = ~4 frames worth of data at 350 KB/frame.
-        if ch.bufferedAmount > 1_400_000 { return }
+        if ch.bufferedAmount > 1_400_000 { return false }
 
         let CHUNK = 60 * 1024
         let flags: UInt8 = isKeyframe ? 0x01 : 0x00
         let totalChunks = UInt16((data.count + CHUNK - 1) / CHUNK)
 
         for i in 0..<Int(totalChunks) {
+            // Re-check on every chunk, not just once before the loop — a
+            // multi-chunk frame can fill the buffer mid-flight on a
+            // bandwidth-constrained link (VPN/WAN), and dumping the rest of
+            // it anyway turns one slow frame into a burst that delays
+            // everything after it. Better to cut this frame short.
+            if i > 0 && ch.bufferedAmount > 1_400_000 { return false }
+
             let start = i * CHUNK
             let end   = min(start + CHUNK, data.count)
             let payload = data[start..<end]
@@ -90,6 +104,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
             ch.sendData(RTCDataBuffer(data: pkt, isBinary: true))
         }
+        return true
     }
 
     func close() {

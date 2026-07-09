@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import CoreVideo
+import VideoToolbox
 import ImageIO
 import UniformTypeIdentifiers
 import ApplicationServices
@@ -18,7 +20,7 @@ final class Session {
 
     private var capturer: ScreenCapturer?
     private var encoder: H264Encoder?
-    private var lastFrame: CGImage?
+    private var lastFrame: CVPixelBuffer?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
     private var webrtc: WebRTCAgent?
@@ -29,6 +31,7 @@ final class Session {
     private var frameId: UInt32 = 0
     private var inputEnabled = true
     private var jpegQuality: Double = 0.75
+    private var lastForcedKeyframeAt: Date = .distantPast
 
     // Video send semaphore: allow several small H.264 frames in flight so a
     // single high-RTT contentProcessed round-trip doesn't throttle throughput.
@@ -39,6 +42,9 @@ final class Session {
     // Sent-frame diagnostics (shared across WebRTC/WebSocket video paths)
     private var sentFrames = 0
     private var sentTick = Date()
+    private var backpressureDrops = 0     // frames dropped: WebRTC send buffer was full
+    private var keyframesForced = 0       // times we actually forced a keyframe (post-cooldown)
+    private var keyframeRequests = 0      // client request_keyframe messages received (pre-cooldown)
     private var usingWebRTCVideo = false
 
     // For disconnection logging
@@ -291,11 +297,25 @@ final class Session {
         case .qualitySet(let fps, let bitrate):
             capturer?.updateFps(fps)
             jpegQuality = bitrateToJpegQuality(bitrate)
+            encoder?.setBitrate(bitrate)
 
         case .ping:
             sendJson(["type": "pong"])
 
         case .requestKeyframe:
+            // Shares the drop-triggered cooldown below: the client also sends
+            // this when its own decode queue backs up (can't keep up in real
+            // time, e.g. no hardware decoder). A keyframe is the biggest
+            // possible frame — sending one immediately on every such signal
+            // adds more work for a decoder that's already behind, which
+            // triggers another overload signal right after, in a loop that
+            // never lets it catch up. Debounce so at most one forced keyframe
+            // goes out per second regardless of which path asked for it.
+            keyframeRequests += 1
+            let now = Date()
+            guard now.timeIntervalSince(lastForcedKeyframeAt) > 1.0 else { break }
+            lastForcedKeyframeAt = now
+            keyframesForced += 1
             encoder?.forceKeyframe()
             // CGDisplayStream only calls onFrame when the screen content actually
             // changes — if it's static, forceKeyframe's flag would sit unused
@@ -457,7 +477,14 @@ final class Session {
             // Set up H.264 encoder
             encoder?.close()
             let enc = H264Encoder()
-            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 60, bitrateBps: 8_000_000)
+            // 8Mbps assumed a fast/local link; over a real WAN path the
+            // bottleneck is usually the home network's upload bandwidth
+            // (often just a few Mbps), and pushing more than that guarantees
+            // sustained congestion — backed-up send buffer, dropped frames,
+            // and (before the ordered-delivery / forced-keyframe fixes)
+            // visible corruption. 4Mbps still looks good at 1080p and fits
+            // within typical home upload caps.
+            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 60, bitrateBps: 4_000_000)
             encoder = enc
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: "h264", encrypted: crypto.isReady)
@@ -488,8 +515,31 @@ final class Session {
                         ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
                             step: "video_transport", detail: "webrtc")
                     }
-                    webrtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid)
-                    self.recordSentFrame()
+                    if webrtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid) {
+                        self.recordSentFrame()
+                    } else {
+                        // Dropped due to send-buffer backpressure — the client
+                        // never saw this frame, so any later delta frame that
+                        // references it will decode into garbage. Force the
+                        // next frame to be a fresh keyframe so corruption is
+                        // brief instead of lasting up to 2s.
+                        //
+                        // But a keyframe is much bigger than a delta frame —
+                        // if the link is *sustained*-congested (not just a
+                        // brief blip), forcing one on every single drop just
+                        // pours more data into an already-overloaded pipe,
+                        // causing more drops, more forced keyframes, and so
+                        // on. Cool down to at most once/second so we recover
+                        // fast from a blip without feeding a runaway loop
+                        // under real, sustained bandwidth shortage.
+                        self.backpressureDrops += 1
+                        let now = Date()
+                        if now.timeIntervalSince(self.lastForcedKeyframeAt) > 1.0 {
+                            self.lastForcedKeyframeAt = now
+                            self.keyframesForced += 1
+                            self.encoder?.forceKeyframe()
+                        }
+                    }
                 } else {
                     if self.usingWebRTCVideo {
                         self.usingWebRTCVideo = false
@@ -511,10 +561,10 @@ final class Session {
                 }
             }
 
-            c.onFrame = { [weak self] cgImage, _, _ in
+            c.onFrame = { [weak self] pixelBuffer, _, _ in
                 guard let self else { return }
-                self.lastFrame = cgImage
-                self.encoder?.encode(cgImage)
+                self.lastFrame = pixelBuffer
+                self.encoder?.encode(pixelBuffer)
             }
 
             // CGDisplayStream stops when macOS locks the screen, goes to sleep,
@@ -546,9 +596,11 @@ final class Session {
             "height": c.screenHeight,
             "codec":  "jpeg"
         ])
-        c.onFrame = { [weak self] cgImage, _, _ in
+        c.onFrame = { [weak self] pixelBuffer, _, _ in
             guard let self else { return }
-            guard let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
+            var cgImage: CGImage?
+            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+            guard let cgImage, let jpeg = Self.encodeJPEG(cgImage, quality: self.jpegQuality) else { return }
             guard self.connection.isActive else { return }
             guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
             let fid = self.frameId
@@ -568,8 +620,11 @@ final class Session {
         let dt = Date().timeIntervalSince(sentTick)
         if dt >= 5 {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
-                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws")")
+                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws") bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
             sentFrames = 0
+            backpressureDrops = 0
+            keyframesForced = 0
+            keyframeRequests = 0
             sentTick = Date()
         }
     }

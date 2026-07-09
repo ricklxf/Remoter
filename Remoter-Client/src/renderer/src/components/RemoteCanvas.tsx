@@ -75,6 +75,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       }
 
       const decoder = new VideoDecoder_((frame) => renderer.renderFrame(frame))
+      decoder.onOverloaded = () => {
+        console.warn('[Decoder] decode queue overloaded, requesting keyframe')
+        conn.sendRequestKeyframe()
+      }
       decoderRef.current = decoder
       decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch(console.error)
       console.log('[RemoteCanvas] H.264 mode, decoder initializing')

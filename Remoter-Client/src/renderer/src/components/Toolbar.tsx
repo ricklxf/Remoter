@@ -58,33 +58,21 @@ export function Toolbar({
 
   return (
     <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
-      <ResolutionSelect
-        value={resolution}
-        onChange={tier => {
+      <QualityMenu
+        resolution={resolution}
+        onResolutionChange={tier => {
           onResolutionChange(tier)
           conn.sendResolution(tier)
         }}
-      />
-
-      <AutoSelect
-        value={fps}
-        auto={fpsAuto}
-        options={FPS_TIERS}
-        formatValue={v => `${v}fps`}
-        width={72}
-        onChange={(f, auto) => {
+        fps={fps}
+        fpsAuto={fpsAuto}
+        onFpsChange={(f, auto) => {
           onFpsChange(f, auto)
           conn.sendFps(f, auto)
         }}
-      />
-
-      <AutoSelect
-        value={bitrate}
-        auto={bitrateAuto}
-        options={BITRATE_TIERS}
-        formatValue={formatBitrate}
-        width={82}
-        onChange={(b, auto) => {
+        bitrate={bitrate}
+        bitrateAuto={bitrateAuto}
+        onBitrateChange={(b, auto) => {
           onBitrateChange(b, auto)
           conn.sendBitrate(b, auto)
         }}
@@ -106,6 +94,58 @@ export function Toolbar({
       <div style={s.sep} />
 
       <ToolBtn icon="⊙" title="隐藏工具栏" onClick={onHide} />
+    </div>
+  )
+}
+
+// ─── Quality menu ───────────────────────────────────────────────────
+// One trigger ("画质") opens a panel holding the three independent
+// controls side by side, instead of three separate top-level dropdowns.
+
+function QualityMenu({
+  resolution, onResolutionChange,
+  fps, fpsAuto, onFpsChange,
+  bitrate, bitrateAuto, onBitrateChange,
+}: {
+  resolution: '1080' | '2k'
+  onResolutionChange: (tier: '1080' | '2k') => void
+  fps: number
+  fpsAuto: boolean
+  onFpsChange: (fps: number, auto: boolean) => void
+  bitrate: number
+  bitrateAuto: boolean
+  onBitrateChange: (bitrate: number, auto: boolean) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, gap: 5 }} onClick={() => setOpen(v => !v)}>
+        <span>画质</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={{
+          ...s.dropdown, minWidth: 'auto', width: 'max-content', overflow: 'visible',
+          display: 'flex', flexDirection: 'row', gap: 8, padding: 8,
+        }}>
+          <ResolutionSelect value={resolution} onChange={onResolutionChange} />
+          <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
+            formatValue={v => `${v}fps`} width={72} onChange={onFpsChange} />
+          <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
+            formatValue={formatBitrate} width={82} onChange={onBitrateChange} />
+        </div>
+      )}
     </div>
   )
 }

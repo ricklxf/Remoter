@@ -137,11 +137,11 @@ function QualityMenu({
       {open && (
         <div style={{
           ...s.dropdown, minWidth: 'auto', width: 'max-content', overflow: 'visible',
-          display: 'flex', flexDirection: 'row', gap: 8, padding: 8,
+          display: 'flex', flexDirection: 'column', gap: 8, padding: 8,
         }}>
           <ResolutionSelect value={resolution} onChange={onResolutionChange} />
           <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
-            formatValue={v => `${v}fps`} width={72} onChange={onFpsChange} />
+            formatValue={v => `${v}fps`} width={82} onChange={onFpsChange} />
           <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
             formatValue={formatBitrate} width={82} onChange={onBitrateChange} />
         </div>
@@ -453,7 +453,7 @@ function ResolutionSelect({ value, onChange }: { value: '1080' | '2k'; onChange:
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button style={{ ...s.selectBtn, width: 66, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+      <button style={{ ...s.selectBtn, width: 82, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
         <span>{current.label}</span>
         <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
       </button>

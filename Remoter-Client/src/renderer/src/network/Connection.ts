@@ -16,6 +16,7 @@ export type ConnEvent =
   | { type: 'stream_started'; info: StreamInfo; codec: VideoCodec }
   | { type: 'video_frame'; data: ArrayBuffer; frameId: number; ptsMs: number; keyframe: boolean }
   | { type: 'codec_changed'; codec: VideoCodec }
+  | { type: 'quality_active'; fps: number; bitrate: number }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
@@ -213,8 +214,8 @@ export class Connection {
   sendClipboard(text: string): void {
     this.sendJson({ type: 'clipboard_set', text })
   }
-  sendQuality(fps: number, bitrate: number): void {
-    this.sendJson({ type: 'quality', fps, bitrate })
+  sendQuality(fps: number, bitrate: number, auto = false): void {
+    this.sendJson({ type: 'quality', fps, bitrate, auto })
   }
 
   // Forces the encoder to emit a keyframe right away instead of waiting for
@@ -598,6 +599,13 @@ export class Connection {
       case 'codec_changed': {
         const codec = msg.codec as VideoCodec
         this.emit({ type: 'codec_changed', codec })
+        break
+      }
+
+      case 'quality_active': {
+        const fps = msg.fps as number
+        const bitrate = msg.bitrate as number
+        this.emit({ type: 'quality_active', fps, bitrate })
         break
       }
 

@@ -18,8 +18,8 @@ interface Props {
 
 export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, isActive = true, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
-  const [fps, setFps]         = useState(60)
-  const [bitrate, setBitrate] = useState(15_000_000)
+  const [fps, setFps]         = useState(30)
+  const [bitrate, setBitrate] = useState(2_000_000)
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -43,6 +43,29 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     }
     prevTransfersLen.current = transfers.length
   }, [transfers.length])
+
+  // Default quality is "自动" — tell the server to actually enable auto
+  // stepping (not just apply the floor tier once and leave it fixed).
+  // Without this, the server only knows to adapt after the user opens the
+  // quality menu and picks it manually.
+  useEffect(() => {
+    conn.sendQuality(fps, bitrate, true)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Server pushes the tier it's actually running whenever auto mode steps
+  // it up/down, so the toolbar's selection reflects reality instead of
+  // staying stuck on whatever was picked (or the initial default) forever.
+  useEffect(() => {
+    const prev = conn.onEvent
+    conn.onEvent = (e) => {
+      prev?.(e)
+      if (e.type === 'quality_active') {
+        setFps(e.fps)
+        setBitrate(e.bitrate)
+      }
+    }
+    return () => { conn.onEvent = prev }
+  }, [conn])
 
   function handleQualityChange(f: number, b: number) {
     setFps(f)

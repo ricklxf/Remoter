@@ -17,11 +17,14 @@ interface Props {
   onMouseLeave?: () => void
 }
 
+// First entry is the auto-adjusting tier (server steps it based on the
+// client's own decode-overload feedback) — must stay first, QualitySelect
+// identifies it by index.
 const QUALITY_PRESETS = [
-  { label: '2K · 60fps',   fps: 60, bitrate: 15_000_000 },
-  { label: '1080 · 60fps', fps: 60, bitrate:  8_000_000 },
-  { label: '1080 · 30fps', fps: 30, bitrate:  4_000_000 },
-  { label: '流畅优先',      fps: 30, bitrate:  2_000_000 },
+  { label: '自动 · 1080 · 30fps', fps: 30, bitrate:  2_000_000 },
+  { label: '2K · 60fps',          fps: 60, bitrate: 15_000_000 },
+  { label: '1080 · 60fps',        fps: 60, bitrate:  8_000_000 },
+  { label: '1080 · 30fps',        fps: 30, bitrate:  4_000_000 },
 ]
 
 const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
@@ -44,10 +47,9 @@ export function Toolbar({
     <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
       <QualitySelect
         value={`${fps}:${bitrate}`}
-        onChange={v => {
-          const [f, b] = v.split(':').map(Number)
+        onChange={(f, b, auto) => {
           onQualityChange(f, b)
-          conn.sendQuality(f, b)
+          conn.sendQuality(f, b, auto)
         }}
       />
 
@@ -297,7 +299,7 @@ function Toggle({ checked, onToggle }: { checked: boolean; onToggle: () => void 
 
 // ─── Custom quality dropdown ──────────────────────────────────────────
 
-function QualitySelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function QualitySelect({ value, onChange }: { value: string; onChange: (fps: number, bitrate: number, auto: boolean) => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const current = QUALITY_PRESETS.find(p => `${p.fps}:${p.bitrate}` === value) ?? QUALITY_PRESETS[0]
@@ -319,14 +321,14 @@ function QualitySelect({ value, onChange }: { value: string; onChange: (v: strin
       </button>
       {open && (
         <div style={s.dropdown}>
-          {QUALITY_PRESETS.map(p => {
+          {QUALITY_PRESETS.map((p, i) => {
             const v = `${p.fps}:${p.bitrate}`
             const active = v === value
             return (
               <button
                 key={p.label}
                 style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
-                onClick={() => { onChange(v); setOpen(false) }}
+                onClick={() => { onChange(p.fps, p.bitrate, i === 0); setOpen(false) }}
               >
                 <span>{p.label}</span>
                 {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}

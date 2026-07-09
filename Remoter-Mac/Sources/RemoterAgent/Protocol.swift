@@ -17,7 +17,7 @@ enum ClientMessage {
     case clipboardSet(text: String)
     case fileStart(id: String, name: String, size: Int64)
     case fileEnd(id: String)
-    case qualitySet(fps: Int, bitrate: Int)
+    case qualitySet(fps: Int, bitrate: Int, auto: Bool)
     case ping
     case requestKeyframe
     case webrtcOffer(sdp: String)
@@ -87,7 +87,8 @@ enum ClientMessage {
         case "quality":
             return .qualitySet(
                 fps: json["fps"] as? Int ?? 60,
-                bitrate: json["bitrate"] as? Int ?? 10_000_000
+                bitrate: json["bitrate"] as? Int ?? 10_000_000,
+                auto: json["auto"] as? Bool ?? false
             )
         case "ping":
             return .ping

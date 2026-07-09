@@ -47,6 +47,23 @@ final class Session {
     private var keyframeRequests = 0      // client request_keyframe messages received (pre-cooldown)
     private var usingWebRTCVideo = false
 
+    // Auto quality: steps through tiers based on the client's own decode-
+    // overload signal (keyframeRequests > 0 in a window means its decode
+    // queue backed up — the one thing that reliably predicted stutter this
+    // whole investigation, independent of what the network/capture-side
+    // metrics showed). Ordered safest-first so a fresh "自动" session starts
+    // conservative and only climbs after proving the client can keep up,
+    // rather than starting high and visibly stuttering before settling.
+    private static let autoTiers: [(fps: Int, bitrate: Int)] = [
+        (30,  2_000_000),
+        (30,  4_000_000),
+        (60,  8_000_000),
+        (60, 15_000_000),
+    ]
+    private var autoQuality = false
+    private var autoTierIndex = 0
+    private var autoCleanStreak = 0
+
     // For disconnection logging
     private var connectTime: Date?
     private var bytesSent: Int64 = 0
@@ -294,10 +311,16 @@ final class Session {
         case .fileEnd(let fid):
             fileReceiver?.finish(id: fid)
 
-        case .qualitySet(let fps, let bitrate):
-            capturer?.updateFps(fps)
-            jpegQuality = bitrateToJpegQuality(bitrate)
-            encoder?.setBitrate(bitrate)
+        case .qualitySet(let fps, let bitrate, let auto):
+            autoQuality = auto
+            if auto {
+                autoTierIndex = 0
+                autoCleanStreak = 0
+                let tier = Self.autoTiers[autoTierIndex]
+                applyQuality(fps: tier.fps, bitrate: tier.bitrate)
+            } else {
+                applyQuality(fps: fps, bitrate: bitrate)
+            }
 
         case .ping:
             sendJson(["type": "pong"])
@@ -466,7 +489,11 @@ final class Session {
         ConnectionLogger.shared.logStep(sessionId: sid, step: "capture_begin", detail: "jpeg")
         do {
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_start")
-            try await c.start(fps: 60)
+            // Matches the client's default "自动" quality preset (30fps/2Mbps)
+            // — a fresh connection now starts there directly instead of
+            // bursting at 60fps for the first few seconds until the client's
+            // quality message arrives to correct it down.
+            try await c.start(fps: 30)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             capturer     = c
@@ -477,14 +504,17 @@ final class Session {
             // Set up H.264 encoder
             encoder?.close()
             let enc = H264Encoder()
-            // 8Mbps assumed a fast/local link; over a real WAN path the
-            // bottleneck is usually the home network's upload bandwidth
-            // (often just a few Mbps), and pushing more than that guarantees
-            // sustained congestion — backed-up send buffer, dropped frames,
-            // and (before the ordered-delivery / forced-keyframe fixes)
-            // visible corruption. 4Mbps still looks good at 1080p and fits
-            // within typical home upload caps.
-            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 60, bitrateBps: 4_000_000)
+            // Matches the client's default "自动" preset. Higher bitrates
+            // assumed a fast/local link and a client with decode headroom to
+            // match; over a real WAN path the bottleneck is usually the home
+            // network's upload bandwidth (often just a few Mbps) and/or the
+            // client machine's own decode throughput (confirmed via repeated
+            // kfReq overload signals at 60fps on underpowered hardware) —
+            // pushing past what either can sustain guarantees backed-up
+            // frames, forced-keyframe cycling, and visible stutter. 30fps/
+            // 2Mbps is safe on both counts; the quality picker lets a client
+            // that can actually handle more opt into a higher tier.
+            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: 30, bitrateBps: 2_000_000)
             encoder = enc
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: "h264", encrypted: crypto.isReady)
@@ -621,12 +651,48 @@ final class Session {
         if dt >= 5 {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws") bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
+            if autoQuality { evaluateAutoQuality() }
             sentFrames = 0
             backpressureDrops = 0
             keyframesForced = 0
             keyframeRequests = 0
             sentTick = Date()
         }
+    }
+
+    /// Steps the auto-quality tier up/down based on this just-finished
+    /// window's decode-overload signal (keyframeRequests > 0 means the
+    /// client's own decode queue backed up — this tracked stutter far more
+    /// reliably during the investigation than anything on the send/network
+    /// side). Steps down immediately on any sign of trouble; steps up only
+    /// after several consecutive clean windows, so it settles instead of
+    /// oscillating right at the edge of what the client can sustain.
+    private func evaluateAutoQuality() {
+        if keyframeRequests > 0 || backpressureDrops > 0 {
+            autoCleanStreak = 0
+            guard autoTierIndex > 0 else { return }
+            autoTierIndex -= 1
+        } else {
+            autoCleanStreak += 1
+            guard autoCleanStreak >= 3, autoTierIndex < Self.autoTiers.count - 1 else { return }
+            autoCleanStreak = 0
+            autoTierIndex += 1
+        }
+        let tier = Self.autoTiers[autoTierIndex]
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "auto_quality_step",
+            detail: "tier=\(autoTierIndex) fps=\(tier.fps) bitrate=\(tier.bitrate)")
+        applyQuality(fps: tier.fps, bitrate: tier.bitrate)
+    }
+
+    /// Applies a quality tier (used by both manual selection and auto
+    /// stepping) and tells the client what's now actually active — needed
+    /// for auto mode, where the client doesn't otherwise know which tier
+    /// the server landed on.
+    private func applyQuality(fps: Int, bitrate: Int) {
+        capturer?.updateFps(fps)
+        jpegQuality = bitrateToJpegQuality(bitrate)
+        encoder?.setBitrate(bitrate)
+        sendJson(["type": "quality_active", "fps": fps, "bitrate": bitrate])
     }
 
     /// 码率（bps）→ JPEG 质量，匹配客户端 Toolbar 预设

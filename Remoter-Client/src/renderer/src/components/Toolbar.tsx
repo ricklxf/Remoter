@@ -361,7 +361,7 @@ function AutoSelect<T>({ value, auto, options, formatValue, width, onChange }: {
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button style={{ ...s.selectBtn, width, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{auto ? `自动 (${formatValue(value)})` : formatValue(value)}</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatValue(value)}</span>
         <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
       </button>
       {open && (

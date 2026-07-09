@@ -58,11 +58,20 @@ export function Toolbar({
 
   return (
     <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+      <ResolutionSelect
+        value={resolution}
+        onChange={tier => {
+          onResolutionChange(tier)
+          conn.sendResolution(tier)
+        }}
+      />
+
       <AutoSelect
         value={fps}
         auto={fpsAuto}
         options={FPS_TIERS}
         formatValue={v => `${v}fps`}
+        width={100}
         onChange={(f, auto) => {
           onFpsChange(f, auto)
           conn.sendFps(f, auto)
@@ -74,17 +83,10 @@ export function Toolbar({
         auto={bitrateAuto}
         options={BITRATE_TIERS}
         formatValue={formatBitrate}
+        width={110}
         onChange={(b, auto) => {
           onBitrateChange(b, auto)
           conn.sendBitrate(b, auto)
-        }}
-      />
-
-      <ResolutionSelect
-        value={resolution}
-        onChange={tier => {
-          onResolutionChange(tier)
-          conn.sendResolution(tier)
         }}
       />
 
@@ -336,11 +338,12 @@ function Toggle({ checked, onToggle }: { checked: boolean; onToggle: () => void 
 // Each has its own independent "自动" mode — the server steps it based on
 // its own feedback signal — plus a fixed set of manual values.
 
-function AutoSelect<T>({ value, auto, options, formatValue, onChange }: {
+function AutoSelect<T>({ value, auto, options, formatValue, width, onChange }: {
   value: T
   auto: boolean
   options: T[]
   formatValue: (v: T) => string
+  width: number
   onChange: (value: T, auto: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -357,9 +360,9 @@ function AutoSelect<T>({ value, auto, options, formatValue, onChange }: {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button style={s.selectBtn} onClick={() => setOpen(v => !v)}>
-        <span>{auto ? `自动 (${formatValue(value)})` : formatValue(value)}</span>
-        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      <button style={{ ...s.selectBtn, width, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{auto ? `自动 (${formatValue(value)})` : formatValue(value)}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
       </button>
       {open && (
         <div style={s.dropdown}>
@@ -367,7 +370,7 @@ function AutoSelect<T>({ value, auto, options, formatValue, onChange }: {
             style={{ ...s.dropItem, ...(auto ? s.dropItemActive : {}) }}
             onClick={() => { onChange(value, true); setOpen(false) }}
           >
-            <span>自动</span>
+            <span>{`自动 (${formatValue(value)})`}</span>
             {auto && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
           </button>
           {options.map(o => {
@@ -410,9 +413,9 @@ function ResolutionSelect({ value, onChange }: { value: '1080' | '2k'; onChange:
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button style={s.selectBtn} onClick={() => setOpen(v => !v)}>
+      <button style={{ ...s.selectBtn, width: 70, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
         <span>{current.label}</span>
-        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
       </button>
       {open && (
         <div style={s.dropdown}>

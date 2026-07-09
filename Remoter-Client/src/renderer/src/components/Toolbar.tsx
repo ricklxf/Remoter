@@ -71,7 +71,7 @@ export function Toolbar({
         auto={fpsAuto}
         options={FPS_TIERS}
         formatValue={v => `${v}fps`}
-        width={100}
+        width={72}
         onChange={(f, auto) => {
           onFpsChange(f, auto)
           conn.sendFps(f, auto)
@@ -83,7 +83,7 @@ export function Toolbar({
         auto={bitrateAuto}
         options={BITRATE_TIERS}
         formatValue={formatBitrate}
-        width={110}
+        width={82}
         onChange={(b, auto) => {
           onBitrateChange(b, auto)
           conn.sendBitrate(b, auto)
@@ -413,7 +413,7 @@ function ResolutionSelect({ value, onChange }: { value: '1080' | '2k'; onChange:
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button style={{ ...s.selectBtn, width: 70, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+      <button style={{ ...s.selectBtn, width: 66, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
         <span>{current.label}</span>
         <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
       </button>

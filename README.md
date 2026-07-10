@@ -115,6 +115,13 @@ open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 - **macOS 15+ 只能看到桌面壁纸**：`CGDisplayCreateImage` 在 macOS 15 会话授权未通过时返回纯壁纸帧；已迁移至 `ScreenCaptureKit (SCStream)`，可触发正确的会话授权弹窗。
 - **PAM `pam_start("login")` 非 root 进程鉴权失败**：`"login"` 服务要求特权进程；已改用 `/usr/bin/dscl . -authonly`，无需 root，兼容本地账号和 Apple ID 账号。
 - **两个权限弹窗同时出现**：改为顺序申请：先等屏幕录制 `await`，再请求辅助功能。
+- **SCStream 的 CVPixelBuffer 不能跨异步队列持有**：回调返回后底层 IOSurface 会被池子复用，异步派发去编码会读到被下一帧覆盖到一半的数据（表现为随机位置花屏）；必须在回调内同步提交给 VideoToolbox。
+- **VideoToolbox 编码回调线程不能做网络发送**：回调不返回，VT 内部队列不释放空位，下游网络一慢编码提交就被拖死（帧率周期性崩到个位数）；已把发送挪到独立队列。
+- **H.264 用 High profile 而不是 Baseline**：B 帧由 `AllowFrameReordering=false` 单独禁用即可满足低延迟，Baseline 额外放弃 CABAC/8x8 变换白丢 10-20% 压缩率；WebCodecs 对 High 支持极好。
+- **关键帧间隔从 2s 放长到 10s**：关键帧是增量帧的 10-20 倍大，2s 一个在 2Mbps 档位下光关键帧就占约 20% 带宽；按需 `request_keyframe`（丢帧/切 tab/解码过载时客户端主动要）已覆盖所有恢复场景。
+- **客户端解码跟不上的信号是 `kfReq`**：网络指标（fps/RTT）测的是"到达"不是"解码"，解码端过载时它们全部正常；靠 WebCodecs `decodeQueueSize` 积压检测 + 主动要关键帧来发现和恢复。
+- **画质自适应拆两路**：fps 跟解码过载信号（`kfReq`）走、码率跟发送背压（`bpDrops`）走，各自独立升降档，避免"一个出问题两个一起降"。
+- **音频转发**：SCStream `capturesAudio` 采集系统声音 → AAC-LC + ADTS 封装（自描述，客户端 `AudioDecoder('mp4a.40.2')` 免握手）→ 0x03 二进制帧；默认关闭（带宽 + 隐私），控制菜单手动开。
 
 ---
 

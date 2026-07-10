@@ -5,6 +5,7 @@ import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
 import { VideoCodec } from '../video/Decoder'
+import { AudioPlayer } from '../audio/AudioPlayer'
 
 interface Props {
   conn: Connection
@@ -26,6 +27,13 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // need to send this on mount like the fps/bitrate auto default, since
   // both sides already agree without a message.
   const [resolution, setResolution] = useState<'1080' | '2k'>('1080')
+  // Manual pick only (both sides default to h264); jpeg fallback is chosen
+  // by the connection layer itself, not from this menu.
+  const [codec, setCodec] = useState<'h264' | 'h265'>('h264')
+  // Remote system-audio forwarding — off by default (bandwidth + privacy:
+  // don't silently pick up whatever's playing on the remote machine).
+  const [audioOn, setAudioOn] = useState(false)
+  const audioPlayerRef = useRef<AudioPlayer | null>(null)
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -63,6 +71,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // Server pushes the values it's actually running whenever auto mode
   // steps either one up/down, so the toolbar reflects reality instead of
   // staying stuck on whatever was picked (or the initial default) forever.
+  // Also routes incoming audio packets into the player when enabled.
   useEffect(() => {
     const prev = conn.onEvent
     conn.onEvent = (e) => {
@@ -71,9 +80,29 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
         setFps(e.fps)
         setBitrate(e.bitrate)
       }
+      if (e.type === 'audio_frame') {
+        audioPlayerRef.current?.push(e.data)
+      }
     }
     return () => { conn.onEvent = prev }
   }, [conn])
+
+  // Tear the audio player down with the page (tab close / disconnect).
+  useEffect(() => () => { audioPlayerRef.current?.stop(); audioPlayerRef.current = null }, [])
+
+  function handleToggleAudio() {
+    const next = !audioOn
+    setAudioOn(next)
+    conn.sendSetAudio(next)
+    if (next) {
+      const player = new AudioPlayer()
+      player.start()   // inside the click handler, so autoplay policy permits it
+      audioPlayerRef.current = player
+    } else {
+      audioPlayerRef.current?.stop()
+      audioPlayerRef.current = null
+    }
+  }
 
   function handleFpsChange(f: number, auto: boolean) {
     setFps(f)
@@ -143,6 +172,10 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             onBitrateChange={handleBitrateChange}
             resolution={resolution}
             onResolutionChange={setResolution}
+            codec={codec}
+            onCodecChange={setCodec}
+            audioOn={audioOn}
+            onToggleAudio={handleToggleAudio}
             transferCount={transfers.filter(t => !t.done).length}
             onToggleTransfers={() => setShowTransfers(v => !v)}
             showTransfers={showTransfers}

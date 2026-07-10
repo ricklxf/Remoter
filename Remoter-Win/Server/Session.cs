@@ -48,6 +48,14 @@ sealed class Session
     private const int MAX_QUALITY = 80;  // 降低最高质量到80，避免过度消耗带宽
     private bool   _cpuLimitReached = false;
     private bool   _adaptiveEnabled = true;
+    // Client pinned a fixed fps from the quality menu — the built-in
+    // bandwidth-adaptive logic must not fight it. Auto mode re-enables it.
+    private bool   _manualFps = false;
+    // The hardware MFT's bitrate is fixed at Initialize() time (no ICodecAPI
+    // in Vortice — see H264Encoder.SetBitrate), so a bitrate change from the
+    // client can only take effect by tearing the encoder down and rebuilding
+    // it. Done on the capture-loop thread (owns the encoder) via this flag.
+    private volatile bool _rebuildEncoder = false;
     
     // Statistics for overlay
     private int    _frameCount = 0;
@@ -329,9 +337,38 @@ sealed class Session
             case ClientMsg.RequestKeyframe:
                 _encoder?.ForceKeyframe(); break;
 
-            case ClientMsg.QualitySet q:
-                // TODO: adjust capture FPS
-                _ = q; break;
+            case ClientMsg.QualitySet q:   // legacy clients (≤ v1.0.204) sent fps+bitrate bundled
+                _manualFps  = true;
+                _currentFps = Math.Clamp(q.Fps, 1, MAX_FPS);
+                if (q.Bitrate > 0 && q.Bitrate != _targetBitrateBps)
+                {
+                    _targetBitrateBps = q.Bitrate;
+                    _rebuildEncoder = true;
+                }
+                break;
+
+            case ClientMsg.FpsSet f:
+                _manualFps = !f.Auto;
+                if (!f.Auto) _currentFps = Math.Clamp(f.Fps, 1, MAX_FPS);
+                // auto → the built-in bandwidth-adaptive logic resumes control
+                break;
+
+            case ClientMsg.BitrateSet b:
+                if (!b.Auto && b.Bitrate > 0 && b.Bitrate != _targetBitrateBps)
+                {
+                    _targetBitrateBps = b.Bitrate;
+                    _rebuildEncoder = true;
+                }
+                // auto → nothing to do: hardware MFT bitrate can't be stepped
+                // live anyway, and the JPEG fallback path already adapts
+                break;
+
+            case ClientMsg.ResolutionSet r:
+                // The Windows capture path (DXGI/GDI) grabs native resolution
+                // with no scaler in front of the encoder — honestly unsupported
+                // rather than silently wrong.
+                AppLog.Write($"[Session] resolution tier '{r.Tier}' ignored — Windows agent captures native resolution only");
+                break;
 
             case ClientMsg.ListDir ld:
                 HandleListDir(ld.Path); break;
@@ -444,6 +481,32 @@ sealed class Session
                 break;
             }
             
+            // Apply a client-requested bitrate change: the MFT can't change
+            // bitrate live, so rebuild here on the loop thread that owns the
+            // encoder. The rebuilt encoder's first frame is a keyframe with
+            // in-band SPS/PPS by construction, so the decoder recovers alone.
+            if (_rebuildEncoder)
+            {
+                _rebuildEncoder = false;
+                if (_encoder != null && _capturer != null)
+                {
+                    try
+                    {
+                        _encoder.Dispose();
+                        var enc = new H264Encoder();
+                        enc.Initialize(_capturer.Width, _capturer.Height, _currentFps, _targetBitrateBps);
+                        _encoder = enc;
+                        AppLog.Write($"[Session] encoder rebuilt for bitrate={_targetBitrateBps}");
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLog.Write($"[Session] encoder rebuild failed: {ex.Message} — falling back to JPEG");
+                        _encoder = null;
+                        Send(new { type = "codec_changed", codec = "jpeg" });
+                    }
+                }
+            }
+
             byte[]? payload;
             bool keyframe = true; // every JPEG is a full frame; h264 overrides below
             var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
@@ -563,7 +626,7 @@ sealed class Session
         if (currentBandwidth < TARGET_BANDWIDTH * 0.7)
         {
             // Bandwidth usage is low, gradually increase following the specified order
-            if (_currentFps < 30)
+            if (!_manualFps && _currentFps < 30)
             {
                 _currentFps += 2; // Increase by 2 each time for faster adaptation
                 if (_currentFps > 30) _currentFps = 30;
@@ -577,7 +640,7 @@ sealed class Session
                 ApplyBitrateFromQuality();
                 AppLog.Write($"[Session] Quality increased to {_currentQuality}");
             }
-            else if (_currentFps < MAX_FPS)
+            else if (!_manualFps && _currentFps < MAX_FPS)
             {
                 _currentFps += 2; // Increase by 2 each time
                 if (_currentFps > MAX_FPS) _currentFps = MAX_FPS;
@@ -587,7 +650,7 @@ sealed class Session
         else if (currentBandwidth > TARGET_BANDWIDTH * 1.3)
         {
             // Bandwidth usage is high, gradually decrease (reverse order)
-            if (_currentFps > 30)
+            if (!_manualFps && _currentFps > 30)
             {
                 _currentFps -= 2; // Decrease by 2 each time
                 if (_currentFps < 30) _currentFps = 30;
@@ -601,7 +664,7 @@ sealed class Session
                 ApplyBitrateFromQuality();
                 AppLog.Write($"[Session] Quality decreased to {_currentQuality}");
             }
-            else if (_currentFps > MIN_FPS)
+            else if (!_manualFps && _currentFps > MIN_FPS)
             {
                 _currentFps -= 2; // Decrease by 2 each time
                 if (_currentFps < MIN_FPS) _currentFps = MIN_FPS;

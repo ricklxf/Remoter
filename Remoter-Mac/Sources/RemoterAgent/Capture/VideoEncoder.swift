@@ -3,12 +3,18 @@ import CoreMedia
 import CoreVideo
 import VideoToolbox
 
-// VTCompressionSession wrapper: CVPixelBuffer → H.264 Annex-B NAL units.
+enum StreamCodec: String {
+    case h264
+    case h265
+}
+
+// VTCompressionSession wrapper: CVPixelBuffer → H.264/HEVC Annex-B NAL units.
 // Output fires on VT's internal queue; caller must be thread-safe.
-final class H264Encoder {
+final class VideoEncoder {
     var onEncodedFrame: ((Data, Bool) -> Void)?
 
     private var session: VTCompressionSession?
+    private var codec: StreamCodec = .h264
     private var frameIndex: Int64 = 0
     private var forceKeyframeNext = false
 
@@ -20,20 +26,20 @@ final class H264Encoder {
     // into encode submission — exactly the kind of stall that made fps dip
     // in bursts. Hop off VT's callback thread immediately so it can always
     // free its queue slot right away, regardless of how long sending takes.
-    private let outputQueue = DispatchQueue(label: "remoter.h264.output", qos: .userInitiated)
+    private let outputQueue = DispatchQueue(label: "remoter.encode.output", qos: .userInitiated)
 
     /// Forces the *next* encode() call to emit a keyframe immediately,
-    /// instead of waiting for the next scheduled one (up to 2s away) — used
-    /// when a client (re)attaches a fresh decoder, e.g. switching back to a
-    /// tab, and would otherwise show a black screen until the next interval.
+    /// instead of waiting for the next scheduled one — used when a client
+    /// (re)attaches a fresh decoder, e.g. switching back to a tab, and would
+    /// otherwise show a black screen until the next interval.
     func forceKeyframe() {
         forceKeyframeNext = true
     }
 
     /// Adjusts the live session's target bitrate without tearing it down —
     /// VideoToolbox supports changing this property mid-stream. Lets the
-    /// client's quality picker (e.g. "流畅优先") actually take effect instead
-    /// of being silently inert, which matters most exactly when it's needed:
+    /// client's quality picker actually take effect instead of being
+    /// silently inert, which matters most exactly when it's needed:
     /// a client whose decode can't keep up with the fixed default bitrate.
     func setBitrate(_ bitrateBps: Int) {
         guard let session else { return }
@@ -41,7 +47,8 @@ final class H264Encoder {
                               value: NSNumber(value: bitrateBps))
     }
 
-    func setup(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
+    func setup(width: Int, height: Int, fps: Int, bitrateBps: Int, codec: StreamCodec = .h264) throws {
+        self.codec = codec
         var s: VTCompressionSession?
         let encoderSpec: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue!
@@ -50,7 +57,7 @@ final class H264Encoder {
             allocator: kCFAllocatorDefault,
             width:  Int32(width),
             height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
+            codecType: codec == .h265 ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
             encoderSpecification: encoderSpec as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
@@ -59,25 +66,39 @@ final class H264Encoder {
             compressionSessionOut: &s
         )
         guard err == noErr, let s else {
-            throw NSError(domain: "H264Encoder", code: Int(err),
-                          userInfo: [NSLocalizedDescriptionKey: "VTCompressionSessionCreate failed err=\(err)"])
+            throw NSError(domain: "VideoEncoder", code: Int(err),
+                          userInfo: [NSLocalizedDescriptionKey: "VTCompressionSessionCreate(\(codec.rawValue)) failed err=\(err)"])
         }
 
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        // Baseline profile: 最兼容 WebCodecs，无 B 帧，软件编码器稳定支持
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
-                             value: kVTProfileLevel_H264_Baseline_AutoLevel)
+        if codec == .h265 {
+            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_HEVC_Main_AutoLevel)
+        } else {
+            // High profile, not Baseline: B-frames are already disabled by
+            // AllowFrameReordering=false above (that's the only Baseline
+            // property latency actually needs), while Baseline additionally
+            // forfeits CABAC entropy coding and 8x8 transforms — a free
+            // 10-20% compression loss. WebCodecs decodes High everywhere;
+            // the client's codec string declares High to match.
+            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_H264_High_AutoLevel)
+        }
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: NSNumber(value: fps))
+        // A keyframe is ~10-20x the size of a delta frame; at the old 2s
+        // interval keyframes alone ate ~20% of a 2Mbps budget. On-demand
+        // request_keyframe covers every recovery case (drops, tab switches,
+        // decoder overload), so the periodic one is just a slow safety net.
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-                             value: NSNumber(value: 2.0))
+                             value: NSNumber(value: 10.0))
 
         guard VTCompressionSessionPrepareToEncodeFrames(s) == noErr else {
             VTCompressionSessionInvalidate(s)
-            throw NSError(domain: "H264Encoder", code: -1,
+            throw NSError(domain: "VideoEncoder", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "PrepareToEncodeFrames failed"])
         }
 
@@ -86,8 +107,8 @@ final class H264Encoder {
         var usingHW: CFTypeRef?
         VTSessionCopyProperty(s, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
                                allocator: kCFAllocatorDefault, valueOut: &usingHW)
-        ConnectionLogger.shared.logStep(sessionId: "h264", step: "encoder_ready",
-            detail: "\(width)x\(height) \(fps)fps \(bitrateBps/1000)kbps hw=\((usingHW as? Bool) ?? false)")
+        ConnectionLogger.shared.logStep(sessionId: "encoder", step: "encoder_ready",
+            detail: "\(codec.rawValue) \(width)x\(height) \(fps)fps \(bitrateBps/1000)kbps hw=\((usingHW as? Bool) ?? false)")
     }
 
     func encode(_ pb: CVPixelBuffer) {
@@ -113,7 +134,7 @@ final class H264Encoder {
         ) { [weak self] status, _, sample in
             guard let self, status == noErr, let sample else {
                 if status != noErr {
-                    ConnectionLogger.shared.logStep(sessionId: "h264", step: "encode_err",
+                    ConnectionLogger.shared.logStep(sessionId: "encoder", step: "encode_err",
                         detail: "status=\(status)")
                 }
                 return
@@ -137,28 +158,44 @@ final class H264Encoder {
         let notSync = attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
         let isKeyframe = !notSync
 
-        guard let data = avccToAnnexB(sample, includeParamSets: isKeyframe) else { return }
+        guard let data = lengthPrefixedToAnnexB(sample, includeParamSets: isKeyframe) else { return }
         onEncodedFrame?(data, isKeyframe)
     }
 
-    // AVCC (4-byte length prefix) → Annex-B (0x00000001 start code)
-    private func avccToAnnexB(_ sample: CMSampleBuffer, includeParamSets: Bool) -> Data? {
+    // AVCC/HVCC (4-byte length prefix) → Annex-B (0x00000001 start code).
+    // H.264 keyframes carry SPS+PPS in-band; HEVC additionally carries VPS —
+    // both come from the format description via their codec's accessor.
+    private func lengthPrefixedToAnnexB(_ sample: CMSampleBuffer, includeParamSets: Bool) -> Data? {
         var result = Data()
 
         if includeParamSets,
            let desc = CMSampleBufferGetFormatDescription(sample) {
             var count = 0
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                desc, parameterSetIndex: 0,
-                parameterSetPointerOut: nil, parameterSetSizeOut: nil,
-                parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            if codec == .h265 {
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                    desc, parameterSetIndex: 0,
+                    parameterSetPointerOut: nil, parameterSetSizeOut: nil,
+                    parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            } else {
+                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    desc, parameterSetIndex: 0,
+                    parameterSetPointerOut: nil, parameterSetSizeOut: nil,
+                    parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            }
             for i in 0..<count {
                 var ptr: UnsafePointer<UInt8>?
                 var sz = 0
-                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                    desc, parameterSetIndex: i,
-                    parameterSetPointerOut: &ptr, parameterSetSizeOut: &sz,
-                    parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
+                if codec == .h265 {
+                    CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                        desc, parameterSetIndex: i,
+                        parameterSetPointerOut: &ptr, parameterSetSizeOut: &sz,
+                        parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
+                } else {
+                    CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                        desc, parameterSetIndex: i,
+                        parameterSetPointerOut: &ptr, parameterSetSizeOut: &sz,
+                        parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
+                }
                 if let ptr, sz > 0 {
                     result.append(contentsOf: [0, 0, 0, 1])
                     result.append(Data(bytes: ptr, count: sz))

@@ -5,7 +5,7 @@ export type FrameCallback = (frame: VideoFrame) => void
 export type VideoCodec = 'h264' | 'h265' | 'jpeg'
 
 const CODEC_STRING: Record<Exclude<VideoCodec, 'jpeg'>, string> = {
-  h264: 'avc3.42E034',       // H.264 Baseline Annex-B in-band SPS/PPS, Level 5.2
+  h264: 'avc3.640034',      // H.264 High profile (matches the encoder), Annex-B in-band SPS/PPS, Level 5.2
   h265: 'hvc1.1.6.L150.B0'  // H.265 Main Profile Level 5.0
 }
 
@@ -70,6 +70,15 @@ export class VideoDecoder_ {
       codedWidth: width,
       codedHeight: height,
       optimizeForLatency: true,
+      // Windows Electron only: one machine's GPU driver produced corrupted
+      // output (garbled blocks) from hardware H.264 decode that a regular
+      // up-to-date browser handled fine — Electron pins an older Chromium
+      // that lacks that driver's workarounds. Scoped here instead of a
+      // global --disable-accelerated-video-decode switch so page/UI
+      // compositing keeps its GPU acceleration.
+      ...(window.remoterAPI?.platform === 'win32'
+        ? { hardwareAcceleration: 'prefer-software' as HardwareAcceleration }
+        : {}),
     })
 
     this.pendingKeyframe = true
@@ -138,7 +147,14 @@ export class VideoDecoder_ {
       const result = await VideoDecoder.isConfigSupported({
         codec: CODEC_STRING['h265'],
         codedWidth: 1920,
-        codedHeight: 1080
+        codedHeight: 1080,
+        // Must mirror the flags configure() actually uses: Chromium has no
+        // software HEVC decoder, so on win32 (where we force prefer-software
+        // — see configure() above) HEVC is genuinely unavailable and this
+        // check correctly reports so, hiding the option in the UI.
+        ...(window.remoterAPI?.platform === 'win32'
+          ? { hardwareAcceleration: 'prefer-software' as HardwareAcceleration }
+          : {}),
       })
       return result.supported === true
     } catch {

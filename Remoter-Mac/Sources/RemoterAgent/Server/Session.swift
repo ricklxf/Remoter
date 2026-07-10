@@ -19,7 +19,9 @@ final class Session {
     private let pin: String
 
     private var capturer: ScreenCapturer?
-    private var encoder: H264Encoder?
+    private var encoder: VideoEncoder?
+    private var audioEncoder: AudioEncoder?
+    private var audioEnabled = false
     private var lastFrame: CVPixelBuffer?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
@@ -47,6 +49,7 @@ final class Session {
     // to the connection-time starting point.
     private var currentFps = 30
     private var currentBitrate = 2_000_000
+    private var currentCodec: StreamCodec = .h264
     private var usingJpeg = false  // re-applied after a resolution switch's beginCapture() rebuild, which defaults back to h264
 
     // Video send semaphore: allow several small H.264 frames in flight so a
@@ -358,7 +361,11 @@ final class Session {
             let newMax = tier == "2k" ? 2560 : 1920
             guard newMax != resolutionMaxDimension else { break }
             resolutionMaxDimension = newMax
-            Task { await switchResolution() }
+            Task { await rebuildPipeline() }
+
+        case .setAudioEnabled(let enabled):
+            audioEnabled = enabled
+            if enabled { startAudioStream() } else { stopAudioStream() }
 
         case .ping:
             sendJson(["type": "pong"])
@@ -396,7 +403,15 @@ final class Session {
             break  // JPEG 模式下无 ABR
 
         case .setCodec(let codec):
-            if codec == "jpeg" { switchToJpeg() }
+            if codec == "jpeg" {
+                switchToJpeg()
+            } else if let c = StreamCodec(rawValue: codec), c != currentCodec || usingJpeg {
+                // Codec is baked into the VTCompressionSession at creation, so
+                // like a resolution change this needs the full pipeline rebuild.
+                currentCodec = c
+                usingJpeg = false
+                Task { await rebuildPipeline() }
+            }
 
         case .listDir(let path):
             handleListDir(path)
@@ -521,21 +536,55 @@ final class Session {
 
     // MARK: - 采集与 JPEG 编码
 
-    /// Resolution can't be resized on a live SCStream/VTCompressionSession —
-    /// stop the current capture and rebuild it (and the encoder) from
-    /// scratch at the new cap via beginCapture(), which reads
-    /// resolutionMaxDimension/currentFps/currentBitrate rather than
-    /// hardcoded defaults so this preserves whatever quality was already
-    /// active. Visible cost: a brief gap (fresh keyframe, decoder resize)
-    /// while it rebuilds — acceptable since this only happens on an
-    /// explicit, infrequent user choice, not automatically.
-    private func switchResolution() async {
+    /// Resolution and codec are both baked into a live SCStream /
+    /// VTCompressionSession at creation — changing either stops the current
+    /// capture and rebuilds everything from scratch via beginCapture(),
+    /// which reads resolutionMaxDimension/currentFps/currentBitrate/
+    /// currentCodec rather than hardcoded defaults so this preserves
+    /// whatever was already active. Visible cost: a brief gap (fresh
+    /// keyframe, decoder reset) while it rebuilds — acceptable since this
+    /// only happens on an explicit, infrequent user choice, never
+    /// automatically.
+    private func rebuildPipeline() async {
         await capturer?.stop()
         await beginCapture()
-        // beginCapture() always sets up h264 — re-apply JPEG if that's what
-        // this client actually needs (WebCodecs unavailable), or it'd get
-        // silently switched back to a codec it can't decode.
+        // beginCapture() always sets up the H.264/HEVC path — re-apply JPEG
+        // if that's what this client actually needs (WebCodecs unavailable),
+        // or it'd get silently switched back to a codec it can't decode.
         if usingJpeg { switchToJpeg() }
+        // New ScreenCapturer instance → its onAudioSample is nil again.
+        if audioEnabled { startAudioStream() }
+    }
+
+    // MARK: - 音频转发
+
+    /// Idempotent: (re)wires the current capturer's audio callback into an
+    /// AAC encoder whose output goes out as 0x03 binary frames. ~128kbps, so
+    /// the plain fire-and-forget sendBinary path is plenty — no backpressure
+    /// coupling with video.
+    private func startAudioStream() {
+        if audioEncoder == nil {
+            let enc = AudioEncoder()
+            enc.onEncodedFrame = { [weak self] data in
+                guard let self, self.connection.isActive else { return }
+                var pkt = Data(capacity: 1 + data.count)
+                pkt.append(FrameType.audioFrame.rawValue)
+                pkt.append(data)
+                self.bytesSent += Int64(pkt.count)
+                self.connection.sendBinary(pkt)
+            }
+            audioEncoder = enc
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "audio_stream", detail: "on")
+        }
+        capturer?.onAudioSample = { [weak self] sample in
+            self?.audioEncoder?.encode(sample)
+        }
+    }
+
+    private func stopAudioStream() {
+        capturer?.onAudioSample = nil
+        audioEncoder = nil
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "audio_stream", detail: "off")
     }
 
     private func beginCapture() async {
@@ -555,21 +604,22 @@ final class Session {
             fileReceiver = FileReceiver()
             connectTime  = Date()
 
-            // Set up H.264 encoder
+            // Set up the video encoder (H.264 default, HEVC if the client
+            // opted in) — same currentFps/currentBitrate carry-over as above.
             encoder?.close()
-            let enc = H264Encoder()
-            // Same currentFps/currentBitrate carry-over as above.
-            try enc.setup(width: c.screenWidth, height: c.screenHeight, fps: currentFps, bitrateBps: currentBitrate)
+            let enc = VideoEncoder()
+            try enc.setup(width: c.screenWidth, height: c.screenHeight,
+                          fps: currentFps, bitrateBps: currentBitrate, codec: currentCodec)
             encoder = enc
 
-            ConnectionLogger.shared.logConnected(sessionId: sid, codec: "h264", encrypted: crypto.isReady)
+            ConnectionLogger.shared.logConnected(sessionId: sid, codec: currentCodec.rawValue, encrypted: crypto.isReady)
             startClipboardMonitor()
             startKeepalive()
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
                 "height": c.screenHeight,
-                "codec":  "h264"
+                "codec":  currentCodec.rawValue
             ])
 
             enc.onEncodedFrame = { [weak self] data, isKeyframe in

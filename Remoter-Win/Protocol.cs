@@ -14,7 +14,10 @@ public abstract record ClientMsg
     public record ClipboardSet(string Text) : ClientMsg;
     public record FileStart(string Id, string Name, long Size) : ClientMsg;
     public record FileEnd(string Id) : ClientMsg;
-    public record QualitySet(int Fps, int Bitrate) : ClientMsg;
+    public record QualitySet(int Fps, int Bitrate) : ClientMsg;   // legacy clients (≤ v1.0.204)
+    public record FpsSet(int Fps, bool Auto) : ClientMsg;
+    public record BitrateSet(int Bitrate, bool Auto) : ClientMsg;
+    public record ResolutionSet(string Tier) : ClientMsg;
     public record Ping : ClientMsg;
     public record RequestKeyframe : ClientMsg;
     public record WebRtcOffer(string Sdp) : ClientMsg;
@@ -51,6 +54,9 @@ public abstract record ClientMsg
             "file_start"        => new FileStart(e.Str("id"), e.Str("name"), e.Long("size")),
             "file_end"          => new FileEnd(e.Str("id")),
             "quality"           => new QualitySet(e.Int("fps"), e.Int("bitrate")),
+            "fps"               => new FpsSet(e.Int("fps"), e.Bool("auto")),
+            "bitrate"           => new BitrateSet(e.Int("bitrate"), e.Bool("auto")),
+            "resolution"        => new ResolutionSet(e.Str("tier")),
             "ping"              => new Ping(),
             "request_keyframe"  => new RequestKeyframe(),
             "webrtc_offer"      => new WebRtcOffer(e.Str("sdp")),

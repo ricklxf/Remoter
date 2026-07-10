@@ -10,19 +10,10 @@ app.commandLine.appendSwitch('disable-features', 'TranslateUI,AutofillServerComm
 if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('enable-features', 'Metal')
 }
-if (process.platform === 'win32') {
-  // Confirmed via a raw-bitstream dump + ffplay that the encoded H.264 is
-  // clean and decodes without a single error/warning — the same stream
-  // renders correctly in a regular browser but shows corruption (garbled
-  // blocks, shifting position/pattern) specifically in this Electron build
-  // on at least one Windows machine. That combination (bitstream is valid,
-  // only the app with its own pinned/bundled Chromium misbehaves) points to
-  // a GPU hardware video decode bug for that machine's driver, not our
-  // code — Electron ships a fixed Chromium version that can lag behind
-  // whatever a regular updated browser has for driver-specific decode
-  // workarounds. Forcing software decode trades some CPU for correctness.
-  app.commandLine.appendSwitch('disable-accelerated-video-decode')
-}
+// Windows GPU-driver decode corruption is handled per-decoder now
+// (hardwareAcceleration: 'prefer-software' in renderer's Decoder.ts) instead
+// of a global --disable-accelerated-video-decode, so UI compositing keeps
+// its GPU acceleration.
 
 // Trust the agent's own self-signed cert (CN=Remoter) for internal HTTPS/WSS.
 // The agent serves over TLS so browsers get a secure context for WebCodecs(H.264);

@@ -29,6 +29,11 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     // well before any network/decode limit was ever hit.
     var onFrame:   ((CVPixelBuffer, Int, Int) -> Void)?
     var onStopped: (() -> Void)?   // called when SCStream reports a stop/error
+    // System audio PCM from SCStream (48kHz float). Capture always runs (the
+    // cost of unconsumed PCM callbacks is negligible); Session only encodes/
+    // sends when the client actually asked for audio, so toggling it on
+    // doesn't need a stream rebuild.
+    var onAudioSample: ((CMSampleBuffer) -> Void)?
 
     private(set) var physWidth:    Int = 1920  // physical display pixels (for input mapping)
     private(set) var physHeight:   Int = 1080
@@ -38,6 +43,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
     private let captureQueue    = DispatchQueue(label: "remoter.capture.cb", qos: .userInitiated)
+    private let audioQueue      = DispatchQueue(label: "remoter.capture.audio", qos: .userInitiated)
 
     // Diagnostics (benign data-race on counters — log only)
     private var statFrames:   Int = 0
@@ -89,11 +95,16 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
         config.queueDepth = 3
+        config.capturesAudio = true
+        config.sampleRate = 48000
+        config.channelCount = 2
+        config.excludesCurrentProcessAudio = true
 
         let output = StreamOutput(capturer: self)
         let s = SCStream(filter: filter, configuration: config, delegate: output)
         do {
             try s.addStreamOutput(output, type: .screen, sampleHandlerQueue: captureQueue)
+            try s.addStreamOutput(output, type: .audio,  sampleHandlerQueue: audioQueue)
             try await s.startCapture()
         } catch {
             ConnectionLogger.shared.logStep(sessionId: "capturer", step: "stream_start_failed",
@@ -193,8 +204,12 @@ private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, sampleBuffer.isValid else { return }
-        capturer?.handle(sampleBuffer: sampleBuffer)
+        guard sampleBuffer.isValid else { return }
+        switch type {
+        case .screen: capturer?.handle(sampleBuffer: sampleBuffer)
+        case .audio:  capturer?.onAudioSample?(sampleBuffer)
+        default:      break
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

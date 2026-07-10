@@ -42,6 +42,7 @@ sealed class H264Encoder : IDisposable
     private static readonly Guid MF_MT_FRAME_SIZE     = new("1652c33d-d6b2-4012-b834-72030849a37d");
     private static readonly Guid MF_MT_FRAME_RATE     = new("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");
     private static readonly Guid MF_MT_INTERLACE_MODE = new("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
+    private static readonly Guid MF_MT_MAX_KEYFRAME_SPACING = new("c16eb52b-73a1-476f-8d62-839d6a020652");
     private const uint MFVideoInterlace_Progressive = 2;
 
     // MFT_ENUM_FLAG_* (mfapi.h)
@@ -134,6 +135,11 @@ sealed class H264Encoder : IDisposable
         outputType.Set(MF_MT_FRAME_SIZE, PackLong(width, height));
         outputType.Set(MF_MT_FRAME_RATE, PackLong(fps, 1));
         outputType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        // ~10s GOP (in frames), matching the Mac agent: keyframes are 10-20x
+        // a delta frame, and on-demand request_keyframe handles recovery, so
+        // frequent periodic ones just burn bitrate. Without this the MFT
+        // picks a vendor default that can be as low as 2x fps.
+        outputType.Set(MF_MT_MAX_KEYFRAME_SPACING, (uint)(fps * 10));
         _transform!.SetOutputType(0, outputType, 0);
 
         using var inputType = MediaFactory.MFCreateMediaType();

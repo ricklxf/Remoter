@@ -16,6 +16,7 @@ export interface WebRTCConfig {
 export class WebRTCClient {
   private pc: RTCPeerConnection | null = null
   private videoChannel: RTCDataChannel | null = null
+  private controlChannel: RTCDataChannel | null = null
 
   // 收到视频帧时的回调（与 WebSocket 路径共用同一 Decoder）
   onVideoFrame:   ((data: ArrayBuffer, keyframe: boolean, bytes: number) => void) | null = null
@@ -52,9 +53,14 @@ export class WebRTCClient {
     this.videoChannel.onopen    = () => console.log('[WebRTC] Video channel open')
     this.videoChannel.onclose   = () => console.log('[WebRTC] Video channel closed')
 
-    // 控制 DataChannel：有序、可靠（备用，当前控制消息仍走 WebSocket）。
-    // 仍需创建以保持 SDP 协商包含 m=application，故保留调用但不持有引用。
-    pc.createDataChannel('control', { ordered: true })
+    // 控制 DataChannel：有序、可靠。输入事件（键鼠）在此通道打开后走这里
+    // 而不是 WebSocket —— WS 是 TCP，链路拥塞时输入会排在重传后面（队头
+    // 阻塞），SCTP 通道则和视频一样走 UDP 路径。安全性等价：DataChannel 由
+    // DTLS 端到端加密（即使经 TURN 中继也是端到端），与 WS 上的 AES-GCM
+    // 层保护目标一致。
+    this.controlChannel = pc.createDataChannel('control', { ordered: true })
+    this.controlChannel.onopen  = () => console.log('[WebRTC] Control channel open')
+    this.controlChannel.onclose = () => console.log('[WebRTC] Control channel closed')
 
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return
@@ -93,10 +99,20 @@ export class WebRTCClient {
     return this.videoChannel?.readyState ?? 'none'
   }
 
+  get controlOpen(): boolean {
+    return this.controlChannel?.readyState === 'open'
+  }
+
+  /** Send a control-plane JSON message (input events) over the DataChannel. */
+  sendControl(json: string): void {
+    if (this.controlChannel?.readyState === 'open') this.controlChannel.send(json)
+  }
+
   close(): void {
     this.pc?.close()
     this.pc = null
     this.videoChannel = null
+    this.controlChannel = null
     this.frameBuffer.clear()
   }
 

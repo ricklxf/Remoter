@@ -17,6 +17,7 @@ export type ConnEvent =
   | { type: 'video_frame'; data: ArrayBuffer; frameId: number; ptsMs: number; keyframe: boolean }
   | { type: 'codec_changed'; codec: VideoCodec }
   | { type: 'quality_active'; fps: number; bitrate: number }
+  | { type: 'audio_frame'; data: ArrayBuffer }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
@@ -24,6 +25,7 @@ export type ConnEvent =
 
 const VIDEO_FRAME   = 0x01
 const FILE_CHUNK    = 0x02
+const AUDIO_FRAME   = 0x03
 const ENCRYPTED_MSG = 0xE0
 
 interface DownloadState {
@@ -223,6 +225,9 @@ export class Connection {
   sendResolution(tier: '1080' | '2k'): void {
     this.sendJson({ type: 'resolution', tier })
   }
+  sendSetAudio(enabled: boolean): void {
+    this.sendJson({ type: 'set_audio', enabled })
+  }
 
   // Forces the encoder to emit a keyframe right away instead of waiting for
   // its next scheduled one (up to 2s) — call whenever a fresh decoder
@@ -324,13 +329,35 @@ export class Connection {
   private pendingScroll: { dx: number; dy: number } | null = null
   private scrollInFlight = false
 
+  // Input events prefer the WebRTC control DataChannel once it's open: the
+  // WS path is TCP, so during congestion a keypress queues behind whatever
+  // retransmits are in flight (head-of-line blocking) — the SCTP channel
+  // rides the same UDP path as video instead. Security is equivalent: the
+  // DataChannel is DTLS-encrypted end-to-end (even through a TURN relay),
+  // which covers the same threat the WS AES-GCM layer exists for. Decided
+  // per message at send time so a mid-session ICE failure falls back to WS
+  // transparently, same as the video path.
+  private static readonly INPUT_TYPES = new Set([
+    'mouse_move', 'mouse_button', 'mouse_double_click', 'mouse_scroll', 'key',
+  ])
+
+  private trySendViaControlChannel(obj: object): boolean {
+    const type = (obj as { type?: string }).type
+    if (!type || !Connection.INPUT_TYPES.has(type)) return false
+    if (!this.webrtc?.controlOpen) return false
+    this.webrtc.sendControl(JSON.stringify(obj))
+    return true
+  }
+
   private enqueueSend(getObj: () => object): void {
     if (this.e2e.isReady) {
       const gen = this.queueGen
       this.sendQueue = this.sendQueue.then(async () => {
         if (this.queueGen !== gen) return
         try {
-          const ct = await this.e2e.encryptJson(getObj())
+          const obj = getObj()
+          if (this.trySendViaControlChannel(obj)) return
+          const ct = await this.e2e.encryptJson(obj)
           const frame = new Uint8Array(1 + ct.length)
           frame[0] = ENCRYPTED_MSG
           frame.set(ct, 1)
@@ -341,7 +368,9 @@ export class Connection {
       })
     } else {
       try {
-        this.ws!.send(JSON.stringify(getObj()))
+        const obj = getObj()
+        if (this.trySendViaControlChannel(obj)) return
+        this.ws!.send(JSON.stringify(obj))
       } catch (e) {
         console.warn('[Conn] send failed:', e)
       }
@@ -464,6 +493,11 @@ export class Connection {
       const ptsMs    = view.getUint32(5, false)
       const keyframe = (view.getUint8(9) & 0x01) !== 0
       this.emit({ type: 'video_frame', data: buf.slice(10), frameId, ptsMs, keyframe })
+      return
+    }
+
+    if (prefix === AUDIO_FRAME && buf.byteLength > 1) {
+      this.emit({ type: 'audio_frame', data: buf.slice(1) })
       return
     }
 

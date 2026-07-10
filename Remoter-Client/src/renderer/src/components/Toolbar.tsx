@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
 import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
+import { VideoDecoder_ } from '../video/Decoder'
 
 interface Props {
   conn: Connection
@@ -15,6 +16,10 @@ interface Props {
   onBitrateChange: (bitrate: number, auto: boolean) => void
   resolution: '1080' | '2k'
   onResolutionChange: (tier: '1080' | '2k') => void
+  codec: 'h264' | 'h265'
+  onCodecChange: (codec: 'h264' | 'h265') => void
+  audioOn: boolean
+  onToggleAudio: () => void
   transferCount: number
   onToggleTransfers: () => void
   showTransfers: boolean
@@ -47,6 +52,8 @@ export function Toolbar({
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
   resolution, onResolutionChange,
+  codec, onCodecChange,
+  audioOn, onToggleAudio,
   transferCount, onToggleTransfers, showTransfers,
   onMouseEnter, onMouseLeave,
 }: Props) {
@@ -76,9 +83,14 @@ export function Toolbar({
           onBitrateChange(b, auto)
           conn.sendBitrate(b, auto)
         }}
+        codec={codec}
+        onCodecChange={c => {
+          onCodecChange(c)
+          conn.sendSetCodec(c)
+        }}
       />
 
-      <ControlMenu conn={conn} />
+      <ControlMenu conn={conn} audioOn={audioOn} onToggleAudio={onToggleAudio} />
       <ShortcutMenu conn={conn} />
       <KeymapMenu />
 
@@ -106,6 +118,7 @@ function QualityMenu({
   resolution, onResolutionChange,
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
+  codec, onCodecChange,
 }: {
   resolution: '1080' | '2k'
   onResolutionChange: (tier: '1080' | '2k') => void
@@ -115,9 +128,18 @@ function QualityMenu({
   bitrate: number
   bitrateAuto: boolean
   onBitrateChange: (bitrate: number, auto: boolean) => void
+  codec: 'h264' | 'h265'
+  onCodecChange: (codec: 'h264' | 'h265') => void
 }) {
   const [open, setOpen] = useState(false)
+  const [h265Available, setH265Available] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+
+  // HEVC decode is hardware-dependent (Chromium ships no software HEVC) —
+  // only offer the option where this client can actually decode it.
+  useEffect(() => {
+    VideoDecoder_.isH265Supported().then(setH265Available)
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -144,6 +166,55 @@ function QualityMenu({
             formatValue={v => `${v}fps`} width={82} onChange={onFpsChange} />
           <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
             formatValue={formatBitrate} width={82} onChange={onBitrateChange} />
+          {h265Available && (
+            <CodecSelect value={codec} onChange={onCodecChange} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// H.264 / H.265 picker — same look as the other selects. H.265 halves the
+// bitrate needed for the same quality on Apple Silicon's hardware encoder,
+// but decode support varies by client GPU, so QualityMenu only renders this
+// when the WebCodecs support probe passes.
+function CodecSelect({ value, onChange }: { value: 'h264' | 'h265'; onChange: (c: 'h264' | 'h265') => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const label = (c: 'h264' | 'h265') => c === 'h265' ? 'H.265' : 'H.264'
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, width: 82, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+        <span>{label(value)}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={s.dropdown}>
+          {(['h264', 'h265'] as const).map(c => {
+            const active = c === value
+            return (
+              <button
+                key={c}
+                style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
+                onClick={() => { onChange(c); setOpen(false) }}
+              >
+                <span>{label(c)}</span>
+                {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+              </button>
+            )
+          })}
         </div>
       )}
     </div>
@@ -152,7 +223,7 @@ function QualityMenu({
 
 // ─── Control menu ─────────────────────────────────────────────────────
 
-function ControlMenu({ conn }: { conn: Connection }) {
+function ControlMenu({ conn, audioOn, onToggleAudio }: { conn: Connection; audioOn: boolean; onToggleAudio: () => void }) {
   const [open, setOpen] = useState(false)
   const [clipSync, setClipSync]     = useState(true)
   const [inputEnabled, setInput]    = useState(true)
@@ -200,6 +271,13 @@ function ControlMenu({ conn }: { conn: Connection }) {
             <span style={s.ctrlItemIcon}>🖱</span>
             <span style={{ flex: 1 }}>禁用被控端键鼠</span>
             <Toggle checked={!inputEnabled} onToggle={toggleInput} />
+          </div>
+
+          {/* Remote audio forwarding (Mac agent only for now) */}
+          <div style={s.ctrlItem}>
+            <span style={s.ctrlItemIcon}>🔊</span>
+            <span style={{ flex: 1 }}>转发远端声音</span>
+            <Toggle checked={audioOn} onToggle={onToggleAudio} />
           </div>
 
           <div style={s.menuSep} />

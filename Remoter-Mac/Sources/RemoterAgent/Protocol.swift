@@ -4,6 +4,7 @@ import Foundation
 enum FrameType: UInt8 {
     case videoFrame = 0x01
     case fileChunk  = 0x02
+    case audioFrame = 0x03   // [0x03][ADTS-framed AAC packet]
 }
 
 // Incoming JSON message types from client
@@ -20,6 +21,7 @@ enum ClientMessage {
     case fpsSet(fps: Int, auto: Bool)
     case bitrateSet(bitrate: Int, auto: Bool)
     case resolutionSet(tier: String)
+    case setAudioEnabled(Bool)
     case ping
     case requestKeyframe
     case webrtcOffer(sdp: String)
@@ -98,6 +100,8 @@ enum ClientMessage {
             )
         case "resolution":
             return .resolutionSet(tier: json["tier"] as? String ?? "1080")
+        case "set_audio":
+            return .setAudioEnabled(json["enabled"] as? Bool ?? false)
         case "ping":
             return .ping
         case "request_keyframe":

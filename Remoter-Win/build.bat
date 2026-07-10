@@ -11,7 +11,7 @@ REM package.json) — not rewritten here, so a build between commits doesn't
 REM touch a tracked file and fight with `git pull`.
 
 REM Kill running process before build
-echo [1/6] Stopping running process...
+echo [1/7] Stopping running process...
 taskkill /F /IM RemoterWin.exe > nul 2>&1
 if errorlevel 1 (
     echo       OK: No running process found
@@ -22,7 +22,7 @@ if errorlevel 1 (
 echo.
 
 REM Check .NET SDK
-echo [2/6] Checking .NET SDK...
+echo [2/7] Checking .NET SDK...
 dotnet --version > nul 2>&1
 if errorlevel 1 (
     echo       ERROR: .NET SDK not found, please install .NET 8 SDK
@@ -35,7 +35,7 @@ echo       OK: .NET SDK %DOTNET_VERSION% found
 echo.
 
 REM Restore NuGet packages
-echo [3/6] Restoring NuGet packages...
+echo [3/7] Restoring NuGet packages...
 dotnet restore
 if errorlevel 1 (
     echo       ERROR: NuGet restore failed
@@ -46,7 +46,7 @@ echo       OK: NuGet packages restored
 echo.
 
 REM Build project (Release)
-echo [4/6] Building project (Release)...
+echo [4/7] Building project (Release)...
 dotnet build -c Release
 if errorlevel 1 (
     echo       ERROR: Build failed
@@ -56,11 +56,26 @@ if errorlevel 1 (
 echo       OK: Build successful
 echo.
 
+REM Build the web client from source first — Remoter-Server/public is
+REM gitignored (never committed), so a bare `git pull` never updates it;
+REM without rebuilding here, this step below would silently copy whatever
+REM stale bundle happened to be sitting there from some earlier manual build.
+echo [5/7] Building web client...
+set "clientDir=%~dp0..\Remoter-Client"
+if exist "%clientDir%\node_modules" (
+    pushd "%clientDir%"
+    call npm run build:web
+    popd
+) else (
+    echo       WARN: %clientDir%\node_modules not found, skipping ^(run npm install first^)
+)
+echo.
+
 REM Copy web directory to output — pulls from Remoter-Server/public, the
 REM single source of truth produced by `npm run build:web` in Remoter-Client.
 REM (Used to vendor a stale hand-copied snapshot in Remoter-Win\web — that
 REM drifted out of sync with every client-side fix; removed.)
-echo [5/6] Copying web directory...
+echo [6/7] Copying web directory...
 set "outputDir=%~dp0bin\Release\net8.0-windows"
 set "webSource=%~dp0..\Remoter-Server\public"
 set "webDest=%outputDir%\web"
@@ -84,7 +99,7 @@ echo       OK: Web directory copied to %webDest%
 echo.
 
 REM Publish self-contained version (for distribution)
-echo [6/6] Publishing self-contained version...
+echo [7/7] Publishing self-contained version...
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish
 if errorlevel 1 (
     echo       WARN: Publish failed, but build succeeded
@@ -95,7 +110,7 @@ if errorlevel 1 (
 echo.
 
 ::build_complete
-REM Start the freshly built exe (old instance was already killed in step [1/6])
+REM Start the freshly built exe (old instance was already killed in step [1/7])
 echo Starting new build...
 set "exePath=%outputDir%\RemoterWin.exe"
 if exist "%exePath%" (

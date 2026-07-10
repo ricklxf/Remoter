@@ -95,6 +95,18 @@ PLIST
 echo "✅ Built: $APP_DIR"
 
 # ── 嵌入 Web 客户端（可选）────────────────────────────────────────────────
+# Remoter-Server/public 是 build:web 的输出，在 .gitignore 里、从不提交——
+# 只跑 git pull 拉不到它。这里每次都从源码重新构建一遍，保证嵌入的是当前
+# checkout 出来的最新前端代码，不会用到本机某次手动 build 留下的旧产物。
+CLIENT_DIR="$PKG_DIR/../Remoter-Client"
+if [ -d "$CLIENT_DIR/node_modules" ]; then
+    echo ""
+    echo "▶ 构建 Web 客户端…"
+    (cd "$CLIENT_DIR" && npm run build:web)
+else
+    echo "⚠️  $CLIENT_DIR/node_modules 不存在，跳过 Web 客户端构建（先跑一次 npm install）"
+fi
+
 # 优先读 Remoter-Server/public（build:web 的默认输出），兼容旧路径 dist-web
 WEB_DIST=""
 if [ -d "$PKG_DIR/../Remoter-Server/public" ]; then

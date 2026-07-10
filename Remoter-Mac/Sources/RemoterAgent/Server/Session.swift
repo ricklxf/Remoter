@@ -66,15 +66,22 @@ final class Session {
     private var keyframeRequests = 0      // client request_keyframe messages received (pre-cooldown)
     private var usingWebRTCVideo = false
 
-    // Auto quality: fps and bitrate step independently, each reacting to
-    // the signal it actually fixes — collapsing them into one combined tier
-    // meant any problem (network congestion OR decode overload) dragged
-    // *both* down together, even when only one lever was actually needed.
-    //   - fps  ← keyframeRequests (client's decode queue backed up; this is
-    //            what reliably predicted stutter, and lowering fps is what
-    //            actually relieves decode load — bitrate barely does)
-    //   - bitrate ← backpressureDrops (WebRTC send buffer congested; this is
-    //            a network/bandwidth problem, not a decode one)
+    // Auto quality: fps and bitrate step on separate ladders — collapsing
+    // them into one combined tier meant any problem (network congestion OR
+    // decode overload) dragged *both* down together, even when only one
+    // lever was actually needed.
+    //   - fps      ← keyframeRequests only (client's decode queue backed
+    //                up; lowering fps directly relieves decode load)
+    //   - bitrate  ← keyframeRequests *and* backpressureDrops. Bitrate
+    //                isn't purely a network knob: a bigger bitrate means
+    //                bigger, more expensive-to-decode frames, so it can't
+    //                be allowed to climb (or should come down) whenever the
+    //                client is decode-overloaded, even if the network side
+    //                looks perfectly clean. Learned this the hard way —
+    //                bitrate climbing to its max tier in lockstep with fps
+    //                stepping down to fix a decode-overloaded client made
+    //                "自动" hand it even bigger frames while already behind,
+    //                and it never settled.
     // Both ordered safest-first so "自动" starts conservative and only
     // climbs after proving stable, rather than starting high and visibly
     // stuttering before settling.
@@ -756,18 +763,23 @@ final class Session {
         }
     }
 
-    /// Steps fps and bitrate independently based on this just-finished
-    /// window's signals — each reacts only to the problem it actually
-    /// fixes (see comment on the auto* properties above). Steps down
-    /// immediately on any sign of trouble; steps up only after several
+    /// Steps fps and bitrate with separate tier ladders, but not fully
+    /// independent signals: fps only cares about decode overload (kfReq),
+    /// while bitrate cares about *both* decode overload and network
+    /// backpressure (bpDrops) — a bigger bitrate means bigger frames, which
+    /// cost more to decode regardless of fps, so bitrate can't be allowed
+    /// to climb while the client is already struggling to decode. Steps
+    /// down immediately on any sign of trouble; steps up only after several
     /// consecutive clean windows, so it settles instead of oscillating
     /// right at the edge of what the client/link can sustain.
     private func evaluateAutoQuality() {
         var fpsChanged = false
         var bitrateChanged = false
 
+        let decodeOverloaded = keyframeRequests > 0
+
         if autoFpsEnabled {
-            if keyframeRequests > 0 {
+            if decodeOverloaded {
                 autoFpsCleanStreak = 0
                 if autoFpsIndex > 0 { autoFpsIndex -= 1; fpsChanged = true }
             } else {
@@ -781,7 +793,15 @@ final class Session {
         }
 
         if autoBitrateEnabled {
-            if backpressureDrops > 0 {
+            // A bigger bitrate means bigger, more expensive-to-decode frames
+            // — decode cost isn't just a function of fps. Ignoring
+            // decodeOverloaded here (treating bitrate as purely a network
+            // concern) let bitrate climb to its max tier in the same breath
+            // fps was stepping down to *fix* a decode-overloaded client,
+            // handing it even bigger frames while it was already behind —
+            // a real regression that made "auto" oscillate and never
+            // settle. Both signals now gate both directions.
+            if backpressureDrops > 0 || decodeOverloaded {
                 autoBitrateCleanStreak = 0
                 if autoBitrateIndex > 0 { autoBitrateIndex -= 1; bitrateChanged = true }
             } else {

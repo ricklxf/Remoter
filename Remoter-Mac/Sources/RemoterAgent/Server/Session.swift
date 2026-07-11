@@ -67,7 +67,8 @@ final class Session {
     private var backpressureDrops = 0     // frames dropped: WebRTC send buffer was full
     private var keyframesForced = 0       // times we actually forced a keyframe (post-cooldown)
     private var keyframeRequests = 0      // client request_keyframe messages received (pre-cooldown)
-    private var usingWebRTCVideo = false
+    private var usingWebRTCVideo = false  // legacy DataChannel video path active
+    private var usingRtpVideo = false     // RTP media-track path active
 
     // Auto quality: fps and bitrate step on separate ladders — collapsing
     // them into one combined tier meant any problem (network congestion OR
@@ -394,9 +395,11 @@ final class Session {
 
         case .ping:
             // encode_ms rides on the pong so the client's latency-breakdown
-            // panel gets it with zero extra message traffic.
+            // panel gets it with zero extra message traffic. On the RTP path
+            // our VT encoder is idle (libwebrtc encodes internally) — its
+            // last value is stale, report 0 rather than a lie.
             sendJson(["type": "pong",
-                      "encode_ms": Int((encoder?.lastEncodeMs ?? 0).rounded())])
+                      "encode_ms": usingRtpVideo ? 0 : Int((encoder?.lastEncodeMs ?? 0).rounded())])
 
         case .requestKeyframe:
             // Shares the drop-triggered cooldown below: the client also sends
@@ -773,7 +776,28 @@ final class Session {
             c.onFrame = { [weak self] pixelBuffer, _, _ in
                 guard let self else { return }
                 self.lastFrame = pixelBuffer
-                self.encoder?.encode(pixelBuffer)
+                // RTP media track first: raw buffer straight into libwebrtc
+                // (it encodes + paces + congestion-controls internally). Our
+                // own VT encoder + WS/DataChannel path stays as the fallback
+                // whenever the media track isn't up — checked per frame so a
+                // mid-session ICE failure degrades transparently, same as
+                // the old DataChannel→WS fallback did.
+                if let webrtc = self.webrtc, webrtc.isMediaReady {
+                    if !self.usingRtpVideo {
+                        self.usingRtpVideo = true
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "video_transport", detail: "rtp")
+                    }
+                    webrtc.sendVideoBuffer(pixelBuffer)
+                    self.recordSentFrame()
+                } else {
+                    if self.usingRtpVideo {
+                        self.usingRtpVideo = false
+                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                            step: "video_transport", detail: "fallback")
+                    }
+                    self.encoder?.encode(pixelBuffer)
+                }
             }
 
             // CGDisplayStream stops when macOS locks the screen, goes to sleep,
@@ -831,7 +855,11 @@ final class Session {
         if dt >= 5 {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws") bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
-            if autoFpsEnabled || autoBitrateEnabled { evaluateAutoQuality() }
+            // On the RTP path libwebrtc's GCC owns bandwidth adaptation and
+            // the browser handles decode-overload (frame dropping + PLI), so
+            // our reactive stepping would just fight it — only run it for
+            // the fallback (WS/DataChannel + WebCodecs) transport.
+            if !usingRtpVideo && (autoFpsEnabled || autoBitrateEnabled) { evaluateAutoQuality() }
             sentFrames = 0
             backpressureDrops = 0
             keyframesForced = 0
@@ -913,6 +941,7 @@ final class Session {
         currentBitrate = bitrate
         jpegQuality = bitrateToJpegQuality(bitrate)
         encoder?.setBitrate(bitrate)
+        webrtc?.setMaxBitrate(bitrate)   // RTP path: sets the GCC ceiling
         if notify { notifyQualityActive() }
     }
 

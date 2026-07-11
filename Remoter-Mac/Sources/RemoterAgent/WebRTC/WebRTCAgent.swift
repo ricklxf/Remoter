@@ -1,8 +1,14 @@
 import Foundation
 import WebRTC
+import CoreVideo
 
-// Mac 端作为 WebRTC Answerer（Windows 客户端发 Offer）
-// 视频通过 DataChannel 发送（UDP，不重传），控制消息继续走 WebSocket
+// Mac 端作为 WebRTC Answerer（客户端发 Offer）。
+// 视频走真正的 RTP 媒体轨道：CVPixelBuffer 直接喂给 RTCVideoSource，
+// libwebrtc 内部完成硬件编码、拥塞控制（GCC 主动带宽估计）、pacing、
+// NACK/PLI 重传与关键帧请求、接收端抖动缓冲——这些此前全是在
+// DataChannel 上手写的近似实现（分片重组/背压丢帧/关键帧风暴治理），
+// 现在由协议栈原生接管。DataChannel 保留两个用途：control（输入事件）
+// 和旧版客户端的 video 通道兜底。
 final class WebRTCAgent: NSObject, @unchecked Sendable {
 
     // 信令回调（通过已有的 WebSocket 发出）
@@ -13,6 +19,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     var onControlMessage: ((String) -> Void)?            // DataChannel 上的控制消息
 
     var isVideoChannelOpen: Bool { videoChannel?.readyState == .open }
+    /// RTP 视频轨道可用：ICE 已连通且答复里协商出了 sendonly 视频 m-line。
+    var isMediaReady: Bool { iceConnected && videoSender != nil }
 
     private static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
@@ -25,6 +33,10 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private var pc: RTCPeerConnection?
     private var videoChannel: RTCDataChannel?
     private var controlChannel: RTCDataChannel?
+    private var videoSource: RTCVideoSource?
+    private var videoCapturer: RTCVideoCapturer?
+    private var videoSender: RTCRtpSender?
+    private(set) var iceConnected = false
 
     // MARK: - 信令处理
 
@@ -48,8 +60,49 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
         p.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] error in
             if let e = error { print("[WebRTC] setRemoteDescription error: \(e)"); return }
-            self?.createAnswer(pc: p)
+            guard let self else { return }
+            // Attach the video track after the remote offer is in place so
+            // it pairs with the client's recvonly video transceiver (an
+            // older client whose offer has no video m-line just ends up with
+            // an unpaired transceiver — harmless, DataChannel path kicks in).
+            self.setupVideoTrack(pc: p)
+            self.createAnswer(pc: p)
         }
+    }
+
+    /// screencast-mode source: tells libwebrtc's encoder/adaptation this is
+    /// desktop content (favor text legibility over smoothness when starved).
+    private func setupVideoTrack(pc: RTCPeerConnection) {
+        let source = WebRTCAgent.factory.videoSource(forScreenCast: true)
+        let track  = WebRTCAgent.factory.videoTrack(with: source, trackId: "remoter-video")
+        let sender = pc.add(track, streamIds: ["remoter"])
+        videoSource = source
+        videoCapturer = RTCVideoCapturer(delegate: source)
+        videoSender = sender
+        if sender == nil {
+            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "video_track_add_failed")
+        }
+    }
+
+    /// Feed one captured frame into the RTP pipeline. libwebrtc owns
+    /// everything downstream (encode, pacing, congestion control) — this can
+    /// be called at capture rate regardless of network conditions; the stack
+    /// drops/adapts internally as needed.
+    func sendVideoBuffer(_ pb: CVPixelBuffer) {
+        guard let source = videoSource, let capturer = videoCapturer else { return }
+        let buf = RTCCVPixelBuffer(pixelBuffer: pb)
+        let ts  = Int64(CACurrentMediaTime() * 1_000_000_000)
+        let frame = RTCVideoFrame(buffer: buf, rotation: ._0, timeStampNs: ts)
+        source.capturer(capturer, didCapture: frame)
+    }
+
+    /// Cap the RTP encoder's bitrate (manual quality picks). GCC still
+    /// adapts *below* the cap on congestion; this only sets the ceiling.
+    func setMaxBitrate(_ bps: Int) {
+        guard let sender = videoSender else { return }
+        let params = sender.parameters
+        for enc in params.encodings { enc.maxBitrateBps = NSNumber(value: bps) }
+        sender.parameters = params
     }
 
     func handleRemoteICE(_ json: String) {
@@ -112,6 +165,10 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         pc = nil
         videoChannel = nil
         controlChannel = nil
+        videoSource = nil
+        videoCapturer = nil
+        videoSender = nil
+        iceConnected = false
     }
 
     // MARK: - Private
@@ -141,9 +198,11 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
         switch state {
         case .connected, .completed:
             print("[WebRTC] P2P connected ✓")
+            iceConnected = true
             onConnected?()
         case .failed, .disconnected, .closed:
             print("[WebRTC] P2P disconnected")
+            iceConnected = false
             onDisconnected?()
         default: break
         }

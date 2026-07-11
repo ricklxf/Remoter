@@ -14,6 +14,8 @@ interface Props {
 
 export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
+  const videoRef    = useRef<HTMLVideoElement>(null)
+  const frameRef    = useRef<HTMLDivElement>(null)
   const imeRef      = useRef<HTMLTextAreaElement>(null)
   const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())
@@ -21,6 +23,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   const ctx2dRef    = useRef<CanvasRenderingContext2D | null>(null)
   const wrapRef     = useRef<HTMLDivElement>(null)
   const [cssSize, setCssSize] = useState<{ w: number; h: number } | null>(null)
+  // RTP media track flowing → show <video>; otherwise the WebCodecs canvas
+  // (WS fallback). Driven by the track's mute/unmute events, which is how
+  // the browser signals "RTP packets stopped/resumed arriving".
+  const [mediaActive, setMediaActive] = useState(false)
 
   // Recompute canvas CSS size when container or stream dimensions change
   useEffect(() => {
@@ -92,7 +98,12 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       conn.sendRequestKeyframe()
     }
 
-    inputRef.current.attach(canvas, streamInfo.width, streamInfo.height, imeRef.current ?? undefined)
+    // Input attaches to the frame container (which exactly bounds whichever
+    // of canvas/video is showing), so coordinate mapping is identical on
+    // both the RTP and fallback paths.
+    if (frameRef.current) {
+      inputRef.current.attach(frameRef.current, streamInfo.width, streamInfo.height, imeRef.current ?? undefined)
+    }
 
     return () => {
       decoderRef.current?.close()
@@ -145,9 +156,27 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       // (text beam, resize arrows, …). Set directly on the DOM node instead
       // of React state so a busy cursor flipping shapes doesn't re-render
       // the component tree.
-      if (e.type === 'cursor_shape' && canvasRef.current) {
-        canvasRef.current.style.cursor =
+      if (e.type === 'cursor_shape' && frameRef.current) {
+        frameRef.current.style.cursor =
           `url(data:image/png;base64,${e.pngBase64}) ${e.hotX} ${e.hotY}, default`
+      }
+
+      // RTP video track: hand it to the <video> element — the browser owns
+      // jitter buffering, decode and render from here. mute/unmute on the
+      // track tracks whether RTP packets are actually flowing, which is
+      // what should decide video-vs-canvas visibility (the server falls
+      // back to WS frames whenever the media path is down).
+      if (e.type === 'media_stream' && videoRef.current) {
+        const video = videoRef.current
+        video.srcObject = e.stream
+        video.play().catch(() => {/* autoplay of muted video is allowed; ignore races */})
+        const track = e.stream.getVideoTracks()[0]
+        if (track) {
+          setMediaActive(!track.muted)
+          track.onmute   = () => setMediaActive(false)
+          track.onunmute = () => setMediaActive(true)
+          track.onended  = () => setMediaActive(false)
+        }
       }
     }
     return () => { conn.onEvent = prev }
@@ -155,17 +184,40 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
 
   return (
     <div ref={wrapRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-      <canvas
-        ref={canvasRef}
+      {/* The frame div is the single interactive surface (input handler +
+          cursor shape live here) and exactly bounds the picture, so the
+          RTP <video> and the fallback canvas map coordinates identically. */}
+      <div
+        ref={frameRef}
         tabIndex={0}
         style={{
-          display: 'block',
+          position: 'relative',
           width:  cssSize ? cssSize.w : '100%',
           height: cssSize ? cssSize.h : '100%',
           cursor: 'default',
           outline: 'none',
         }}
-      />
+      >
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: 'absolute', inset: 0, width: '100%', height: '100%',
+            display: mediaActive ? 'none' : 'block',
+            pointerEvents: 'none',
+          }}
+        />
+        <video
+          ref={videoRef}
+          muted
+          playsInline
+          style={{
+            position: 'absolute', inset: 0, width: '100%', height: '100%',
+            display: mediaActive ? 'block' : 'none',
+            pointerEvents: 'none',
+            objectFit: 'fill',   // the frame div already has the correct aspect ratio
+          }}
+        />
+      </div>
       {/* Invisible IME staging area: holds keyboard focus while capturing so
           the local input method can compose CJK text (composition only works
           on editable elements — the canvas can't host it). Final committed

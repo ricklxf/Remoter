@@ -21,6 +21,7 @@ export type ConnEvent =
   | { type: 'quality_active'; fps: number; bitrate: number }
   | { type: 'audio_frame'; data: ArrayBuffer }
   | { type: 'cursor_shape'; pngBase64: string; hotX: number; hotY: number }
+  | { type: 'media_stream'; stream: MediaStream }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
@@ -464,10 +465,9 @@ export class Connection {
     const rtc = new WebRTCClient()
     this.webrtc = rtc
 
-    rtc.onVideoFrame = (data, keyframe, bytes) => {
-      this._frameCount++
-      this._bytesCount += bytes
-      this.emit({ type: 'video_frame', data, frameId: 0, ptsMs: 0, keyframe })
+    rtc.onTrack = (stream) => {
+      console.log('[WebRTC] video track arrived')
+      this.emit({ type: 'media_stream', stream })
     }
     rtc.onConnected    = () => {
       console.log('[WebRTC] P2P 连接成功')
@@ -785,7 +785,7 @@ export class Connection {
     const INTERVAL = 2000
     const STALE_TIMEOUT = 6000   // no data for 6s → assume connection is dead (WireGuard renegotiation ~2s)
 
-    this.statsTimer = setInterval(() => {
+    this.statsTimer = setInterval(async () => {
       // Detect stale connection: server crashed / TCP hung without a clean close
       if (this._lastRecvTs > 0 && Date.now() - this._lastRecvTs > STALE_TIMEOUT) {
         console.warn('[Conn] no data received for 15s — closing stale connection')
@@ -793,9 +793,14 @@ export class Connection {
         return
       }
 
-      const fps         = Math.round(this._frameCount / (INTERVAL / 1000))
-      const bitrateKbps = Math.round(this._bytesCount * 8 / INTERVAL)
-      const transport   = this.webrtc?.videoState === 'open' ? 'UDP' : 'TCP' as 'UDP' | 'TCP'
+      // RTP path: numbers come from the browser's own inbound-rtp stats
+      // (frames actually decoded, decode time, received bytes). Fallback
+      // path: locally-counted WS/WebCodecs figures, same as before.
+      const rtp = this.webrtc?.mediaActive ? await this.webrtc.getInboundVideoStats() : null
+      const fps         = rtp ? rtp.fps         : Math.round(this._frameCount / (INTERVAL / 1000))
+      const bitrateKbps = rtp ? rtp.bitrateKbps : Math.round(this._bytesCount * 8 / INTERVAL)
+      const decodeMs    = rtp ? rtp.decodeMs    : Math.round(this.decodeMsProvider?.() ?? 0)
+      const transport   = this.webrtc?.mediaActive ? 'UDP' : 'TCP' as 'UDP' | 'TCP'
 
       this._pingTs = Date.now()
       this.sendJson({ type: 'ping' })
@@ -803,7 +808,7 @@ export class Connection {
       this.emit({ type: 'stats', stats: {
         fps, rttMs: this._rttMs, bitrateKbps, transport,
         encodeMs: this._encodeMs,
-        decodeMs: Math.round(this.decodeMsProvider?.() ?? 0),
+        decodeMs,
       } })
 
       this._frameCount = 0

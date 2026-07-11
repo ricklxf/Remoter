@@ -1,37 +1,38 @@
-// Windows 端 WebRTC 客户端（作为 Offerer）
-// 视频走 DataChannel（UDP），控制消息保留在 WebSocket
+// WebRTC 客户端（作为 Offerer）
+// 视频走 RTP 媒体轨道（libwebrtc 原生：抖动缓冲/NACK/PLI/GCC 带宽估计），
+// 输入事件走 control DataChannel，控制信令仍走 WebSocket。
+// 旧的"视频分片走 DataChannel + 手工重组"路径已删除——新客户端不再创建
+// video 通道，旧版被控端检测不到该通道会自动回落 WS 传输，混版本可用。
 
 const STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' }
 ]
 
-// 帧头：1B flags + 4B frameId + 2B chunkIdx + 2B totalChunks = 9B
-const CHUNK_HEADER = 9
-
 export interface WebRTCConfig {
   iceServers?: RTCIceServer[]   // 可追加 TURN 服务器
 }
 
+export interface InboundVideoStats {
+  fps: number
+  bitrateKbps: number
+  decodeMs: number
+}
+
 export class WebRTCClient {
   private pc: RTCPeerConnection | null = null
-  private videoChannel: RTCDataChannel | null = null
   private controlChannel: RTCDataChannel | null = null
+  private videoTrack: MediaStreamTrack | null = null
 
-  // 收到视频帧时的回调（与 WebSocket 路径共用同一 Decoder）
-  onVideoFrame:   ((data: ArrayBuffer, keyframe: boolean, bytes: number) => void) | null = null
+  // RTP 视频轨道到达（浏览器自行解码渲染，喂给 <video> 元素即可）
+  onTrack:        ((stream: MediaStream) => void) | null = null
   onConnected:    (() => void) | null = null
   onDisconnected: (() => void) | null = null
-  // 需要把 ICE candidate 发回给 Mac（通过 WebSocket）
+  // 需要把 ICE candidate 发回给被控端（通过 WebSocket）
   onICECandidate: ((json: string) => void) | null = null
 
-  // 分片重组缓冲区
-  private frameBuffer = new Map<number, {
-    chunks: ArrayBuffer[]
-    total: number
-    received: number
-    isKeyframe: boolean
-  }>()
+  // 上一次 getStats 采样，用于算增量
+  private lastStats = { framesDecoded: 0, bytesReceived: 0, totalDecodeTime: 0, at: 0 }
 
   // MARK: - Offer / Answer
 
@@ -40,18 +41,15 @@ export class WebRTCClient {
     const pc = new RTCPeerConnection({ iceServers })
     this.pc = pc
 
-    // 视频 DataChannel：有序 + 可靠传输。曾经用 ordered:false 图个避免 HOL
-    // 阻塞，但在真实丢包/抖动的链路（WAN/VPN，而非本地局域网）上，无序会让
-    // 后到的帧先于仍在重传的更早的帧被送进解码器 —— 我们的 H.264 没有 B 帧、
-    // 靠前一帧做参考，解码顺序一乱就直接花屏，要等下一个关键帧才能恢复。
-    // 该用 SCTP 原生的有序保证换掉这个正确性问题，多出来的丢包重传延迟可接受。
-    this.videoChannel = pc.createDataChannel('video', {
-      ordered: true
-    })
-    this.videoChannel.binaryType = 'arraybuffer'
-    this.videoChannel.onmessage = (ev) => this.handleVideoChunk(ev.data as ArrayBuffer)
-    this.videoChannel.onopen    = () => console.log('[WebRTC] Video channel open')
-    this.videoChannel.onclose   = () => console.log('[WebRTC] Video channel closed')
+    // 声明只收不发的视频 m-line，被控端 answer 时把它的屏幕轨道挂上来
+    pc.addTransceiver('video', { direction: 'recvonly' })
+
+    pc.ontrack = (ev) => {
+      if (ev.track.kind !== 'video') return
+      this.videoTrack = ev.track
+      const stream = ev.streams[0] ?? new MediaStream([ev.track])
+      this.onTrack?.(stream)
+    }
 
     // 控制 DataChannel：有序、可靠。输入事件（键鼠）在此通道打开后走这里
     // 而不是 WebSocket —— WS 是 TCP，链路拥塞时输入会排在重传后面（队头
@@ -95,8 +93,9 @@ export class WebRTCClient {
     }
   }
 
-  get videoState(): RTCDataChannelState | 'none' {
-    return this.videoChannel?.readyState ?? 'none'
+  get mediaActive(): boolean {
+    return this.videoTrack?.readyState === 'live' && !this.videoTrack.muted
+      && this.pc?.connectionState === 'connected'
   }
 
   get controlOpen(): boolean {
@@ -108,65 +107,43 @@ export class WebRTCClient {
     if (this.controlChannel?.readyState === 'open') this.controlChannel.send(json)
   }
 
+  /** 从 inbound-rtp 统计里取 fps/码率/解码耗时（增量计算），媒体未活跃返回 null */
+  async getInboundVideoStats(): Promise<InboundVideoStats | null> {
+    const pc = this.pc
+    if (!pc || pc.connectionState !== 'connected') return null
+    let s: { framesDecoded?: number; bytesReceived?: number; totalDecodeTime?: number; framesPerSecond?: number } | null = null
+    try {
+      const report = await pc.getStats()
+      for (const entry of report.values()) {
+        if (entry.type === 'inbound-rtp' && entry.kind === 'video') { s = entry; break }
+      }
+    } catch { return null }
+    if (!s) return null
+
+    const now = performance.now()
+    const prev = this.lastStats
+    const frames = (s.framesDecoded ?? 0) - prev.framesDecoded
+    const bytes  = (s.bytesReceived ?? 0) - prev.bytesReceived
+    const decode = (s.totalDecodeTime ?? 0) - prev.totalDecodeTime
+    const dtSec  = prev.at > 0 ? (now - prev.at) / 1000 : 0
+    this.lastStats = {
+      framesDecoded: s.framesDecoded ?? 0,
+      bytesReceived: s.bytesReceived ?? 0,
+      totalDecodeTime: s.totalDecodeTime ?? 0,
+      at: now,
+    }
+    if (dtSec <= 0) return null
+    return {
+      fps: s.framesPerSecond ?? Math.round(frames / dtSec),
+      bitrateKbps: Math.round(bytes * 8 / 1000 / dtSec),
+      decodeMs: frames > 0 ? Math.round(decode * 1000 / frames) : 0,
+    }
+  }
+
   close(): void {
     this.pc?.close()
     this.pc = null
-    this.videoChannel = null
     this.controlChannel = null
-    this.frameBuffer.clear()
+    this.videoTrack = null
   }
-
-  // MARK: - 分片重组
-
-  private handleVideoChunk(data: ArrayBuffer): void {
-    if (data.byteLength < CHUNK_HEADER) return
-    const view       = new DataView(data)
-    const flags      = view.getUint8(0)
-    const frameId    = view.getUint32(1, false)
-    const chunkIdx   = view.getUint16(5, false)
-    const totalChunks = view.getUint16(7, false)
-    const isKeyframe = (flags & 0x01) !== 0
-    const payload    = data.slice(CHUNK_HEADER)
-
-    // 单片帧，直接交给解码器
-    if (totalChunks === 1) {
-      this.onVideoFrame?.(payload, isKeyframe, data.byteLength)
-      return
-    }
-
-    // 多片帧：重组
-    if (!this.frameBuffer.has(frameId)) {
-      this.frameBuffer.set(frameId, {
-        chunks: new Array(totalChunks),
-        total: totalChunks,
-        received: 0,
-        isKeyframe
-      })
-    }
-    const buf = this.frameBuffer.get(frameId)!
-    buf.chunks[chunkIdx] = payload
-    buf.received++
-
-    if (buf.received === buf.total) {
-      const combined = mergeBuffers(buf.chunks)
-      this.frameBuffer.delete(frameId)
-      this.onVideoFrame?.(combined, buf.isKeyframe, combined.byteLength)
-    }
-
-    // Discard stale incomplete frames (> 30 frames old) to prevent buffer growth
-    if (this.frameBuffer.size > 30) {
-      const cutoff = frameId - 30
-      for (const [id] of this.frameBuffer) {
-        if (id < cutoff) this.frameBuffer.delete(id)
-      }
-    }
-  }
-}
-
-function mergeBuffers(bufs: ArrayBuffer[]): ArrayBuffer {
-  const total = bufs.reduce((s, b) => s + b.byteLength, 0)
-  const out   = new Uint8Array(total)
-  let offset  = 0
-  for (const b of bufs) { out.set(new Uint8Array(b), offset); offset += b.byteLength }
-  return out.buffer
 }

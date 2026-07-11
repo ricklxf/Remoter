@@ -11,7 +11,7 @@ import { TabBar } from './components/TabBar'
 
 // ─── Tab display state ──────────────────────────────────────────────
 
-const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP' }
+const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP', encodeMs: 0, decodeMs: 0 }
 
 interface TabDisplay {
   id: string

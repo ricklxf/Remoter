@@ -9,6 +9,8 @@ export interface ConnStats {
   rttMs: number
   bitrateKbps: number
   transport: 'UDP' | 'TCP'
+  encodeMs: number   // server-side per-frame encode latency (rides on pong)
+  decodeMs: number   // client-side per-frame decode latency
 }
 
 export type ConnEvent =
@@ -69,6 +71,10 @@ export class Connection {
   private _frameCount  = 0
   private _bytesCount  = 0
   private _rttMs       = 0
+  private _encodeMs    = 0
+  // RemoteCanvas owns the decoder; it plugs a getter in here so the stats
+  // loop can report decode latency without Connection knowing the decoder.
+  decodeMsProvider: (() => number) | null = null
   private _pingTs      = 0
 
   private downloads = new Map<string, DownloadState>()
@@ -186,6 +192,8 @@ export class Connection {
     this.wasStreaming = false
     this.reconnectCount = 0
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
+    if (this.webrtcRestartTimer) { clearTimeout(this.webrtcRestartTimer); this.webrtcRestartTimer = null }
+    this.webrtcRestartAttempts = 0
     this.stopStats()
     this.stopClipboardSync()
     this.webrtc?.close()
@@ -449,6 +457,9 @@ export class Connection {
 
   // MARK: - WebRTC 信令
 
+  private webrtcRestartTimer: ReturnType<typeof setTimeout> | null = null
+  private webrtcRestartAttempts = 0
+
   private async initiateWebRTC(): Promise<void> {
     const rtc = new WebRTCClient()
     this.webrtc = rtc
@@ -458,8 +469,34 @@ export class Connection {
       this._bytesCount += bytes
       this.emit({ type: 'video_frame', data, frameId: 0, ptsMs: 0, keyframe })
     }
-    rtc.onConnected    = () => { console.log('[WebRTC] P2P 连接成功') }
-    rtc.onDisconnected = () => { console.log('[WebRTC] P2P 断开') }
+    rtc.onConnected    = () => {
+      console.log('[WebRTC] P2P 连接成功')
+      this.webrtcRestartAttempts = 0
+    }
+    // ICE failure while the WS signaling link is still alive (network roam,
+    // NAT rebind, AP switch): video already falls back to WS per-frame, so
+    // nothing is lost — renegotiate a fresh peer connection in the
+    // background to get the UDP path back, with backoff so a genuinely
+    // unreachable path doesn't loop forever (WS keeps carrying everything).
+    rtc.onDisconnected = () => {
+      console.log('[WebRTC] P2P 断开')
+      if (this.intentionalClose || this.webrtc !== rtc) return
+      if (this.ws?.readyState !== WebSocket.OPEN) return  // WS reconnect flow re-creates WebRTC itself
+      if (this.webrtcRestartAttempts >= 3) {
+        console.warn('[WebRTC] renegotiation given up after 3 attempts — staying on WS transport')
+        return
+      }
+      this.webrtcRestartAttempts++
+      const delay = 2000 * this.webrtcRestartAttempts
+      console.log(`[WebRTC] renegotiating in ${delay}ms (attempt ${this.webrtcRestartAttempts}/3)`)
+      if (this.webrtcRestartTimer) clearTimeout(this.webrtcRestartTimer)
+      this.webrtcRestartTimer = setTimeout(() => {
+        this.webrtcRestartTimer = null
+        if (this.intentionalClose || this.ws?.readyState !== WebSocket.OPEN) return
+        this.webrtc?.close()
+        this.initiateWebRTC().catch(e => console.warn('[WebRTC] renegotiation failed:', e))
+      }, delay)
+    }
     rtc.onICECandidate = (json) => { this.sendJson({ type: 'webrtc_ice', candidate: json }) }
 
     const offerSdp = await rtc.createOffer({ iceServers: this.turnServers })
@@ -690,6 +727,7 @@ export class Connection {
           this._rttMs  = Date.now() - this._pingTs
           this._pingTs = 0
         }
+        this._encodeMs = (msg.encode_ms as number) ?? 0
         break
       }
 
@@ -762,7 +800,11 @@ export class Connection {
       this._pingTs = Date.now()
       this.sendJson({ type: 'ping' })
       this.sendJson({ type: 'client_stats', fps, rtt_ms: this._rttMs })
-      this.emit({ type: 'stats', stats: { fps, rttMs: this._rttMs, bitrateKbps, transport } })
+      this.emit({ type: 'stats', stats: {
+        fps, rttMs: this._rttMs, bitrateKbps, transport,
+        encodeMs: this._encodeMs,
+        decodeMs: Math.round(this.decodeMsProvider?.() ?? 0),
+      } })
 
       this._frameCount = 0
       this._bytesCount = 0

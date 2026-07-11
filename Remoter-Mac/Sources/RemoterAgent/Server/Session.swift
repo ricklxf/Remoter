@@ -393,7 +393,10 @@ final class Session {
             Task { await rebuildPipeline() }
 
         case .ping:
-            sendJson(["type": "pong"])
+            // encode_ms rides on the pong so the client's latency-breakdown
+            // panel gets it with zero extra message traffic.
+            sendJson(["type": "pong",
+                      "encode_ms": Int((encoder?.lastEncodeMs ?? 0).rounded())])
 
         case .requestKeyframe:
             // Shares the drop-triggered cooldown below: the client also sends
@@ -523,6 +526,11 @@ final class Session {
     // MARK: - WebRTC 信令设置
 
     private func setupWebRTC(offerSDP: String) {
+        // A repeat offer on a live session is the client renegotiating after
+        // an ICE failure (network roam / NAT rebind) — release the dead peer
+        // connection before building its replacement.
+        webrtc?.close()
+        usingWebRTCVideo = false
         let agent = WebRTCAgent()
 
         agent.onLocalDescription = { [weak self] type, sdp in

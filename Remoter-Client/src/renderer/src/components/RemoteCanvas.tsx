@@ -81,6 +81,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         conn.sendRequestKeyframe()
       }
       decoderRef.current = decoder
+      conn.decodeMsProvider = () => decoder.lastDecodeMs
       decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch(console.error)
       console.log('[RemoteCanvas] H.264 mode, decoder initializing')
       // This decoder is brand new and won't decode anything until it gets a
@@ -96,6 +97,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     return () => {
       decoderRef.current?.close()
       decoderRef.current = null
+      conn.decodeMsProvider = null
       rendererRef.current.detach()
       inputRef.current.detach()
       ctx2dRef.current = null

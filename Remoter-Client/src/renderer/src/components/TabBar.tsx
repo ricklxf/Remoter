@@ -116,11 +116,14 @@ function StatsPopup({ tab, pos }: { tab: TabInfo; pos: { left: number; top: numb
       {streaming && (
         <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5 }}>
           <StatRow label="连接时长" value={formatDuration(tab.streamStartTime)} color="#4a5568" />
-          <StatRow label="延迟" value={`${stats.rttMs} ms`}  color={rttCol} />
           <StatRow label="帧率" value={`${stats.fps} fps`}   color={fpsColor} />
           <StatRow label="码率" value={`${mbps} Mbps`}       color="#4a5568" />
           <StatRow label="传输" value={stats.transport}
             color={stats.transport === 'UDP' ? '#15803d' : '#d97706'} />
+          {/* 延迟分解：编码(被控端) / 网络往返 / 解码(本机) —— 卡顿时一眼定位瓶颈段 */}
+          <StatRow label="编码" value={`${stats.encodeMs} ms`} color={stats.encodeMs > 20 ? '#dc2626' : '#4a5568'} />
+          <StatRow label="网络" value={`${stats.rttMs} ms`}    color={rttCol} />
+          <StatRow label="解码" value={`${stats.decodeMs} ms`} color={stats.decodeMs > 20 ? '#dc2626' : '#4a5568'} />
         </div>
       )}
     </div>

@@ -18,6 +18,15 @@ final class VideoEncoder {
     private var frameIndex: Int64 = 0
     private var forceKeyframeNext = false
 
+    // True per-frame encode latency (submit → VT completion callback), for
+    // the client's latency-breakdown panel. The perf_5s "enc=" figure only
+    // times the submission call, which is ~0 — the actual encode happens on
+    // VT's own thread. Multiple frames can be in flight, so submit times are
+    // keyed by pts under a lock (both sides touch it from different threads).
+    private(set) var lastEncodeMs: Double = 0
+    private var submitTimes: [Int64: CFAbsoluteTime] = [:]
+    private let submitLock = NSLock()
+
     // VTCompressionSessionEncodeFrame blocks the *next* submission until its
     // internal queue has a free slot, which only happens once the previous
     // frame's completion callback returns. If onEncodedFrame (network send,
@@ -118,6 +127,16 @@ final class VideoEncoder {
         frameIndex += 1
         let pts  = CMTime(value: idx, timescale: 60)
 
+        submitLock.lock()
+        submitTimes[idx] = CFAbsoluteTimeGetCurrent()
+        // Frames whose callback never fired (dropped by VT) would leak —
+        // anything older than ~2s of frames is dead.
+        if submitTimes.count > 200 {
+            let cutoff = idx - 200
+            submitTimes = submitTimes.filter { $0.key > cutoff }
+        }
+        submitLock.unlock()
+
         var frameProperties: CFDictionary?
         if forceKeyframeNext {
             forceKeyframeNext = false
@@ -139,6 +158,11 @@ final class VideoEncoder {
                 }
                 return
             }
+            self.submitLock.lock()
+            if let t = self.submitTimes.removeValue(forKey: idx) {
+                self.lastEncodeMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
+            }
+            self.submitLock.unlock()
             self.outputQueue.async { self.handleOutput(sample) }
         }
     }

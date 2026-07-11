@@ -29,6 +29,11 @@ export class VideoDecoder_ {
   /** Fired (once per recovery cycle) when the decode queue backs up and a fresh keyframe is needed to recover. */
   onOverloaded: (() => void) | null = null
 
+  // True per-frame decode latency (submit → output callback), keyed by the
+  // chunk timestamp which VideoFrame echoes back — for the latency panel.
+  private decodeSubmitTimes = new Map<number, number>()
+  lastDecodeMs = 0
+
   // Periodic visibility into decodeQueueSize even when it never crosses the
   // hard overload threshold — distinguishes "chronically a bit behind" from
   // "fine, then one sharp spike", which the overload event alone can't tell apart.
@@ -57,11 +62,17 @@ export class VideoDecoder_ {
 
     this.decoder = new VideoDecoder({
       output: (frame) => {
+        const t = this.decodeSubmitTimes.get(frame.timestamp)
+        if (t !== undefined) {
+          this.lastDecodeMs = performance.now() - t
+          this.decodeSubmitTimes.delete(frame.timestamp)
+        }
         this.onFrame(frame)
       },
       error: (e) => {
         console.error('[Decoder] decode error:', e.message)
         this.pendingKeyframe = true
+        this.decodeSubmitTimes.clear()
       }
     })
 
@@ -110,6 +121,12 @@ export class VideoDecoder_ {
         timestamp: timestampUs,
         data
       })
+      this.decodeSubmitTimes.set(timestampUs, performance.now())
+      // Dropped/errored frames never reach the output callback — cap growth.
+      if (this.decodeSubmitTimes.size > 200) {
+        const oldest = this.decodeSubmitTimes.keys().next().value
+        if (oldest !== undefined) this.decodeSubmitTimes.delete(oldest)
+      }
       this.decoder.decode(chunk)
     } catch (e) {
       console.warn('[Decoder] decode error:', e)

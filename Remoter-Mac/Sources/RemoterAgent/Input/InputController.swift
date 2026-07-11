@@ -6,6 +6,12 @@ import ApplicationServices
 final class InputController {
     var screenWidth: Int
     var screenHeight: Int
+    // Global-coordinate origin of the captured display: client coordinates
+    // are normalized [0,1] within *that display*, but CGEvent's
+    // mouseCursorPosition is in the global desktop space where a secondary
+    // display starts at its CGDisplayBounds origin, not (0,0).
+    var originX: Double
+    var originY: Double
     private var loggedAccessibility = false
     private var pressedKeys = Set<CGKeyCode>()
 
@@ -23,9 +29,11 @@ final class InputController {
     private var postMaxMs: Double = 0
     private var postStatTick = Date()
 
-    init(screenWidth: Int, screenHeight: Int) {
+    init(screenWidth: Int, screenHeight: Int, originX: Double = 0, originY: Double = 0) {
         self.screenWidth = screenWidth
         self.screenHeight = screenHeight
+        self.originX = originX
+        self.originY = originY
     }
 
     private func timedPost(_ e: CGEvent, tap: CGEventTapLocation) {
@@ -160,6 +168,30 @@ final class InputController {
         if down { pressedKeys.insert(keyCode) } else { pressedKeys.remove(keyCode) }
     }
 
+    /// Injects a unicode string directly (IME-composed text from the client
+    /// — Chinese/Japanese/Korean etc). Raw key forwarding can't express
+    /// composed text at all: the composition happened on the *client's* IME,
+    /// so what arrives here is final text with no key sequence behind it.
+    /// CGEvent carries the string via keyboardSetUnicodeString; chunked at
+    /// 20 UTF-16 units per event, the documented safe payload limit.
+    func typeText(_ text: String) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        let utf16 = Array(text.utf16)
+        var i = 0
+        while i < utf16.count {
+            let chunk = Array(utf16[i..<min(i + 20, utf16.count)])
+            guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
+                  let up   = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else { return }
+            chunk.withUnsafeBufferPointer { buf in
+                down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: buf.baseAddress)
+                up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: buf.baseAddress)
+            }
+            timedPost(down, tap: .cgAnnotatedSessionEventTap)
+            timedPost(up,   tap: .cgAnnotatedSessionEventTap)
+            i += 20
+        }
+    }
+
     func releaseAllKeys() {
         guard !pressedKeys.isEmpty else { return }
         let src = CGEventSource(stateID: .hidSystemState)
@@ -174,7 +206,7 @@ final class InputController {
     // MARK: - Private
 
     private func cgPoint(x: Double, y: Double) -> CGPoint {
-        CGPoint(x: x * Double(screenWidth), y: y * Double(screenHeight))
+        CGPoint(x: originX + x * Double(screenWidth), y: originY + y * Double(screenHeight))
     }
 }
 

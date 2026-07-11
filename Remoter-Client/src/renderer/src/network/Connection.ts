@@ -18,6 +18,7 @@ export type ConnEvent =
   | { type: 'codec_changed'; codec: VideoCodec }
   | { type: 'quality_active'; fps: number; bitrate: number }
   | { type: 'audio_frame'; data: ArrayBuffer }
+  | { type: 'cursor_shape'; pngBase64: string; hotX: number; hotY: number }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
@@ -228,6 +229,13 @@ export class Connection {
   sendSetAudio(enabled: boolean): void {
     this.sendJson({ type: 'set_audio', enabled })
   }
+  /** IME-composed text (e.g. Chinese) — injected remotely as a unicode string, not raw keys. */
+  sendTextInput(text: string): void {
+    this.sendJson({ type: 'text_input', text })
+  }
+  sendSetDisplay(id: number): void {
+    this.sendJson({ type: 'display', id })
+  }
 
   // Forces the encoder to emit a keyframe right away instead of waiting for
   // its next scheduled one (up to 2s) — call whenever a fresh decoder
@@ -338,7 +346,7 @@ export class Connection {
   // per message at send time so a mid-session ICE failure falls back to WS
   // transparently, same as the video path.
   private static readonly INPUT_TYPES = new Set([
-    'mouse_move', 'mouse_button', 'mouse_double_click', 'mouse_scroll', 'key',
+    'mouse_move', 'mouse_button', 'mouse_double_click', 'mouse_scroll', 'key', 'text_input',
   ])
 
   private trySendViaControlChannel(obj: object): boolean {
@@ -630,7 +638,12 @@ export class Connection {
         this.streamHeight = msg.height as number
         const codec = (msg.codec as VideoCodec | undefined) ?? 'h264'
         this.emit({ type: 'state', state: 'streaming' })
-        this.emit({ type: 'stream_started', info: { width: this.streamWidth, height: this.streamHeight }, codec })
+        this.emit({ type: 'stream_started', info: {
+          width: this.streamWidth,
+          height: this.streamHeight,
+          displays: msg.displays as StreamInfo['displays'],
+          display: msg.display as number | undefined,
+        }, codec })
         this.startStatsLoop()
         this.startClipboardSync()
         break
@@ -646,6 +659,16 @@ export class Connection {
         const fps = msg.fps as number
         const bitrate = msg.bitrate as number
         this.emit({ type: 'quality_active', fps, bitrate })
+        break
+      }
+
+      case 'cursor_shape': {
+        this.emit({
+          type: 'cursor_shape',
+          pngBase64: msg.png as string,
+          hotX: (msg.hot_x as number) ?? 0,
+          hotY: (msg.hot_y as number) ?? 0,
+        })
         break
       }
 

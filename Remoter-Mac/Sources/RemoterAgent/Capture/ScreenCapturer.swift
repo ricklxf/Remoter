@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CoreGraphics
 import CoreVideo
 import ScreenCaptureKit
@@ -39,6 +40,12 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     private(set) var physHeight:   Int = 1080
     private(set) var screenWidth:  Int = 960   // encode/stream resolution (50% of physical)
     private(set) var screenHeight: Int = 540
+    // Global-desktop origin of the captured display (needed to map the
+    // client's display-relative coords to CGEvent's global space) and the
+    // full display list (sent to the client so it can offer a picker).
+    private(set) var originX: Double = 0
+    private(set) var originY: Double = 0
+    private(set) var displays: [(id: UInt32, name: String, width: Int, height: Int)] = []
 
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
@@ -53,23 +60,8 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     /// 1920 for "1080p", 2560 for "2K". nil/omitted uses the physical
     /// display resolution as-is. Never upscales past physical regardless of
     /// the cap given.
-    func start(fps: Int = 60, maxDimension: Int? = nil) async throws {
-        let displayID = CGMainDisplayID()
-        physWidth    = Int(CGDisplayPixelsWide(displayID))
-        physHeight   = Int(CGDisplayPixelsHigh(displayID))
-        if let maxDimension, maxDimension < max(physWidth, physHeight) {
-            let scale = Double(maxDimension) / Double(max(physWidth, physHeight))
-            // SCStreamConfiguration wants even dimensions.
-            screenWidth  = Int(Double(physWidth)  * scale) & ~1
-            screenHeight = Int(Double(physHeight) * scale) & ~1
-        } else {
-            screenWidth  = physWidth
-            screenHeight = physHeight
-        }
-        statTick     = CFAbsoluteTimeGetCurrent()
-
-        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
-            detail: "id=\(displayID) phys=\(physWidth)x\(physHeight) stream=\(screenWidth)x\(screenHeight)")
+    func start(fps: Int = 60, maxDimension: Int? = nil, displayID requestedID: UInt32? = nil) async throws {
+        statTick = CFAbsoluteTimeGetCurrent()
 
         let content: SCShareableContent
         do {
@@ -79,12 +71,46 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
                 detail: "\(error)")
             throw RemoterError.captureUnavailable
         }
+
+        // Human-readable display names come from NSScreen (SCDisplay has
+        // none); match by the NSScreenNumber device-description key.
+        var names: [UInt32: String] = [:]
+        for screen in NSScreen.screens {
+            if let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+                names[num.uint32Value] = screen.localizedName
+            }
+        }
+        displays = content.displays.enumerated().map { i, d in
+            (id: d.displayID, name: names[d.displayID] ?? "显示器 \(i + 1)", width: d.width, height: d.height)
+        }
+
+        let displayID = requestedID.flatMap { req in
+            content.displays.first(where: { $0.displayID == req })?.displayID
+        } ?? CGMainDisplayID()
         guard let display = content.displays.first(where: { $0.displayID == displayID })
             ?? content.displays.first else {
             ConnectionLogger.shared.logStep(sessionId: "capturer", step: "no_capture_permission",
                 detail: "no SCDisplay matched displayID=\(displayID)")
             throw RemoterError.captureUnavailable
         }
+
+        physWidth  = Int(CGDisplayPixelsWide(display.displayID))
+        physHeight = Int(CGDisplayPixelsHigh(display.displayID))
+        let bounds = CGDisplayBounds(display.displayID)
+        originX = bounds.origin.x
+        originY = bounds.origin.y
+        if let maxDimension, maxDimension < max(physWidth, physHeight) {
+            let scale = Double(maxDimension) / Double(max(physWidth, physHeight))
+            // SCStreamConfiguration wants even dimensions.
+            screenWidth  = Int(Double(physWidth)  * scale) & ~1
+            screenHeight = Int(Double(physHeight) * scale) & ~1
+        } else {
+            screenWidth  = physWidth
+            screenHeight = physHeight
+        }
+
+        ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
+            detail: "id=\(display.displayID) of \(displays.count) phys=\(physWidth)x\(physHeight) stream=\(screenWidth)x\(screenHeight) origin=\(Int(originX)),\(Int(originY))")
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
 

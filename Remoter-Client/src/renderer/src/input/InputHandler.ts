@@ -7,6 +7,12 @@ import { getKeymap, mapKeyCode, mapModifiers } from '../utils/keymap'
 export class InputHandler {
   private conn: Connection
   private el: HTMLElement | null = null
+  // Hidden textarea that holds focus while capturing: an IME will only
+  // engage on an editable element, so without this, typing Chinese/Japanese/
+  // Korean through the *local* input method is impossible (the remote end's
+  // IME had to be used instead). Composition happens in here invisibly;
+  // compositionend hands us the final committed text to inject remotely.
+  private imeEl: HTMLTextAreaElement | null = null
   private remoteW = 1920
   private remoteH = 1080
   private enabled = false
@@ -56,8 +62,9 @@ export class InputHandler {
     this.conn = conn
   }
 
-  attach(el: HTMLElement, remoteW: number, remoteH: number): void {
+  attach(el: HTMLElement, remoteW: number, remoteH: number, imeEl?: HTMLTextAreaElement): void {
     this.el = el
+    this.imeEl = imeEl ?? null
     this.remoteW = remoteW
     this.remoteH = remoteH
     this.enabled = true
@@ -70,7 +77,9 @@ export class InputHandler {
     this.captured = false
     this.releaseAllKeys()
     this.removeListeners()
+    this.imeEl?.blur()
     this.el = null
+    this.imeEl = null
     if (this.locked) document.exitPointerLock?.()
     if (this.pendingMoveTimer) { clearTimeout(this.pendingMoveTimer); this.pendingMoveTimer = null }
     this.pendingMove = null
@@ -88,6 +97,7 @@ export class InputHandler {
     this.hovering = false
     this.captured = false
     this.releaseAllKeys()
+    this.imeEl?.blur()
     if (this.locked) document.exitPointerLock?.()
   }
 
@@ -118,6 +128,7 @@ export class InputHandler {
     add(document, 'pointerlockchange', this.onPointerLockChange)
     add(document, 'mousedown',  this.onDocumentMouseDown)
     add(window,   'blur',       this.onWindowBlur)
+    if (this.imeEl) add(this.imeEl, 'compositionend', this.onCompositionEnd)
   }
 
   private removeListeners(): void {
@@ -202,7 +213,11 @@ export class InputHandler {
     if (!this.enabled) return
     const me = e as MouseEvent
     me.preventDefault()
-    this.el?.focus()
+    // Focus the hidden textarea (not the canvas): key events still bubble to
+    // the document handlers below either way, but only an editable element
+    // lets the local IME engage for CJK composition.
+    if (this.imeEl) this.imeEl.focus({ preventScroll: true })
+    else this.el?.focus()
     const { nx, ny } = this.getCoords(me)
     this.conn.sendMouseButton(buttonName(me.button), true, nx, ny)
   }
@@ -253,6 +268,11 @@ export class InputHandler {
     const ke = e as KeyboardEvent
     // Never intercept these — let the browser handle its own fullscreen toggle/exit/devtools.
     if (ke.code === 'F11' || ke.code === 'Escape' || ke.code === 'F12') return
+    // The local IME is composing (keyCode 229 is the legacy signal some
+    // browsers/IMEs still use) — hands off entirely: no preventDefault (the
+    // IME needs the event) and no raw-key forwarding (the composed text
+    // arrives via compositionend instead, see onCompositionEnd).
+    if (ke.isComposing || ke.keyCode === 229) return
     ke.preventDefault()
 
     if (ke.code === 'CapsLock') {
@@ -270,10 +290,21 @@ export class InputHandler {
     this.pressedKeys.add(ke.code)
   }
 
+  private onCompositionEnd = (e: Event): void => {
+    if (!this.enabled) return
+    const ce = e as CompositionEvent
+    if (ce.data) this.conn.sendTextInput(ce.data)
+    // The committed text also landed in the hidden textarea — clear it so it
+    // never accumulates (it's invisible, but selection/arrow keys would start
+    // behaving oddly inside a growing buffer).
+    if (this.imeEl) this.imeEl.value = ''
+  }
+
   private onKeyUp = (e: Event): void => {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
     if (ke.code === 'CapsLock') return  // handled in keydown
+    if (ke.isComposing || ke.keyCode === 229) return
     // Send keyup only if we previously sent keydown for this key.
     // This ensures keyup always pairs with keydown regardless of hover state,
     // preventing stuck keys when the mouse drifts out of the canvas.

@@ -122,6 +122,9 @@ open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 - **客户端解码跟不上的信号是 `kfReq`**：网络指标（fps/RTT）测的是"到达"不是"解码"，解码端过载时它们全部正常；靠 WebCodecs `decodeQueueSize` 积压检测 + 主动要关键帧来发现和恢复。
 - **画质自适应拆两路**：fps 跟解码过载信号（`kfReq`）走、码率跟发送背压（`bpDrops`）走，各自独立升降档，避免"一个出问题两个一起降"。
 - **音频转发**：SCStream `capturesAudio` 采集系统声音 → AAC-LC + ADTS 封装（自描述，客户端 `AudioDecoder('mp4a.40.2')` 免握手）→ 0x03 二进制帧；默认关闭（带宽 + 隐私），控制菜单手动开。
+- **中文输入（IME）**：canvas 不是可编辑元素，本地输入法无法在其上组词——藏一个 1px 透明 textarea 持有焦点承接组词，`compositionend` 把最终文本发去远端用 `keyboardSetUnicodeString` 注入；组词期间（`isComposing`/keyCode 229）不 preventDefault 也不转发原始按键。
+- **光标形状同步**：采集端隐藏光标、客户端本地渲染（零延迟），形状靠轮询 `NSCursor.currentSystem` 发 PNG+热点给客户端设 CSS cursor；注意光标图要重绘到 point 尺寸，直接用 Retina 2x 位图会显示成双倍大。
+- **多显示器**：副屏的鼠标注入必须加 `CGDisplayBounds` 的全局坐标原点偏移——客户端坐标是"相对所选显示器"归一化的，CGEvent 要的是全局桌面坐标。
 
 ---
 

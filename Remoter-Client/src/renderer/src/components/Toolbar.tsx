@@ -3,6 +3,7 @@ import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
 import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
 import { VideoDecoder_ } from '../video/Decoder'
+import { DisplayInfo } from '../types'
 
 interface Props {
   conn: Connection
@@ -20,6 +21,9 @@ interface Props {
   onCodecChange: (codec: 'h264' | 'h265') => void
   audioOn: boolean
   onToggleAudio: () => void
+  displays: DisplayInfo[]
+  activeDisplay: number
+  onDisplayChange: (id: number) => void
   transferCount: number
   onToggleTransfers: () => void
   showTransfers: boolean
@@ -54,6 +58,7 @@ export function Toolbar({
   resolution, onResolutionChange,
   codec, onCodecChange,
   audioOn, onToggleAudio,
+  displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
   onMouseEnter, onMouseLeave,
 }: Props) {
@@ -88,6 +93,12 @@ export function Toolbar({
           onCodecChange(c)
           conn.sendSetCodec(c)
         }}
+        displays={displays}
+        activeDisplay={activeDisplay}
+        onDisplayChange={id => {
+          onDisplayChange(id)
+          conn.sendSetDisplay(id)
+        }}
       />
 
       <ControlMenu conn={conn} audioOn={audioOn} onToggleAudio={onToggleAudio} />
@@ -119,6 +130,7 @@ function QualityMenu({
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
   codec, onCodecChange,
+  displays, activeDisplay, onDisplayChange,
 }: {
   resolution: '1080' | '2k'
   onResolutionChange: (tier: '1080' | '2k') => void
@@ -130,6 +142,9 @@ function QualityMenu({
   onBitrateChange: (bitrate: number, auto: boolean) => void
   codec: 'h264' | 'h265'
   onCodecChange: (codec: 'h264' | 'h265') => void
+  displays: DisplayInfo[]
+  activeDisplay: number
+  onDisplayChange: (id: number) => void
 }) {
   const [open, setOpen] = useState(false)
   const [h265Available, setH265Available] = useState(false)
@@ -161,6 +176,9 @@ function QualityMenu({
           ...s.dropdown, minWidth: 'auto', width: 'max-content', overflow: 'visible',
           display: 'flex', flexDirection: 'column', gap: 8, padding: 8,
         }}>
+          {displays.length > 1 && (
+            <DisplaySelect displays={displays} value={activeDisplay} onChange={onDisplayChange} />
+          )}
           <ResolutionSelect value={resolution} onChange={onResolutionChange} />
           <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
             formatValue={v => `${v}fps`} width={82} onChange={onFpsChange} />
@@ -169,6 +187,53 @@ function QualityMenu({
           {h265Available && (
             <CodecSelect value={codec} onChange={onCodecChange} />
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Remote display picker — only rendered when the remote has more than one.
+// Switching triggers a full pipeline rebuild server-side (brief gap).
+function DisplaySelect({ displays, value, onChange }: {
+  displays: DisplayInfo[]
+  value: number
+  onChange: (id: number) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const current = displays.find(d => d.id === value) ?? displays[0]
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, width: 120, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🖥 {current?.name ?? '显示器'}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={s.dropdown}>
+          {displays.map(d => {
+            const active = d.id === value
+            return (
+              <button
+                key={d.id}
+                style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
+                onClick={() => { onChange(d.id); setOpen(false) }}
+              >
+                <span>{d.name}（{d.width}×{d.height}）</span>
+                {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+              </button>
+            )
+          })}
         </div>
       )}
     </div>

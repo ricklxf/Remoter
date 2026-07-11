@@ -14,6 +14,7 @@ interface Props {
 
 export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
+  const imeRef      = useRef<HTMLTextAreaElement>(null)
   const decoderRef  = useRef<VideoDecoder_ | null>(null)
   const rendererRef = useRef<VideoRenderer>(new VideoRenderer())
   const inputRef    = useRef<InputHandler>(new InputHandler(conn))
@@ -90,7 +91,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       conn.sendRequestKeyframe()
     }
 
-    inputRef.current.attach(canvas, streamInfo.width, streamInfo.height)
+    inputRef.current.attach(canvas, streamInfo.width, streamInfo.height, imeRef.current ?? undefined)
 
     return () => {
       decoderRef.current?.close()
@@ -135,12 +136,23 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         console.log(`[RemoteCanvas] switching decoder to ${e.codec}`)
         decoderRef.current.switchCodec(streamInfo.width, streamInfo.height, e.codec).catch(console.error)
       }
+
+      // Remote cursor *shape* rendered on the local pointer: the capture
+      // stream has the cursor hidden, position is already local — this just
+      // swaps the local arrow for whatever shape the remote system shows
+      // (text beam, resize arrows, …). Set directly on the DOM node instead
+      // of React state so a busy cursor flipping shapes doesn't re-render
+      // the component tree.
+      if (e.type === 'cursor_shape' && canvasRef.current) {
+        canvasRef.current.style.cursor =
+          `url(data:image/png;base64,${e.pngBase64}) ${e.hotX} ${e.hotY}, default`
+      }
     }
     return () => { conn.onEvent = prev }
   }, [conn, streamInfo, initialCodec])
 
   return (
-    <div ref={wrapRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div ref={wrapRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
       <canvas
         ref={canvasRef}
         tabIndex={0}
@@ -150,6 +162,23 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           height: cssSize ? cssSize.h : '100%',
           cursor: 'default',
           outline: 'none',
+        }}
+      />
+      {/* Invisible IME staging area: holds keyboard focus while capturing so
+          the local input method can compose CJK text (composition only works
+          on editable elements — the canvas can't host it). Final committed
+          text is sent to the remote via compositionend; see InputHandler. */}
+      <textarea
+        ref={imeRef}
+        tabIndex={-1}
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        style={{
+          position: 'absolute', left: 0, bottom: 0,
+          width: 1, height: 1, padding: 0, border: 'none',
+          opacity: 0, pointerEvents: 'none', resize: 'none',
+          overflow: 'hidden', zIndex: -1,
         }}
       />
     </div>

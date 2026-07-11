@@ -16,9 +16,18 @@ export interface ConnectParams {
   rememberDevice?: boolean
 }
 
+export interface DisplayInfo {
+  id: number
+  name: string
+  width: number
+  height: number
+}
+
 export interface StreamInfo {
   width: number
   height: number
+  displays?: DisplayInfo[]   // all displays on the remote (when >1, client offers a picker)
+  display?: number           // id of the one currently captured
 }
 
 export type ConnectionState =

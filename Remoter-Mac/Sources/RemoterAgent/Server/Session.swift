@@ -22,6 +22,7 @@ final class Session {
     private var encoder: VideoEncoder?
     private var audioEncoder: AudioEncoder?
     private var audioEnabled = false
+    private var cursorMonitor: CursorMonitor?
     private var lastFrame: CVPixelBuffer?
     private var input: InputController?
     private var fileReceiver: FileReceiver?
@@ -41,6 +42,8 @@ final class Session {
     // disruptive enough that it should only happen on an explicit user
     // choice, never silently as part of auto-quality. Defaults to 1080p.
     private var resolutionMaxDimension = 1920
+    // nil = main display; switching also requires a full pipeline rebuild.
+    private var selectedDisplayID: UInt32?
 
     // Currently-applied fps/bitrate (mirrors whatever applyFps/applyBitrate
     // last set, whether from auto-stepping or a manual pick) — beginCapture() reads
@@ -213,10 +216,13 @@ final class Session {
                 bytesSentMB: Double(bytesSent) / 1_048_576,
                 bytesRecvMB: Double(bytesRecv) / 1_048_576
             )
+            notifyUser(connected: false)
         }
         input?.releaseAllKeys()
         stopKeepalive()
         stopClipboardMonitor()
+        cursorMonitor?.stop()
+        cursorMonitor = nil
         encoder?.close()
         encoder = nil
         // Capture the current capturer locally before niling it out, so the
@@ -251,6 +257,7 @@ final class Session {
             let token = TokenStore.shared.generate(username: "__pin__")
             authenticated = true
             ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+            notifyUser(connected: true)
             sendJsonRaw(["type": "auth_ok", "token": token, "username": "__pin__"])
             Task { await self.beginCapture() }
             return
@@ -265,6 +272,7 @@ final class Session {
                 let token = TokenStore.shared.generate(username: username)
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+                notifyUser(connected: true)
                 sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
             } else {
@@ -281,6 +289,7 @@ final class Session {
             if let username = TokenStore.shared.lookup(token) {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
+                notifyUser(connected: true)
                 sendJsonRaw(["type": "auth_ok"])
                 NSLog("[Session] token auth as %@", username)
                 Task { await self.beginCapture() }
@@ -320,6 +329,10 @@ final class Session {
             guard inputEnabled else { break }
             NSLog("[Session] keyEvent code=%@ down=%d input=%d", code, down ? 1 : 0, input != nil ? 1 : 0)
             input?.keyEvent(code: code, down: down, modifiers: mods)
+
+        case .textInput(let text):
+            guard inputEnabled else { break }
+            input?.typeText(text)
 
         case .clipboardSet(let text):
             lastClipboardContent = text   // prevent echo-back
@@ -373,6 +386,11 @@ final class Session {
         case .setAudioEnabled(let enabled):
             audioEnabled = enabled
             if enabled { startAudioStream() } else { stopAudioStream() }
+
+        case .displaySet(let did):
+            guard did != selectedDisplayID else { break }
+            selectedDisplayID = did
+            Task { await rebuildPipeline() }
 
         case .ping:
             sendJson(["type": "pong"])
@@ -594,6 +612,51 @@ final class Session {
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "audio_stream", detail: "off")
     }
 
+    // MARK: - 被控端连接通知
+
+    /// Posts a macOS notification on this (the controlled) machine when a
+    /// client connects/disconnects — whoever is sitting at it deserves to
+    /// know it's being viewed. Via osascript rather than
+    /// UNUserNotificationCenter: the latter requires a user-approved
+    /// notification permission (an extra setup prompt on every machine this
+    /// ad-hoc-signed app is dropped onto), osascript needs none.
+    private func notifyUser(connected: Bool) {
+        // endpoint looks like "[IPv4]1.2.3.4/1.2.3.4:56789" — keep just the ip:port
+        let addr = connection.endpoint.split(separator: "/").last.map(String.init) ?? connection.endpoint
+        let text = connected ? "远程控制已连接：\(addr)" : "远程控制已断开：\(addr)"
+        // Escape for embedding in the AppleScript string literal.
+        let safe = text.replacingOccurrences(of: "\\", with: "\\\\")
+                       .replacingOccurrences(of: "\"", with: "\\\"")
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", "display notification \"\(safe)\" with title \"Remoter\""]
+            try? p.run()
+        }
+    }
+
+    // MARK: - 光标形状同步
+
+    /// The client hides the captured cursor and draws its own local pointer
+    /// (zero-latency position); this feeds it the *shape* the remote system
+    /// is currently showing (text beam, resize arrows, hand, …) so the local
+    /// pointer doesn't stay a plain arrow everywhere. Idempotent.
+    private func startCursorMonitor() {
+        guard cursorMonitor == nil else { return }
+        let m = CursorMonitor()
+        m.onCursorChanged = { [weak self] pngBase64, hotX, hotY, w, h in
+            guard let self, self.connection.isActive else { return }
+            self.sendJson([
+                "type": "cursor_shape",
+                "png":  pngBase64,
+                "hot_x": hotX, "hot_y": hotY,
+                "width": w, "height": h,
+            ])
+        }
+        m.start()
+        cursorMonitor = m
+    }
+
     private func beginCapture() async {
         let c   = ScreenCapturer()
         let sid = id.uuidString
@@ -603,11 +666,13 @@ final class Session {
             // currentFps defaults to 30 (matches the client's default "自动"
             // preset) on a fresh session, or carries over whatever was
             // already active when this is a resolution-switch re-run.
-            try await c.start(fps: currentFps, maxDimension: resolutionMaxDimension)
+            try await c.start(fps: currentFps, maxDimension: resolutionMaxDimension,
+                              displayID: selectedDisplayID)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             capturer     = c
-            input        = InputController(screenWidth: c.physWidth, screenHeight: c.physHeight)
+            input        = InputController(screenWidth: c.physWidth, screenHeight: c.physHeight,
+                                           originX: c.originX, originY: c.originY)
             fileReceiver = FileReceiver()
             connectTime  = Date()
 
@@ -622,11 +687,15 @@ final class Session {
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: currentCodec.rawValue, encrypted: crypto.isReady)
             startClipboardMonitor()
             startKeepalive()
+            startCursorMonitor()
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,
                 "height": c.screenHeight,
-                "codec":  currentCodec.rawValue
+                "codec":  currentCodec.rawValue,
+                "displays": c.displays.map { ["id": Int($0.id), "name": $0.name,
+                                              "width": $0.width, "height": $0.height] },
+                "display": Int(selectedDisplayID ?? CGMainDisplayID())
             ])
 
             enc.onEncodedFrame = { [weak self] data, isKeyframe in

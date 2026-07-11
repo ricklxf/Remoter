@@ -15,6 +15,7 @@ enum ClientMessage {
     case mouseDoubleClick(button: String, x: Double, y: Double)
     case mouseScroll(dx: Int, dy: Int)
     case key(code: String, down: Bool, modifiers: [String])
+    case textInput(String)   // IME-composed text, injected as a unicode string
     case clipboardSet(text: String)
     case fileStart(id: String, name: String, size: Int64)
     case fileEnd(id: String)
@@ -22,6 +23,7 @@ enum ClientMessage {
     case bitrateSet(bitrate: Int, auto: Bool)
     case resolutionSet(tier: String)
     case setAudioEnabled(Bool)
+    case displaySet(id: UInt32)
     case ping
     case requestKeyframe
     case webrtcOffer(sdp: String)
@@ -78,6 +80,8 @@ enum ClientMessage {
                 down: json["down"] as? Bool ?? false,
                 modifiers: json["modifiers"] as? [String] ?? []
             )
+        case "text_input":
+            return .textInput(json["text"] as? String ?? "")
         case "clipboard_set":
             return .clipboardSet(text: json["text"] as? String ?? "")
         case "file_start":
@@ -102,6 +106,8 @@ enum ClientMessage {
             return .resolutionSet(tier: json["tier"] as? String ?? "1080")
         case "set_audio":
             return .setAudioEnabled(json["enabled"] as? Bool ?? false)
+        case "display":
+            return .displaySet(id: UInt32(json["id"] as? Int ?? 0))
         case "ping":
             return .ping
         case "request_keyframe":

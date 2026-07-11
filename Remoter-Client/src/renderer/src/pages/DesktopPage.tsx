@@ -34,6 +34,11 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // don't silently pick up whatever's playing on the remote machine).
   const [audioOn, setAudioOn] = useState(false)
   const audioPlayerRef = useRef<AudioPlayer | null>(null)
+  // Which remote display is being captured. streamInfo carries the list and
+  // the server's current pick on every (re)start, so this stays in sync
+  // through pipeline rebuilds without extra messages.
+  const [activeDisplay, setActiveDisplay] = useState(streamInfo.display ?? 0)
+  useEffect(() => { setActiveDisplay(streamInfo.display ?? 0) }, [streamInfo.display])
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -176,6 +181,9 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             onCodecChange={setCodec}
             audioOn={audioOn}
             onToggleAudio={handleToggleAudio}
+            displays={streamInfo.displays ?? []}
+            activeDisplay={activeDisplay}
+            onDisplayChange={setActiveDisplay}
             transferCount={transfers.filter(t => !t.done).length}
             onToggleTransfers={() => setShowTransfers(v => !v)}
             showTransfers={showTransfers}

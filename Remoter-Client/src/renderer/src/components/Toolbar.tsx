@@ -15,8 +15,8 @@ interface Props {
   bitrate: number
   bitrateAuto: boolean
   onBitrateChange: (bitrate: number, auto: boolean) => void
-  resolution: '1080' | '2k'
-  onResolutionChange: (tier: '1080' | '2k') => void
+  resolution: 'native' | '1080' | '2k'
+  onResolutionChange: (tier: 'native' | '1080' | '2k') => void
   codec: 'h264' | 'h265'
   onCodecChange: (codec: 'h264' | 'h265') => void
   audioOn: boolean
@@ -42,7 +42,8 @@ function formatBitrate(bps: number): string {
   return `${Number.isInteger(mbps) ? mbps : mbps.toFixed(1)}Mbps`
 }
 
-const RESOLUTION_OPTIONS: Array<{ label: string; tier: '1080' | '2k' }> = [
+const RESOLUTION_OPTIONS: Array<{ label: string; tier: 'native' | '1080' | '2k' }> = [
+  { label: '原生', tier: 'native' },
   { label: '1080p', tier: '1080' },
   { label: '2K',    tier: '2k'   },
 ]
@@ -132,8 +133,8 @@ function QualityMenu({
   codec, onCodecChange,
   displays, activeDisplay, onDisplayChange,
 }: {
-  resolution: '1080' | '2k'
-  onResolutionChange: (tier: '1080' | '2k') => void
+  resolution: 'native' | '1080' | '2k'
+  onResolutionChange: (tier: 'native' | '1080' | '2k') => void
   fps: number
   fpsAuto: boolean
   onFpsChange: (fps: number, auto: boolean) => void
@@ -580,7 +581,7 @@ function AutoSelect<T>({ value, auto, options, formatValue, width, onChange }: {
 // server tears down and rebuilds capture+encode at the new size (a brief
 // visible gap), so this stays a plain manual choice, never auto-adjusted.
 
-function ResolutionSelect({ value, onChange }: { value: '1080' | '2k'; onChange: (tier: '1080' | '2k') => void }) {
+function ResolutionSelect({ value, onChange }: { value: 'native' | '1080' | '2k'; onChange: (tier: 'native' | '1080' | '2k') => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const current = RESOLUTION_OPTIONS.find(o => o.tier === value) ?? RESOLUTION_OPTIONS[0]

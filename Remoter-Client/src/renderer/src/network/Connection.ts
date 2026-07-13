@@ -246,7 +246,7 @@ export class Connection {
   sendBitrate(bitrate: number, auto = false): void {
     this.sendJson({ type: 'bitrate', bitrate, auto })
   }
-  sendResolution(tier: '1080' | '2k'): void {
+  sendResolution(tier: 'native' | '1080' | '2k'): void {
     this.sendJson({ type: 'resolution', tier })
   }
   sendSetAudio(enabled: boolean): void {

@@ -40,8 +40,12 @@ final class Session {
     // fps/bitrate — changing it tears down and rebuilds the capture stream
     // and encoder (VTCompressionSession can't resize live), which is
     // disruptive enough that it should only happen on an explicit user
-    // choice, never silently as part of auto-quality. Defaults to 1080p.
-    private var resolutionMaxDimension = 1920
+    // choice, never silently as part of auto-quality. Defaults to native
+    // resolution (nil = no cap) — capping to a fixed size regardless of the
+    // actual display blurs anything wider than that cap (e.g. a 2560-wide
+    // screen forced down to 1920). 1080p/2K remain manual downscale options
+    // for bandwidth-constrained links.
+    private var resolutionMaxDimension: Int?
     // nil = main display; switching also requires a full pipeline rebuild.
     private var selectedDisplayID: UInt32?
 
@@ -379,7 +383,7 @@ final class Session {
             }
 
         case .resolutionSet(let tier):
-            let newMax = tier == "2k" ? 2560 : 1920
+            let newMax: Int? = tier == "2k" ? 2560 : (tier == "1080" ? 1920 : nil)
             guard newMax != resolutionMaxDimension else { break }
             resolutionMaxDimension = newMax
             Task { await rebuildPipeline() }

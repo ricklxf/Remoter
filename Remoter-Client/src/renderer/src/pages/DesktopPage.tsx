@@ -23,10 +23,10 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   const [fpsAuto, setFpsAuto] = useState(true)
   const [bitrate, setBitrate] = useState(2_000_000)
   const [bitrateAuto, setBitrateAuto] = useState(true)
-  // Matches the server's own default (resolutionMaxDimension = 1920) — no
-  // need to send this on mount like the fps/bitrate auto default, since
-  // both sides already agree without a message.
-  const [resolution, setResolution] = useState<'1080' | '2k'>('1080')
+  // Matches the server's own default (resolutionMaxDimension = nil, i.e.
+  // native/uncapped) — no need to send this on mount like the fps/bitrate
+  // auto default, since both sides already agree without a message.
+  const [resolution, setResolution] = useState<'native' | '1080' | '2k'>('native')
   // Manual pick only (both sides default to h264); jpeg fallback is chosen
   // by the connection layer itself, not from this menu.
   const [codec, setCodec] = useState<'h264' | 'h265'>('h264')

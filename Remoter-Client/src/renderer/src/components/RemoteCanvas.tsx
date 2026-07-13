@@ -123,21 +123,28 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   }, [isActive])
 
   // RTP video track: hand it to the <video> element — the browser owns
-  // jitter buffering, decode and render from here. mute/unmute on the track
-  // tracks whether RTP packets are actually flowing, which is what should
-  // decide video-vs-canvas visibility (the server falls back to WS frames
-  // whenever the media path is down).
+  // jitter buffering, decode and render from here.
+  //
+  // Visibility is sticky once the track arrives: it does NOT follow
+  // track.muted. ScreenCaptureKit only emits a frame when the screen content
+  // actually changes, so libwebrtc's source — and therefore the track's
+  // `muted` flag — flips on/off constantly on an idle/static screen (e.g.
+  // just reading a page without scrolling). The server also stops sending WS
+  // fallback frames once RTP is up, so the canvas underneath is a single
+  // frozen frame from whenever RTP first took over. Following `muted` would
+  // swap back to that stale frame every time the screen briefly goes idle —
+  // exactly the "jumps between an old and a new frame" symptom. <video>
+  // itself already does the right thing on a stall (keeps showing its last
+  // frame), so only fall back to canvas on a real failure (track ended).
   function attachMediaStream(stream: MediaStream): void {
     const video = videoRef.current
     if (!video) return
     video.srcObject = stream
     video.play().catch(() => {/* autoplay of muted video is allowed; ignore races */})
     const track = stream.getVideoTracks()[0]
+    setMediaActive(true)
     if (track) {
-      setMediaActive(!track.muted)
-      track.onmute   = () => setMediaActive(false)
-      track.onunmute = () => setMediaActive(true)
-      track.onended  = () => setMediaActive(false)
+      track.onended = () => setMediaActive(false)
     }
   }
 

@@ -232,9 +232,12 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           the local input method can compose CJK text (composition only works
           on editable elements — the canvas can't host it). Final committed
           text is sent to the remote via compositionend; see InputHandler.
-          Horizontally centered at the bottom edge — the OS candidate window
-          anchors to this element's caret position, so this is what puts the
-          candidate list bottom-center instead of pinned to the left edge. */}
+          The OS candidate window anchors to this element's caret and grows
+          rightward from it — the browser never exposes the popup's actual
+          width, so true centering isn't possible. Anchoring dead-center
+          makes the window read as shifted right; nudging the anchor left by
+          half a "typical" candidate-window width (~240px) approximates a
+          centered look instead. */}
       <textarea
         ref={imeRef}
         tabIndex={-1}
@@ -242,7 +245,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         autoCorrect="off"
         spellCheck={false}
         style={{
-          position: 'absolute', left: '50%', bottom: 0, transform: 'translateX(-50%)',
+          position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
           width: 1, height: 1, padding: 0, border: 'none',
           opacity: 0, pointerEvents: 'none', resize: 'none',
           overflow: 'hidden', zIndex: -1,

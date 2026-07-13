@@ -1,20 +1,21 @@
-<p align="center">
-  <a href="#中文">中文</a> · <a href="#english">English</a>
-</p>
+🇨🇳 **CN** | [🇺🇸 EN](README_EN.md)
 
 ---
-
-<a id="中文"></a>
 
 # Remoter
 
 个人远程桌面工具，支持从任意设备远程控制 Mac 或 Windows。
 
-- **JPEG 串流**：低延迟画面传输，兼容所有客户端
+- **RTP 媒体轨道传输**：屏幕帧直接喂给 libwebrtc 的 `RTCVideoSource`，原生编码 + GCC 拥塞控制 + NACK/PLI 丢包重传/关键帧请求 + 抖动缓冲，自动协商 UDP 传输，取代早期手写的 DataChannel 分片方案（Mac 端）
 - **端到端加密**：P-256 ECDH + AES-256-GCM，零明文传输
 - **局域网直连**：延迟 < 20ms
 - **跨网络**：支持 WireGuard / VPN 穿透，或自建中继服务器
-- **WebRTC DataChannel**：自动协商 UDP 传输通道，进一步降低延迟
+- **音频转发**：系统声音 AAC-LC 编码转发，客户端 WebCodecs 解码播放（默认关闭，控制菜单手动开启）
+- **远端光标形状同步**：光标位置本地零延迟渲染，形状轮询同步（文本光标、调整大小箭头等）
+- **中文输入法（IME）透传**：本地输入法正常组词选字，只有确定的文字才发送到远端注入
+- **多显示器**：可选择远程哪块屏幕
+- **延迟分解统计**：编码 / 网络 / 解码三段耗时分别展示
+- **断线自动重协商**：WebRTC ICE 断开后自动重建，不需要重连整个会话
 - **文件传输**：双向发送文件，保存到目标机 `~/Downloads`
 - **剪贴板同步**：双向文本 + 图片自动同步（≤4MB PNG）
 - **多标签页**：同时管理多个远程会话，Tab 悬停显示实时延迟 / 帧率 / 连接时长
@@ -42,8 +43,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 ## 架构
 
 ```
-Remoter-Mac/        Mac 被控端     Swift · ScreenCaptureKit · Network.framework
+Remoter-Mac/        Mac 被控端     Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
 Remoter-Win/        Windows 被控端  C# .NET 8 · DXGI Desktop Duplication · SendInput
+                    暂无 WebRTC 实现，视频走 WebSocket 传输
 Remoter-Client/     控制端          Electron + React + TypeScript
                     同一套代码也能构建为纯网页版（无需安装）
 Remoter-Server/     公网中继服务器   Node.js WebSocket（可选）
@@ -125,6 +127,10 @@ open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 - **中文输入（IME）**：canvas 不是可编辑元素，本地输入法无法在其上组词——藏一个 1px 透明 textarea 持有焦点承接组词，`compositionend` 把最终文本发去远端用 `keyboardSetUnicodeString` 注入；组词期间（`isComposing`/keyCode 229）不 preventDefault 也不转发原始按键。
 - **光标形状同步**：采集端隐藏光标、客户端本地渲染（零延迟），形状靠轮询 `NSCursor.currentSystem` 发 PNG+热点给客户端设 CSS cursor；注意光标图要重绘到 point 尺寸，直接用 Retina 2x 位图会显示成双倍大。
 - **多显示器**：副屏的鼠标注入必须加 `CGDisplayBounds` 的全局坐标原点偏移——客户端坐标是"相对所选显示器"归一化的，CGEvent 要的是全局桌面坐标。
+- **RTP 化：CVPixelBuffer 直接喂给 `RTCVideoSource`**：屏幕帧不再自己拿 VideoToolbox 编码、打包、按 60KB 分片发 DataChannel，改成直接 `source.capturer(_:didCapture:)` 喂给 libwebrtc 的 `RTCVideoSource`（`forScreenCast: true`），编码、拥塞控制（GCC）、丢包重传/关键帧请求（NACK/PLI）、接收端抖动缓冲全部交给协议栈原生实现，取代了此前一整批手写近似方案（分片重组、`bufferedAmount` 背压丢帧、关键帧风暴治理）。RTP 路径下我们自己的反应式自动挡（fps/码率阶梯）会主动让路，避免和 GCC 打架。
+- **RTP 连接建立初期画面会经历"模糊到清晰"**：GCC 不知道链路真实带宽，起步码率保守，靠 RTCP 反馈逐步上探直到收敛——这是刻意设计（避免像早期手写自动挡那样直接顶格导致过载卡顿），不是 bug。同理，快速滚动等高时域复杂度内容下画面变糊也是正常现象：编码器要在预算内跟上画面变化速度，必然牺牲清晰度，停止滚动后几秒内会恢复清晰。
+- **媒体轨道到达可能早于客户端事件订阅**：本地/局域网连接 ICE 协商极快（单位数毫秒级），libwebrtc 的 `ontrack` 可能在客户端组件挂载、订阅 `media_stream` 事件之前就已经触发；`Connection.emit()` 没有重放机制，这个事件会被直接丢弃——画面完全空白，但延迟/码率统计却显示 RTP 数据在正常流入，容易误判为"传输正常但不渲染"。修复：`Connection` 缓存最近一次到达的 `MediaStream`，供晚订阅的组件补上。
+- **`track.muted` 不能用来决定 canvas/video 的显示切换**：`ScreenCaptureKit` 只在画面真正变化时才产出新帧，屏幕静止（比如只是阅读、没有滚动）时 libwebrtc 视频源、进而 track 的 `muted` 状态会频繁 on/off；而服务端一旦切到 RTP 就不再发 WS 兜底帧，底下的 canvas 定格在 RTP 接管那一刻的旧画面。跟着 `muted` 切换显示源，会在"定格的旧帧"和"最新帧"之间反复横跳。修复：`<video>` 一旦到达就保持可见，只有 track 真正结束（`onended`）才退回 canvas 兜底——`<video>` 本身在断流时就会停在最后一帧，这本来就是正确行为。
 
 ---
 
@@ -132,7 +138,7 @@ open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 
 **系统要求：** Windows 10 1803+ x64，.NET 8 Runtime
 
-画面采集使用 **DXGI Desktop Duplication API**（GPU 侧捕获，延迟 < 2ms/帧），输入注入使用 **SendInput** Win32 API。
+画面采集使用 **DXGI Desktop Duplication API**（GPU 侧捕获，延迟 < 2ms/帧），输入注入使用 **SendInput** Win32 API。视频传输目前仍走 WebSocket（尚无 WebRTC/RTP 实现）。
 
 ### 编译
 
@@ -198,6 +204,12 @@ cd Remoter-Client && npm run build:web   # 输出到 Remoter-Server/public/
 3. 输入 **PIN 码**（从被控端菜单栏复制）或账号密码
 4. 点击连接，等待画面出现
 
+### 踩坑记录
+
+- **Electron 天然不支持 H.265/HEVC 解码**：标准 Electron 发行版不带 HEVC 软解码器（专利授权问题），硬解钩子（`enable_platform_hevc`）也没有编译进标准构建，不论系统/显卡实际是否支持硬解，`VideoDecoder.isConfigSupported` 探测永远返回不支持——这是 Electron 已知限制，不是本项目代码问题。浏览器（尤其 Chrome 官方版）不受此限制。画质菜单里的编码方式选项因此只在探测到支持时才显示。
+- **IME 候选框只能近似居中**：候选框以本地暂存用的隐形 textarea 光标位置为锚点向右展开，浏览器不会把候选框实际宽度暴露给页面查询，做不到像素级精确居中；只能把锚点向左偏移半个"经验候选框宽度"来近似居中效果。
+- **Windows 绿色版（portable exe）必须固定解压目录名**：`electron-builder` 的 `portable` 目标默认按打包文件名（含版本号）算解压目录的哈希，只要重新打包升了版本号，解压路径就会变；Windows 防火墙的放行规则是按可执行文件路径记的，路径一变就被当成新程序重新弹授权提示——对着"随时要改 bug、随时打新包"的绿色版工作流，几乎每次启动都会弹。修复：`electron-builder.yml` 里把 `portable.unpackDirName` 固定成常量，不再随文件名变化，不管打多少个新版本都解压到同一路径，防火墙规则只需要放行一次。
+
 ---
 
 ## 跨网络连接
@@ -240,226 +252,3 @@ RemoterWin.exe --relay ws://your-server:7789
 - **局域网直连**：数据不经过任何第三方服务器
 - **中继模式**：流量经自建服务器透明转发，E2E 加密对中继不可见
 - **HTTP 降级**：Web 客户端通过 HTTP 访问时 E2E 自动跳过，建议生产环境配置 TLS
-
----
-
-<a id="english"></a>
-
-# Remoter
-
-A personal remote desktop tool for controlling Mac or Windows from any device.
-
-- **JPEG streaming** — low-latency screen transfer, compatible with all clients
-- **End-to-end encryption** — P-256 ECDH + AES-256-GCM, zero plaintext
-- **LAN direct connect** — latency < 20ms
-- **Cross-network** — WireGuard / VPN tunnel or self-hosted relay server
-- **WebRTC DataChannel** — auto-negotiates UDP transport for lower latency
-- **File transfer** — bidirectional, saved to `~/Downloads` on the target machine
-- **Clipboard sync** — bidirectional text + image auto-sync (≤4MB PNG)
-- **Multi-tab** — manage multiple remote sessions; hover a tab to see live latency / fps / connection duration
-- **Theme** — follows system / light / dark, applied instantly
-
----
-
-## One-command Build
-
-```bash
-# Mac agent (with embedded web client) — run on macOS
-bash scripts/build-mac.sh              # debug build
-bash scripts/build-mac.sh --release    # release build
-
-# Windows agent (with embedded web client) — run on Windows
-powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
-```
-
-Output:
-- Mac: `Remoter-Mac/build/RemoterAgent.app`
-- Win: `Remoter-Win/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe` (with `web/` directory)
-
----
-
-## Architecture
-
-```
-Remoter-Mac/        Mac agent       Swift · ScreenCaptureKit · Network.framework
-Remoter-Win/        Windows agent   C# .NET 8 · DXGI Desktop Duplication · SendInput
-Remoter-Client/     Controller      Electron + React + TypeScript
-                    Same codebase builds as a pure web app (no install needed)
-Remoter-Server/     Relay server    Node.js WebSocket (optional)
-```
-
-**Ports**
-
-| Service | Port | Notes |
-|---------|------|-------|
-| Mac/Win WebSocket | 7788 | Agent main connection (override with `--port`) |
-| Mac/Win Web client | 7799 | Static file server, auto-starts when `web/` exists |
-| Win admin console | main port + 2 | Default 7790, logs / PIN / status |
-| Relay server | 7789 | WebSocket relay + web client hosting |
-
----
-
-## Mac Agent
-
-**Requirements:** macOS 14 Sonoma or later (macOS 26 beta tested)
-
-### Build
-
-Requires Swift 5.9+ (Xcode Command Line Tools or full Xcode):
-
-```bash
-xcode-select --install   # first time only
-
-cd Remoter-Mac
-bash scripts/build-app.sh            # debug build
-bash scripts/build-app.sh --release  # release build (smaller & faster)
-```
-
-Output: `Remoter-Mac/build/RemoterAgent.app`
-
-### Authentication
-
-| Method | Description |
-|--------|-------------|
-| PIN | Randomly generated on startup, or set with `--pin 123456`; copy from menu bar |
-| Username / Password | macOS local account (verified via `dscl -authonly`) |
-| Token | Issued automatically after credential login; enables passwordless reconnect |
-
-### First-run Permissions
-
-Grant the following in **System Settings**:
-
-- **Privacy & Security → Screen Recording** → allow RemoterAgent
-- **Privacy & Security → Accessibility** → allow RemoterAgent
-
-The app prompts for both automatically on first launch.
-
-### Launch
-
-```bash
-open Remoter-Mac/build/RemoterAgent.app                      # random PIN
-open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # fixed PIN
-```
-
-A `⬇` icon appears in the menu bar. Click it to see the **PIN**, **LAN WebSocket address**, and (if web client is embedded) the **web client URL**.
-
-### Troubleshooting
-
-- **macOS 15+ shows only the desktop wallpaper**: `CGDisplayCreateImage` returns a wallpaper-only frame when session auth is not approved. Fixed by migrating to `ScreenCaptureKit (SCStream)`, which triggers the correct session auth dialog.
-- **PAM `pam_start("login")` fails for non-root processes**: the `"login"` service requires elevated privileges. Fixed by using `/usr/bin/dscl . -authonly` instead — no root needed, works for local accounts and Apple ID accounts.
-- **Two permission dialogs appearing simultaneously**: fixed by requesting them sequentially — screen recording first (`await`), then accessibility.
-
----
-
-## Windows Agent
-
-**Requirements:** Windows 10 1803+ x64, .NET 8 Runtime
-
-Screen capture uses **DXGI Desktop Duplication API** (GPU-side, < 2ms/frame). Input injection uses **SendInput** Win32 API.
-
-### Build
-
-Requires .NET 8 SDK:
-
-```bash
-cd Remoter-Win
-dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true --self-contained
-```
-
-Output: `RemoterWin.exe` (single file, no runtime install needed)
-
-### Launch
-
-```
-RemoterWin.exe                     # random PIN, port 7788
-RemoterWin.exe --pin 123456        # fixed PIN
-RemoterWin.exe --port 7789         # custom port
-```
-
-### Admin Console
-
-Open `http://localhost:{port+2}/` (default `http://localhost:7790/`) to:
-- Stream real-time logs (SSE)
-- Hot-update PIN / port / relay URL (no restart needed)
-- View connection count and uptime
-
----
-
-## Controller
-
-Two forms, built from the **same React codebase**:
-
-### A. Electron desktop client (Windows / macOS)
-
-```bash
-cd Remoter-Client
-npm install
-npm run package:win   # Windows installer
-npm run package:mac   # macOS app
-npm run dev           # dev mode
-```
-
-> **Slow downloads in mainland China** (Electron mirror):
-> ```bash
-> ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/" \
-> ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/" \
-> npm run package:win
-> ```
-
-### B. Web client (any browser, no install)
-
-```bash
-cd Remoter-Client && npm run build:web   # outputs to Remoter-Server/public/
-```
-
-Three hosting options: embed in Mac app, embed in Win exe, or host via relay server.
-
-### How to Connect
-
-1. Open the controller (desktop app or browser)
-2. Choose **Direct (LAN)**, enter the agent address: `ws://192.168.1.x:7788`
-3. Enter the **PIN** (copy from the agent's menu bar) or username/password
-4. Click Connect and wait for the screen to appear
-
----
-
-## Cross-network
-
-### Option 1: Tailscale / ZeroTier (recommended)
-
-Install the same VPN client on both machines and connect with the virtual IP — no config needed:
-
-| VPN | Free tier |
-|-----|-----------|
-| **Tailscale** | Free for personal use, up to 3 devices |
-| **ZeroTier** | Free for personal use, up to 25 devices |
-
-### Option 2: Cloudflare Tunnel (free public URL)
-
-```bash
-brew install cloudflare/cloudflare/cloudflared
-bash Remoter-Mac/scripts/cloudflare-tunnel.sh
-```
-
-The script prints `https://xxx.trycloudflare.com` — replace `https://` with `wss://` and paste it into the controller.
-
-### Option 3: Self-hosted relay server
-
-```bash
-cd Remoter-Server
-npm install && npm run build:all
-npm start           # port 7789
-
-# Start agents with --relay
-open RemoterAgent.app --args --relay ws://your-server:7789
-RemoterWin.exe --relay ws://your-server:7789
-```
-
----
-
-## Security
-
-- **E2E encryption**: P-256 ECDH key exchange + HKDF-SHA256 + AES-256-GCM; all control messages encrypted after handshake
-- **LAN direct**: data never leaves your local network
-- **Relay mode**: traffic is relayed transparently; E2E encryption is opaque to the relay
-- **HTTP fallback**: E2E is skipped when the web client connects over plain HTTP; configure TLS for production use

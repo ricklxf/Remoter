@@ -122,8 +122,34 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     if (!isActive) inputRef.current.deactivate()
   }, [isActive])
 
+  // RTP video track: hand it to the <video> element — the browser owns
+  // jitter buffering, decode and render from here. mute/unmute on the track
+  // tracks whether RTP packets are actually flowing, which is what should
+  // decide video-vs-canvas visibility (the server falls back to WS frames
+  // whenever the media path is down).
+  function attachMediaStream(stream: MediaStream): void {
+    const video = videoRef.current
+    if (!video) return
+    video.srcObject = stream
+    video.play().catch(() => {/* autoplay of muted video is allowed; ignore races */})
+    const track = stream.getVideoTracks()[0]
+    if (track) {
+      setMediaActive(!track.muted)
+      track.onmute   = () => setMediaActive(false)
+      track.onunmute = () => setMediaActive(true)
+      track.onended  = () => setMediaActive(false)
+    }
+  }
+
   // Wire up video frames + codec_changed events
   useEffect(() => {
+    // ontrack can fire (esp. on loopback/LAN with near-instant ICE) before
+    // this effect subscribes below — Connection caches that first stream
+    // since its emit() has no replay, so pick it up here instead of waiting
+    // for an event that already happened.
+    const already = conn.currentMediaStream
+    if (already) attachMediaStream(already)
+
     const prev = conn.onEvent
     conn.onEvent = (e) => {
       prev?.(e)
@@ -161,23 +187,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           `url(data:image/png;base64,${e.pngBase64}) ${e.hotX} ${e.hotY}, default`
       }
 
-      // RTP video track: hand it to the <video> element — the browser owns
-      // jitter buffering, decode and render from here. mute/unmute on the
-      // track tracks whether RTP packets are actually flowing, which is
-      // what should decide video-vs-canvas visibility (the server falls
-      // back to WS frames whenever the media path is down).
-      if (e.type === 'media_stream' && videoRef.current) {
-        const video = videoRef.current
-        video.srcObject = e.stream
-        video.play().catch(() => {/* autoplay of muted video is allowed; ignore races */})
-        const track = e.stream.getVideoTracks()[0]
-        if (track) {
-          setMediaActive(!track.muted)
-          track.onmute   = () => setMediaActive(false)
-          track.onunmute = () => setMediaActive(true)
-          track.onended  = () => setMediaActive(false)
-        }
-      }
+      if (e.type === 'media_stream') attachMediaStream(e.stream)
     }
     return () => { conn.onEvent = prev }
   }, [conn, streamInfo, initialCodec])

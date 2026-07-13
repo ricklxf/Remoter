@@ -46,6 +46,12 @@ interface DownloadState {
 export class Connection {
   private ws: WebSocket | null = null
   private webrtc: WebRTCClient | null = null
+  // ontrack can fire (esp. on loopback/LAN where ICE completes in single-digit
+  // ms) before RemoteCanvas has mounted and subscribed to onEvent — emit()
+  // has no replay, so that first media_stream event is otherwise lost
+  // forever and the picture never appears. Cache it so a late subscriber can
+  // pick up the already-arrived stream instead of waiting for a new one.
+  private lastMediaStream: MediaStream | null = null
   private params: ConnectParams | null = null
   private statsTimer: ReturnType<typeof setInterval> | null = null
   private readonly e2e = new E2ECrypto()
@@ -77,6 +83,12 @@ export class Connection {
   // loop can report decode latency without Connection knowing the decoder.
   decodeMsProvider: (() => number) | null = null
   private _pingTs      = 0
+
+  /** Already-arrived RTP video stream, if any — for a subscriber that mounts
+   * after the media_stream event already fired (see lastMediaStream above). */
+  get currentMediaStream(): MediaStream | null {
+    return this.lastMediaStream
+  }
 
   private downloads = new Map<string, DownloadState>()
 
@@ -113,6 +125,7 @@ export class Connection {
     this.stopClipboardSync()
     this.webrtc?.close()
     this.webrtc = null
+    this.lastMediaStream = null
 
     this.params = params
     this.e2e.reset()
@@ -162,6 +175,7 @@ export class Connection {
       this.queueGen++                     // abort any pending queue items — they must not alter state
       this.webrtc?.close()
       this.webrtc = null
+      this.lastMediaStream = null
       this.stopStats()
       this.stopClipboardSync()
 
@@ -467,6 +481,7 @@ export class Connection {
 
     rtc.onTrack = (stream) => {
       console.log('[WebRTC] video track arrived')
+      this.lastMediaStream = stream
       this.emit({ type: 'media_stream', stream })
     }
     rtc.onConnected    = () => {

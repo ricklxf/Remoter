@@ -854,7 +854,7 @@ final class Session {
         let dt = Date().timeIntervalSince(sentTick)
         if dt >= 5 {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
-                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingWebRTCVideo ? "webrtc" : "ws") bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
+                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingRtpVideo ? "rtp" : (usingWebRTCVideo ? "webrtc" : "ws")) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
             // On the RTP path libwebrtc's GCC owns bandwidth adaptation and
             // the browser handles decode-overload (frame dropping + PLI), so
             // our reactive stepping would just fight it — only run it for

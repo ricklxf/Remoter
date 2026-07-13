@@ -39,6 +39,13 @@ final class RemoterAgent {
         let dir = res.appendingPathComponent("web")
         return FileManager.default.fileExists(atPath: dir.path) ? dir : nil
     }()
+    // WebSocketServer runs a 2-thread NIO event loop group — connections on
+    // different loops can call getOrCreate/removeSession concurrently.
+    // `sessions` is a plain Dictionary with no synchronization of its own,
+    // so two threads mutating it at once corrupts its storage (crashes with
+    // SIGABRT deep in Dictionary's setValue, not at the call site — very
+    // confusing to debug from the stack trace alone). Guard every access.
+    private let sessionsLock = NSLock()
     private var sessions: [UUID: Session] = [:]
     private var relaySessionId: String?
     private var pin = ""
@@ -106,20 +113,27 @@ final class RemoterAgent {
     // MARK: - Private
 
     private func getOrCreate(conn: WSClient) -> Session {
-        if let s = sessions.values.first(where: { $0.connection === conn }) { return s }
+        sessionsLock.lock()
+        if let s = sessions.values.first(where: { $0.connection === conn }) {
+            sessionsLock.unlock()
+            return s
+        }
         let id = UUID()
         let s  = Session(id: id, connection: conn, pin: pin)
         sessions[id] = s
+        sessionsLock.unlock()
         s.start()
         return s
     }
 
     private func removeSession(for conn: WSClient) {
-        if let entry = sessions.first(where: { $0.value.connection === conn }) {
-            entry.value.close()
-            sessions.removeValue(forKey: entry.key)
-            notifyStatus()
-        }
+        sessionsLock.lock()
+        let entry = sessions.first(where: { $0.value.connection === conn })
+        if let entry { sessions.removeValue(forKey: entry.key) }
+        sessionsLock.unlock()
+        guard let entry else { return }
+        entry.value.close()
+        notifyStatus()
     }
 
     private func connectRelay(url: URL) {
@@ -132,10 +146,18 @@ final class RemoterAgent {
         }
         relay.onText = { [weak self] text in
             // relay 消息广播给所有活跃 session（通常只有一个）
-            self?.sessions.values.forEach { $0.handleText(text) }
+            guard let self else { return }
+            self.sessionsLock.lock()
+            let snapshot = Array(self.sessions.values)
+            self.sessionsLock.unlock()
+            snapshot.forEach { $0.handleText(text) }
         }
         relay.onBinary = { [weak self] data in
-            self?.sessions.values.forEach { $0.handleBinary(data) }
+            guard let self else { return }
+            self.sessionsLock.lock()
+            let snapshot = Array(self.sessions.values)
+            self.sessionsLock.unlock()
+            snapshot.forEach { $0.handleBinary(data) }
         }
         relay.onDisconnected = { [weak self] in
             guard let self else { return }
@@ -150,16 +172,22 @@ final class RemoterAgent {
     }
 
     func sendFileToAllSessions(_ url: URL) {
-        sessions.values.forEach { $0.sendFile(url) }
+        sessionsLock.lock()
+        let snapshot = Array(sessions.values)
+        sessionsLock.unlock()
+        snapshot.forEach { $0.sendFile(url) }
     }
 
     private func notifyStatus() {
+        sessionsLock.lock()
+        let sessionCount = sessions.count
+        sessionsLock.unlock()
         let status = AgentStatus(
             pin: pin,
             sessionId: relaySessionId,
             localIPs: getLocalIPs(),
             vpnIPs: getVPNIPs(),
-            connectedClients: sessions.count,
+            connectedClients: sessionCount,
             webEnabled: webDir != nil,
             port: config.port,
             localHostname: getLocalHostname()

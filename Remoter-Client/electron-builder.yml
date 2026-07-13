@@ -28,6 +28,13 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 
+# unpackDirName 默认按打包文件名（含版本号）算哈希，每次升版本号都会
+# 解压到一个新的临时目录，导致 Windows 防火墙把它当成新程序反复弹窗
+# 授权提示。固定成一个不含版本号的目录名，不管打多少个版本都解压到
+# 同一路径，防火墙规则只需要放行一次。
+portable:
+  unpackDirName: RemoterPortable
+
 mac:
   # identity: null → skip codesign; avoids "cannot be opened" when no Developer ID cert.
   # To enable signing: set identity to your "Developer ID Application: ..." fingerprint

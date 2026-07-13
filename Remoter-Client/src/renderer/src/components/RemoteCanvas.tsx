@@ -231,7 +231,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       {/* Invisible IME staging area: holds keyboard focus while capturing so
           the local input method can compose CJK text (composition only works
           on editable elements — the canvas can't host it). Final committed
-          text is sent to the remote via compositionend; see InputHandler. */}
+          text is sent to the remote via compositionend; see InputHandler.
+          Horizontally centered at the bottom edge — the OS candidate window
+          anchors to this element's caret position, so this is what puts the
+          candidate list bottom-center instead of pinned to the left edge. */}
       <textarea
         ref={imeRef}
         tabIndex={-1}
@@ -239,7 +242,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         autoCorrect="off"
         spellCheck={false}
         style={{
-          position: 'absolute', left: 0, bottom: 0,
+          position: 'absolute', left: '50%', bottom: 0, transform: 'translateX(-50%)',
           width: 1, height: 1, padding: 0, border: 'none',
           opacity: 0, pointerEvents: 'none', resize: 'none',
           overflow: 'hidden', zIndex: -1,

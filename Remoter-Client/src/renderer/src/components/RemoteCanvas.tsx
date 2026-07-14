@@ -234,30 +234,35 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             objectFit: 'fill',   // the frame div already has the correct aspect ratio
           }}
         />
+        {/* Invisible IME staging area: holds keyboard focus while capturing
+            so the local input method can compose CJK text (composition only
+            works on editable elements — the canvas/video can't host it).
+            Final committed text is sent to the remote via compositionend;
+            see InputHandler. Nested inside the frame div (not a sibling of
+            it) so its position is anchored to the actual visible picture,
+            not to the outer window — a window that's bigger than the
+            picture (letterboxed, toolbars, etc.) would otherwise throw the
+            centering off relative to what the user is actually looking at.
+            The OS candidate window anchors to this element's caret and grows
+            rightward from it — the browser never exposes the popup's actual
+            width, so true centering isn't possible. Anchoring dead-center
+            makes the window read as shifted right; nudging the anchor left
+            by half a "typical" candidate-window width (~240px) approximates
+            a centered look instead. */}
+        <textarea
+          ref={imeRef}
+          tabIndex={-1}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          style={{
+            position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
+            width: 1, height: 1, padding: 0, border: 'none',
+            opacity: 0, pointerEvents: 'none', resize: 'none',
+            overflow: 'hidden', zIndex: -1,
+          }}
+        />
       </div>
-      {/* Invisible IME staging area: holds keyboard focus while capturing so
-          the local input method can compose CJK text (composition only works
-          on editable elements — the canvas can't host it). Final committed
-          text is sent to the remote via compositionend; see InputHandler.
-          The OS candidate window anchors to this element's caret and grows
-          rightward from it — the browser never exposes the popup's actual
-          width, so true centering isn't possible. Anchoring dead-center
-          makes the window read as shifted right; nudging the anchor left by
-          half a "typical" candidate-window width (~240px) approximates a
-          centered look instead. */}
-      <textarea
-        ref={imeRef}
-        tabIndex={-1}
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        style={{
-          position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
-          width: 1, height: 1, padding: 0, border: 'none',
-          opacity: 0, pointerEvents: 'none', resize: 'none',
-          overflow: 'hidden', zIndex: -1,
-        }}
-      />
     </div>
   )
 }

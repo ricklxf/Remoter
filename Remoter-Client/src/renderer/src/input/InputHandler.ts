@@ -31,6 +31,11 @@ export class InputHandler {
   // Keys that have been sent as keydown — keyup must be sent regardless of hover state
   private pressedKeys = new Set<string>()
 
+  // Tracks whether an IME composition is currently in progress (set by
+  // compositionstart/compositionend) — see onImeInput for why keydown alone
+  // (isComposing / key==='Process') can't reliably tell us this on its own.
+  private composing = false
+
   // Mouse-move send throttle: native mousemove can fire 100-240Hz, each one
   // synchronously injects a CGEvent on the Mac side (an IPC round-trip to
   // WindowServer — the same process that drives the screen compositor
@@ -129,7 +134,9 @@ export class InputHandler {
     add(document, 'mousedown',  this.onDocumentMouseDown)
     add(window,   'blur',       this.onWindowBlur)
     add(window,   'focus',      this.onWindowFocus)
-    if (this.imeEl) add(this.imeEl, 'compositionend', this.onCompositionEnd)
+    if (this.imeEl) add(this.imeEl, 'compositionstart', this.onCompositionStart)
+    if (this.imeEl) add(this.imeEl, 'compositionend',   this.onCompositionEnd)
+    if (this.imeEl) add(this.imeEl, 'input',            this.onImeInput)
   }
 
   private removeListeners(): void {
@@ -276,6 +283,15 @@ export class InputHandler {
 
   // MARK: - Keyboard
 
+  // Plain, unmodified letter keys are never forwarded via raw keycode +
+  // preventDefault — see onImeInput for why. Everything else (digits,
+  // punctuation, arrows, function keys, Enter/Backspace/Tab, and any key
+  // held with Ctrl/Alt/Meta) still goes through the direct keycode path.
+  private static isPlainLetterKey(ke: KeyboardEvent): boolean {
+    if (ke.ctrlKey || ke.altKey || ke.metaKey) return false
+    return /^Key[A-Z]$/.test(ke.code)
+  }
+
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
     if (!this.hovering && !this.locked && !this.captured) return
@@ -290,49 +306,51 @@ export class InputHandler {
     // keystrokes for a while after the IME was last used (confirmed via
     // logging: isComposing false, keyCode 229, on a plain digit key with no
     // candidate list showing), which silently dropped real keystrokes.
-    //
-    // But isComposing alone isn't enough either: the very *first* keydown of
-    // a composition (the one that actually triggers it) fires with
-    // isComposing still false — the browser only flips it to true starting
-    // from the second keystroke of that same composition. Without also
-    // checking this, that first key was forwarded as a literal keystroke,
-    // landing remotely *in addition to* the properly-composed character —
-    // confirmed pattern: every Chinese character came out as its first
-    // pinyin letter (typed literally) immediately followed by the character
-    // itself. `key === 'Process'` is the spec-defined signal for exactly
-    // this ambiguous first event (browser knows an IME is handling it but
-    // doesn't know the resulting character yet) and isn't prone to the
-    // sticky-residual problem keyCode 229 had.
-    // TEMP DIAGNOSTIC — key==='Process' didn't fix the "first pinyin letter
-    // leaks through" report; logging every keydown's full IME-relevant
-    // fields to see what this browser/IME actually reports on that first
-    // keystroke. Remove once root-caused.
-    console.log('[InputDiag2] keydown ' + JSON.stringify({
-      code: ke.code, key: ke.key, keyCode: ke.keyCode, isComposing: ke.isComposing,
-    }))
-    if (ke.isComposing || ke.key === 'Process') {
-      console.log('[InputDiag2] dropped (composing/Process)')
-      return
-    }
-    ke.preventDefault()
+    if (ke.isComposing) return
 
     if (ke.code === 'CapsLock') {
       // Send unconditionally — server reads its own current CapsLock state to decide direction.
       // Do NOT use getModifierState: IMEs (e.g. WeChat) may intercept CapsLock without changing
       // the OS CapsLock state, making getModifierState always return the same value and causing
       // the deduplication to suppress all subsequent presses.
+      ke.preventDefault()
       this.conn.sendKey('CapsLock', true, [])
       this.conn.sendKey('CapsLock', false, [])
       return
     }
 
+    // A plain letter key can *become* the first key of an IME composition —
+    // and there is no reliable way to know that in advance. isComposing is
+    // still false and key is the literal letter (not 'Process') for exactly
+    // this ambiguous first keystroke (confirmed via logging: {code: "KeyD",
+    // isComposing: false, key: "d"} immediately preceding a real
+    // composition). Forwarding it here via raw keycode, *and* calling
+    // preventDefault — which stops the browser from ever handing this key
+    // to the IME at all — produced two bugs at once: the letter landed
+    // remotely on its own, and the composition that followed was missing
+    // that same letter (e.g. typing "da" for a character produced literal
+    // "d" *plus* whatever "a" alone composes to).
+    //
+    // Fix: never preventDefault or raw-keycode-forward a plain letter key.
+    // Let the browser's default action happen — into the hidden textarea,
+    // same as before — and read back whatever text actually landed there
+    // (onImeInput), whether that's plain typing or IME output. This makes
+    // the ambiguity irrelevant: we no longer have to guess in advance.
+    if (InputHandler.isPlainLetterKey(ke)) return
+
+    ke.preventDefault()
     const km = getKeymap()
     this.conn.sendKey(mapKeyCode(ke.code, km), true, mapModifiers(collectModifiers(ke), km))
     this.pressedKeys.add(ke.code)
   }
 
+  private onCompositionStart = (): void => {
+    this.composing = true
+  }
+
   private onCompositionEnd = (e: Event): void => {
     if (!this.enabled) return
+    this.composing = false
     const ce = e as CompositionEvent
     if (ce.data) this.conn.sendTextInput(ce.data)
     // The committed text also landed in the hidden textarea — clear it so it
@@ -341,11 +359,30 @@ export class InputHandler {
     if (this.imeEl) this.imeEl.value = ''
   }
 
+  // Catches plain-letter text that landed in the textarea via its default
+  // browser behavior (see isPlainLetterKey above) — covers both ordinary
+  // English typing (no IME involved at all) and the ambiguous first
+  // keystroke of a composition that hasn't engaged the IME after all (e.g.
+  // a single letter with no matching candidates). Composition-driven input
+  // is handled by onCompositionEnd instead, once the whole composition
+  // settles, so this must not also forward text while one is in progress.
+  private onImeInput = (e: Event): void => {
+    if (!this.enabled) return
+    const ie = e as InputEvent
+    if (this.composing || ie.isComposing) return
+    const text = this.imeEl?.value
+    if (text) {
+      this.conn.sendTextInput(text)
+      if (this.imeEl) this.imeEl.value = ''
+    }
+  }
+
   private onKeyUp = (e: Event): void => {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
     if (ke.code === 'CapsLock') return  // handled in keydown
-    if (ke.isComposing || ke.key === 'Process') return   // see onKeyDown
+    if (ke.isComposing) return
+    if (InputHandler.isPlainLetterKey(ke)) return   // see onKeyDown — no matching keydown was sent
     // Send keyup only if we previously sent keydown for this key.
     // This ensures keyup always pairs with keydown regardless of hover state,
     // preventing stuck keys when the mouse drifts out of the canvas.

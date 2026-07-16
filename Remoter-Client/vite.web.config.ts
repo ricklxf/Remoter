@@ -22,9 +22,11 @@ export default defineConfig({
   // not console.error, so dropping console wholesale is safe here.
   // (esbuild `pure` can't remove logs in event-handler bodies or side-effecting
   //  conditions, so `drop` is the only reliable option.)
-  esbuild: {
-    drop: ['console', 'debugger'],
-  },
+  // TEMPORARILY DISABLED for the [InputDiag2] IME debugging session — restore
+  // once that's root-caused, don't leave console logging on in a real build.
+  // esbuild: {
+  //   drop: ['console', 'debugger'],
+  // },
   build: {
     // Output directly into the relay server's public directory so a single
     // `build:all` produces one deployable artifact.

@@ -303,7 +303,17 @@ export class InputHandler {
     // this ambiguous first event (browser knows an IME is handling it but
     // doesn't know the resulting character yet) and isn't prone to the
     // sticky-residual problem keyCode 229 had.
-    if (ke.isComposing || ke.key === 'Process') return
+    // TEMP DIAGNOSTIC — key==='Process' didn't fix the "first pinyin letter
+    // leaks through" report; logging every keydown's full IME-relevant
+    // fields to see what this browser/IME actually reports on that first
+    // keystroke. Remove once root-caused.
+    console.log('[InputDiag2] keydown', {
+      code: ke.code, key: ke.key, keyCode: ke.keyCode, isComposing: ke.isComposing,
+    })
+    if (ke.isComposing || ke.key === 'Process') {
+      console.log('[InputDiag2] dropped (composing/Process)')
+      return
+    }
     ke.preventDefault()
 
     if (ke.code === 'CapsLock') {

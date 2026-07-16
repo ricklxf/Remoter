@@ -128,6 +128,7 @@ export class InputHandler {
     add(document, 'pointerlockchange', this.onPointerLockChange)
     add(document, 'mousedown',  this.onDocumentMouseDown)
     add(window,   'blur',       this.onWindowBlur)
+    add(window,   'focus',      this.onWindowFocus)
     if (this.imeEl) add(this.imeEl, 'compositionend', this.onCompositionEnd)
   }
 
@@ -259,6 +260,19 @@ export class InputHandler {
   private onMouseEnter = (): void => { this.hovering = true }
   private onMouseLeave = (): void => { this.hovering = false }
   private onWindowBlur = (): void => { this.releaseAllKeys(); this.captured = false }
+  // Switching back to this window/tab (Cmd+Tab, clicking the taskbar icon,
+  // etc.) without first clicking inside the canvas left a gap: `captured`
+  // stays false (cleared by the blur above) and imeEl isn't refocused until
+  // the *next* click, so a keystroke typed immediately after switching back
+  // — before any click — fails the hovering/captured gate in onKeyDown and
+  // keyboard focus is still wherever it was before this window lost it,
+  // silently going to whatever else has it instead of the remote canvas.
+  // Re-establish both the instant this window is frontmost again.
+  private onWindowFocus = (): void => {
+    if (!this.enabled) return
+    this.captured = true
+    this.imeEl?.focus({ preventScroll: true })
+  }
 
   // MARK: - Keyboard
 

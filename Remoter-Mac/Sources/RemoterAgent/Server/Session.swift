@@ -73,6 +73,7 @@ final class Session {
     private var keyframeRequests = 0      // client request_keyframe messages received (pre-cooldown)
     private var usingWebRTCVideo = false  // legacy DataChannel video path active
     private var usingRtpVideo = false     // RTP media-track path active
+    private var pendingTextInputSince: Date?   // TEMP DIAGNOSTIC — see .textInput case
 
     // Auto quality: fps and bitrate step on separate ladders — collapsing
     // them into one combined tier meant any problem (network congestion OR
@@ -348,6 +349,14 @@ final class Session {
 
         case .textInput(let text):
             guard inputEnabled else { break }
+            // TEMP DIAGNOSTIC — tracking down a report that composed CJK text
+            // takes 1-2s to actually show up in the video feed even though
+            // the CGEvent injection itself measures in single-digit ms
+            // (post_5s stats). Marks the moment injection happens so onFrame
+            // below can log how long it takes the *next* captured frame to
+            // follow. Remove once root-caused.
+            pendingTextInputSince = Date()
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "text_input_received", detail: "len=\(text.count)")
             input?.typeText(text)
 
         case .clipboardSet(let text):
@@ -807,6 +816,16 @@ final class Session {
             c.onFrame = { [weak self] pixelBuffer, _, _ in
                 guard let self else { return }
                 self.lastFrame = pixelBuffer
+                // TEMP DIAGNOSTIC — logs how long after a text_input the next
+                // captured frame follows, to localize the reported 1-2s
+                // "composed text doesn't show up on screen" delay. Fires once
+                // per pending text input, not on every subsequent frame.
+                if let since = self.pendingTextInputSince {
+                    self.pendingTextInputSince = nil
+                    let ms = Date().timeIntervalSince(since) * 1000
+                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                        step: "frame_after_text_input", detail: "delayMs=\(String(format: "%.1f", ms))")
+                }
                 // RTP media track first: raw buffer straight into libwebrtc
                 // (it encodes + paces + congestion-controls internally). Our
                 // own VT encoder + WS/DataChannel path stays as the fallback

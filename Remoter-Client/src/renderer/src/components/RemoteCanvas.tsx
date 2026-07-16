@@ -275,13 +275,14 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           onCompositionUpdate={(e) => setCompositionText(e.data)}
           onCompositionEnd={() => setCompositionText('')}
           style={{
-            // Flush against the bottom edge left no room below the anchor
-            // for the OS candidate window to open downward, so it kept
-            // flipping between opening above and below the caret as the
-            // composition text changed length — the "jumps up and down"
-            // symptom. Pulling the anchor up off the edge gives it enough
-            // clearance to consistently open in one direction.
-            position: 'absolute', left: 'calc(50% - 120px)', bottom: '15%',
+            // Moving this anchor away from the bottom edge didn't stop the
+            // candidate window from jumping — so the jump isn't caused by
+            // this element being too close to the edge. Reverted back down;
+            // the jump looks like it's the OS/IME's own placement behavior
+            // (likely reacting to the candidate list's changing size as you
+            // type more/fewer characters), which this element's position
+            // can't fully control.
+            position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
             width: 1, height: 1, padding: 0, border: 'none',
             opacity: 0, pointerEvents: 'none', resize: 'none',
             overflow: 'hidden', zIndex: -1,
@@ -290,16 +291,11 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         {/* Read-only echo of the composition text above — purely cosmetic,
             doesn't touch the textarea's own box so it can't disturb the
             candidate window's position. Sized to fit its content instead of
-            a fixed width so short or long compositions both look right.
-            Offset upward from the anchor point: the candidate window
-            renders right at/near that same anchor, so sitting at the same
-            spot as the textarea put this box in the exact same place and
-            the two visually collided. Stacking this above it keeps them
-            apart regardless of which way the candidate window opens. */}
+            a fixed width so short or long compositions both look right. */}
         {compositionText && (
           <div
             style={{
-              position: 'absolute', left: 'calc(50% - 120px)', bottom: 'calc(15% + 40px)',
+              position: 'absolute', left: 'calc(50% - 120px)', bottom: 40,
               padding: '4px 8px', border: '1px solid #0d9488', borderRadius: 4,
               background: 'white', color: '#111', fontSize: 15,
               whiteSpace: 'pre', pointerEvents: 'none', zIndex: 10,

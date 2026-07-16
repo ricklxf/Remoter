@@ -30,7 +30,13 @@ final class InputLocker {
     func setLocked(_ locked: Bool) {
         guard locked != isLocked else { return }
         isLocked = locked
-        if locked { installTap() } else { removeTap() }
+        if locked {
+            installTap()
+            InputSourceForcer.shared.begin()
+        } else {
+            removeTap()
+            InputSourceForcer.shared.end()
+        }
         ConnectionLogger.shared.logStep(sessionId: "input", step: "input_lock", detail: locked ? "on" : "off")
         onLockChanged?(locked)
     }

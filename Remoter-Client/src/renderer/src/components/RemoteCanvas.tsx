@@ -27,11 +27,15 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   // (WS fallback). Driven by the track's mute/unmute events, which is how
   // the browser signals "RTP packets stopped/resumed arriving".
   const [mediaActive, setMediaActive] = useState(false)
-  // The IME staging textarea is invisible by default (see below) — but that
-  // also hides the raw composition text (e.g. pinyin) while typing, so a
-  // typo is invisible until the wrong character actually lands remotely.
-  // Show the box only while a composition is in progress.
-  const [composing, setComposing] = useState(false)
+  // The IME staging textarea is invisible (see below) — but that also hides
+  // the raw composition text (e.g. pinyin) while typing, so a typo is
+  // invisible until the wrong character actually lands remotely. Echo it in
+  // a separate, purely cosmetic overlay instead of resizing the textarea
+  // itself: the textarea's geometry is what the OS anchors its candidate
+  // window to, so changing its size/position to show text moves that
+  // anchor along with it, which was throwing the candidate window out of
+  // alignment with the fixed spot we calibrated it for.
+  const [compositionText, setCompositionText] = useState('')
 
   // Recompute canvas CSS size when container or stream dimensions change
   useEffect(() => {
@@ -254,36 +258,45 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             makes the window read as shifted right; nudging the anchor left
             by half a "typical" candidate-window width (~240px) approximates
             a centered look instead.
-            Invisible (1x1, opacity 0) except while actively composing: while
-            typing pinyin the raw keystrokes would otherwise be completely
-            invisible (only the candidate list shows), so a typo is invisible
-            until the wrong character actually lands remotely — showing this
-            box during composition lets you see and backspace it like any
-            normal text field. */}
+            Always 1x1/invisible — kept fixed on purpose. Resizing or
+            restyling *this* element to show the typed pinyin moves the exact
+            box the OS measures for candidate-window placement, which threw
+            the candidate window out of alignment with the spot calibrated
+            above. The live composition text is echoed in a separate,
+            display-only overlay right below instead, which doesn't affect
+            the textarea's geometry at all. */}
         <textarea
           ref={imeRef}
           tabIndex={-1}
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
-          onCompositionStart={() => setComposing(true)}
-          onCompositionEnd={() => setComposing(false)}
+          onCompositionStart={() => setCompositionText('')}
+          onCompositionUpdate={(e) => setCompositionText(e.data)}
+          onCompositionEnd={() => setCompositionText('')}
           style={{
             position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
-            width: composing ? 240 : 1,
-            height: composing ? 28 : 1,
-            padding: composing ? '4px 8px' : 0,
-            border: composing ? '1px solid #0d9488' : 'none',
-            borderRadius: composing ? 4 : 0,
-            background: composing ? 'white' : 'transparent',
-            color: composing ? '#111' : 'inherit',
-            fontSize: composing ? 15 : undefined,
-            opacity: composing ? 1 : 0,
-            pointerEvents: 'none', resize: 'none',
-            overflow: composing ? 'visible' : 'hidden',
-            zIndex: composing ? 10 : -1,
+            width: 1, height: 1, padding: 0, border: 'none',
+            opacity: 0, pointerEvents: 'none', resize: 'none',
+            overflow: 'hidden', zIndex: -1,
           }}
         />
+        {/* Read-only echo of the composition text above — purely cosmetic,
+            doesn't touch the textarea's own box so it can't disturb the
+            candidate window's position. Sized to fit its content instead of
+            a fixed width so short or long compositions both look right. */}
+        {compositionText && (
+          <div
+            style={{
+              position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
+              padding: '4px 8px', border: '1px solid #0d9488', borderRadius: 4,
+              background: 'white', color: '#111', fontSize: 15,
+              whiteSpace: 'pre', pointerEvents: 'none', zIndex: 10,
+            }}
+          >
+            {compositionText}
+          </div>
+        )}
       </div>
     </div>
   )

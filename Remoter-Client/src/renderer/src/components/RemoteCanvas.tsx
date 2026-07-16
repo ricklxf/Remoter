@@ -300,8 +300,9 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         {compositionText && (
           <div
             style={{
-              position: 'absolute', left: 'calc(50% - 120px)', bottom: 40,
-              padding: '4px 8px', border: '1px solid #0d9488', borderRadius: 4,
+              position: 'absolute', left: 'calc(50% - 120px)', bottom: 24,
+              padding: '4px 8px', border: '2px solid #0d9488', borderRadius: 4,
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
               background: 'white', color: '#111', fontSize: 15,
               whiteSpace: 'pre', pointerEvents: 'none', zIndex: 10,
             }}

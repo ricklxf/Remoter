@@ -283,18 +283,30 @@ export class InputHandler {
 
   // MARK: - Keyboard
 
-  // Plain, unmodified letter/digit keys are never forwarded via raw keycode +
-  // preventDefault — see onImeInput for why. Digits included because some
-  // IMEs intercept a digit typed right after a composition as a "reselect
-  // candidate" shortcut: preventDefault there stopped the IME from seeing
-  // it, but the IME still produced its own compositionend for it — so the
-  // digit landed twice (once from our raw forward, once from that stray
-  // composition). Everything else (punctuation, arrows, function keys,
-  // Enter/Backspace/Tab, and any key held with Ctrl/Alt/Meta) still goes
-  // through the direct keycode path.
+  // Punctuation/symbol keys that produce a literal character — same
+  // treatment as letters/digits below, for the same reason: any of them can
+  // end up intercepted by an IME (candidate reselection, bracket-based
+  // input methods, etc.), and guessing wrong either drops the character or
+  // duplicates it (see the comment on isPlainTextKey).
+  private static readonly PLAIN_SYMBOL_CODES = new Set([
+    'Space', 'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash',
+    'Semicolon', 'Quote', 'Comma', 'Period', 'Slash', 'Backquote',
+    'NumpadDecimal', 'NumpadAdd', 'NumpadSubtract', 'NumpadMultiply', 'NumpadDivide', 'NumpadEqual',
+  ])
+
+  // Plain, unmodified keys that produce a literal character are never
+  // forwarded via raw keycode + preventDefault — see onImeInput for why.
+  // Covers every key that can actually put a character on screen (letters,
+  // digits, numpad digits/operators, punctuation, space); confirmed
+  // necessary for more than just letters — digits and brackets have each
+  // shown the same "IME intercepts it right after a composition, so
+  // preventDefault + raw-forward produces a duplicate or a drop" failure.
+  // Everything else (arrows, function keys, Enter/Backspace/Tab, and any
+  // key held with Ctrl/Alt/Meta) still goes through the direct keycode path.
   private static isPlainTextKey(ke: KeyboardEvent): boolean {
     if (ke.ctrlKey || ke.altKey || ke.metaKey) return false
-    return /^Key[A-Z]$/.test(ke.code) || /^Digit[0-9]$/.test(ke.code)
+    if (/^Key[A-Z]$/.test(ke.code) || /^Digit[0-9]$/.test(ke.code) || /^Numpad[0-9]$/.test(ke.code)) return true
+    return InputHandler.PLAIN_SYMBOL_CODES.has(ke.code)
   }
 
   private onKeyDown = (e: Event): void => {

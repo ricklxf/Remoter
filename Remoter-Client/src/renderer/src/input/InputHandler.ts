@@ -290,8 +290,20 @@ export class InputHandler {
     // keystrokes for a while after the IME was last used (confirmed via
     // logging: isComposing false, keyCode 229, on a plain digit key with no
     // candidate list showing), which silently dropped real keystrokes.
-    // isComposing alone is accurate on all current browsers.
-    if (ke.isComposing) return
+    //
+    // But isComposing alone isn't enough either: the very *first* keydown of
+    // a composition (the one that actually triggers it) fires with
+    // isComposing still false — the browser only flips it to true starting
+    // from the second keystroke of that same composition. Without also
+    // checking this, that first key was forwarded as a literal keystroke,
+    // landing remotely *in addition to* the properly-composed character —
+    // confirmed pattern: every Chinese character came out as its first
+    // pinyin letter (typed literally) immediately followed by the character
+    // itself. `key === 'Process'` is the spec-defined signal for exactly
+    // this ambiguous first event (browser knows an IME is handling it but
+    // doesn't know the resulting character yet) and isn't prone to the
+    // sticky-residual problem keyCode 229 had.
+    if (ke.isComposing || ke.key === 'Process') return
     ke.preventDefault()
 
     if (ke.code === 'CapsLock') {
@@ -323,7 +335,7 @@ export class InputHandler {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
     if (ke.code === 'CapsLock') return  // handled in keydown
-    if (ke.isComposing) return   // see onKeyDown for why not keyCode === 229 too
+    if (ke.isComposing || ke.key === 'Process') return   // see onKeyDown
     // Send keyup only if we previously sent keydown for this key.
     // This ensures keyup always pairs with keydown regardless of hover state,
     // preventing stuck keys when the mouse drifts out of the canvas.

@@ -345,10 +345,15 @@ function ControlMenu({ conn, audioOn, onToggleAudio, inputLocked, onToggleInputL
             <Toggle checked={clipSync} onToggle={toggleClip} />
           </div>
 
-          {/* Input enabled toggle — this client's own input, view-only mode */}
-          <div style={s.ctrlItem}>
+          {/* This client's own input, view-only mode — previously labeled
+              "禁用被控端键鼠" ("disable target's keyboard/mouse"), which reads
+              as if it affects the target machine. It doesn't: it only stops
+              *this* client from sending input at all, the target's own
+              physical devices are untouched either way. Renamed to make the
+              subject (this end, not the target) unambiguous. */}
+          <div style={s.ctrlItem} title="仅影响这个控制端：开启后你在这里的键鼠操作不会发送给被控端">
             <span style={s.ctrlItemIcon}>🖱</span>
-            <span style={{ flex: 1 }}>禁用被控端键鼠</span>
+            <span style={{ flex: 1 }}>仅观看(本端不操作)</span>
             <Toggle checked={!inputEnabled} onToggle={toggleInput} />
           </div>
 

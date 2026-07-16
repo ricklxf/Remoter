@@ -14,6 +14,7 @@ struct AgentStatus {
     var webEnabled: Bool = false
     var port: UInt16 = 7788
     var localHostname: String = ""  // mDNS .local 主机名，固定不随 IP 变化
+    var inputLocked: Bool = false
 }
 
 // MARK: - MenuBarController
@@ -112,6 +113,21 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             attributes: [.foregroundColor: isConnected ? NSColor.systemGreen : NSColor.secondaryLabelColor]
         )
         menu.addItem(stateItem)
+
+        // ── 键鼠锁定：显式解锁入口 ─────────────────────────────
+        // Control+Option+Command+Esc also unlocks, but that combo isn't
+        // discoverable from the menu bar UI alone — this is the "I forgot
+        // the shortcut" / "just point and click" fallback. Only shown while
+        // actually locked so it doesn't clutter the normal menu.
+        if status.inputLocked {
+            let unlockItem = NSMenuItem(title: "🔓 解除键鼠锁定", action: #selector(unlockInput), keyEquivalent: "")
+            unlockItem.target = self
+            unlockItem.attributedTitle = NSAttributedString(
+                string: "🔓 解除键鼠锁定",
+                attributes: [.foregroundColor: NSColor.systemRed]
+            )
+            menu.addItem(unlockItem)
+        }
 
         menu.addItem(.separator())
 
@@ -288,6 +304,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Actions
+
+    // InputLocker.onLockChanged (wired in main.swift) broadcasts the change
+    // to connected clients and calls notifyStatus() itself — this just needs
+    // to flip the lock; the menu item disappearing on the next refresh() is
+    // handled by that same callback, not by anything here.
+    @objc private func unlockInput() {
+        InputLocker.shared.setLocked(false)
+    }
 
     @objc private func copyMenuValue(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? String else { return }

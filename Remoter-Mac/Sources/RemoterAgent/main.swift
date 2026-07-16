@@ -87,6 +87,10 @@ final class RemoterAgent {
             let snapshot = Array(self.sessions.values)
             self.sessionsLock.unlock()
             snapshot.forEach { $0.notifyInputLockChanged(locked: locked) }
+            // Also refresh the menu bar immediately (not just on the next
+            // connect/disconnect) so its explicit unlock item shows up right
+            // when a client turns the lock on, not with a delay.
+            self.notifyStatus()
         }
 
         wsServer.webDir = webDir
@@ -209,7 +213,8 @@ final class RemoterAgent {
             connectedClients: sessionCount,
             webEnabled: webDir != nil,
             port: config.port,
-            localHostname: getLocalHostname()
+            localHostname: getLocalHostname(),
+            inputLocked: InputLocker.shared.isLocked
         )
         DispatchQueue.main.async { [weak self] in
             self?.onStatusUpdate?(status)

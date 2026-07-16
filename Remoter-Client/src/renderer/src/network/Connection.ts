@@ -900,27 +900,37 @@ export class Connection {
     if (this.clipTimer) return
     this.clipRead().then(t => { this.lastClipText = t }).catch(() => {})
     this.clipReadImage().then(img => { if (img) this.lastClipImgLen = img.length }).catch(() => {})
-
-    this.clipTimer = setInterval(async () => {
-      try {
-        const text = await this.clipRead()
-        if (text && text !== this.lastClipText) {
-          this.lastClipText = text
-          this.sendJson({ type: 'clipboard_set', text })
-        }
-      } catch { /* ignore */ }
-      try {
-        const img = await this.clipReadImage()
-        if (img && img.length !== this.lastClipImgLen) {
-          this.lastClipImgLen = img.length
-          this.sendJson({ type: 'clipboard_set_image', data: img })
-        }
-      } catch { /* ignore */ }
-    }, 1000)
+    this.clipTimer = setInterval(() => { this.checkClipboardOnce() }, 1000)
   }
 
   private stopClipboardSync(): void {
     if (this.clipTimer) { clearInterval(this.clipTimer); this.clipTimer = null }
+  }
+
+  private async checkClipboardOnce(): Promise<void> {
+    try {
+      const text = await this.clipRead()
+      if (text && text !== this.lastClipText) {
+        this.lastClipText = text
+        this.sendJson({ type: 'clipboard_set', text })
+      }
+    } catch { /* ignore */ }
+    try {
+      const img = await this.clipReadImage()
+      if (img && img.length !== this.lastClipImgLen) {
+        this.lastClipImgLen = img.length
+        this.sendJson({ type: 'clipboard_set_image', data: img })
+      }
+    } catch { /* ignore */ }
+  }
+
+  /** Forces an out-of-cycle clipboard check instead of waiting for the next
+   * 1s poll tick — called right as a paste shortcut (Cmd+V / Ctrl+V) is
+   * detected, so a copy-then-immediately-paste within that same second
+   * doesn't send the remote a still-stale clipboard. Fire-and-forget: the
+   * paste keystroke itself is sent independently and isn't delayed by this. */
+  syncClipboardNow(): void {
+    void this.checkClipboardOnce()
   }
 
   private emit(e: ConnEvent): void {

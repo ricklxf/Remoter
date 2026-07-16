@@ -264,6 +264,12 @@ final class Session {
             authenticated = true
             ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
             notifyUser(connected: true)
+            // Default-on: lock the target's physical keyboard/mouse the
+            // moment any client authenticates, rather than requiring a
+            // manual toggle every session. Still a no-op if another session
+            // already locked it, and the client can toggle it back off at
+            // any point during the session same as before.
+            InputLocker.shared.setLocked(true)
             sendJsonRaw(["type": "auth_ok", "token": token, "username": "__pin__"])
             Task { await self.beginCapture() }
             return
@@ -279,6 +285,7 @@ final class Session {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
+                InputLocker.shared.setLocked(true)
                 sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
             } else {
@@ -296,6 +303,7 @@ final class Session {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
+                InputLocker.shared.setLocked(true)
                 sendJsonRaw(["type": "auth_ok"])
                 NSLog("[Session] token auth as %@", username)
                 Task { await self.beginCapture() }

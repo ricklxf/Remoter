@@ -301,7 +301,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           <div
             style={{
               position: 'absolute', left: 'calc(50% - 120px)', bottom: 4,
-              padding: '4px 8px', border: '2px solid #0d9488', borderRadius: 4,
+              padding: '4px 8px', border: '2px solid #000', borderRadius: 4,
               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
               background: 'white', color: '#111', fontSize: 15,
               whiteSpace: 'pre', pointerEvents: 'none', zIndex: 10,

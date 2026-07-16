@@ -129,7 +129,6 @@ export class InputHandler {
     add(document, 'mousedown',  this.onDocumentMouseDown)
     add(window,   'blur',       this.onWindowBlur)
     if (this.imeEl) add(this.imeEl, 'compositionend', this.onCompositionEnd)
-    if (this.imeEl) add(this.imeEl, 'compositionstart', this.onCompositionStart)  // TEMP DIAGNOSTIC
   }
 
   private removeListeners(): void {
@@ -265,30 +264,20 @@ export class InputHandler {
 
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
+    if (!this.hovering && !this.locked && !this.captured) return
     const ke = e as KeyboardEvent
-    // TEMP DIAGNOSTIC — tracking down a report of digit keys sometimes
-    // silently dropping or turning into cursor movement right after Chinese
-    // IME composition ends, with no candidate list showing at the time.
-    // Remove once root-caused.
-    console.log('[InputDiag] keydown', {
-      code: ke.code, key: ke.key, keyCode: ke.keyCode, isComposing: ke.isComposing,
-      hovering: this.hovering, locked: this.locked, captured: this.captured,
-      activeElement: document.activeElement?.tagName,
-    })
-    if (!this.hovering && !this.locked && !this.captured) {
-      console.log('[InputDiag] dropped: not hovering/locked/captured')
-      return
-    }
     // Never intercept these — let the browser handle its own fullscreen toggle/exit/devtools.
     if (ke.code === 'F11' || ke.code === 'Escape' || ke.code === 'F12') return
-    // The local IME is composing (keyCode 229 is the legacy signal some
-    // browsers/IMEs still use) — hands off entirely: no preventDefault (the
+    // The local IME is composing — hand off entirely: no preventDefault (the
     // IME needs the event) and no raw-key forwarding (the composed text
     // arrives via compositionend instead, see onCompositionEnd).
-    if (ke.isComposing || ke.keyCode === 229) {
-      console.log('[InputDiag] dropped: isComposing/229')
-      return
-    }
+    // Deliberately NOT also checking `keyCode === 229`: that legacy signal
+    // is unreliable — some browsers report it on genuine, non-composing
+    // keystrokes for a while after the IME was last used (confirmed via
+    // logging: isComposing false, keyCode 229, on a plain digit key with no
+    // candidate list showing), which silently dropped real keystrokes.
+    // isComposing alone is accurate on all current browsers.
+    if (ke.isComposing) return
     ke.preventDefault()
 
     if (ke.code === 'CapsLock') {
@@ -302,21 +291,13 @@ export class InputHandler {
     }
 
     const km = getKeymap()
-    const mappedCode = mapKeyCode(ke.code, km)
-    const mods = mapModifiers(collectModifiers(ke), km)
-    console.log('[InputDiag] sending keydown', { mappedCode, mods })
-    this.conn.sendKey(mappedCode, true, mods)
+    this.conn.sendKey(mapKeyCode(ke.code, km), true, mapModifiers(collectModifiers(ke), km))
     this.pressedKeys.add(ke.code)
-  }
-
-  private onCompositionStart = (): void => {
-    console.log('[InputDiag] compositionstart')
   }
 
   private onCompositionEnd = (e: Event): void => {
     if (!this.enabled) return
     const ce = e as CompositionEvent
-    console.log('[InputDiag] compositionend', { data: ce.data })
     if (ce.data) this.conn.sendTextInput(ce.data)
     // The committed text also landed in the hidden textarea — clear it so it
     // never accumulates (it's invisible, but selection/arrow keys would start
@@ -327,19 +308,12 @@ export class InputHandler {
   private onKeyUp = (e: Event): void => {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
-    console.log('[InputDiag] keyup', {
-      code: ke.code, isComposing: ke.isComposing,
-      inPressedKeys: this.pressedKeys.has(ke.code),
-    })
     if (ke.code === 'CapsLock') return  // handled in keydown
-    if (ke.isComposing || ke.keyCode === 229) return
+    if (ke.isComposing) return   // see onKeyDown for why not keyCode === 229 too
     // Send keyup only if we previously sent keydown for this key.
     // This ensures keyup always pairs with keydown regardless of hover state,
     // preventing stuck keys when the mouse drifts out of the canvas.
-    if (!this.pressedKeys.has(ke.code)) {
-      console.log('[InputDiag] keyup dropped: not in pressedKeys')
-      return
-    }
+    if (!this.pressedKeys.has(ke.code)) return
     ke.preventDefault()
     this.pressedKeys.delete(ke.code)
     const km = getKeymap()

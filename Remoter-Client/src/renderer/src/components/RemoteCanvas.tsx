@@ -4,6 +4,7 @@ import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
 import { StreamInfo } from '../types'
+import { useImeOffset, setImeOffset } from '../utils/imeOffset'
 
 interface Props {
   conn: Connection
@@ -36,6 +37,35 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   // anchor along with it, which was throwing the candidate window out of
   // alignment with the fixed spot we calibrated it for.
   const [compositionText, setCompositionText] = useState('')
+  const imeOffset = useImeOffset()
+
+  // Drag-to-calibrate: the OS candidate window's real size/position varies
+  // with the remote machine's resolution/DPI scaling, so no single hardcoded
+  // anchor looks right everywhere (see imeOffset.ts). Dragging the echo box
+  // directly (no separate "calibration mode") moves both it and the anchor
+  // the OS positions its candidate window against, live, and persists on
+  // release.
+  function onEchoMouseDown(e: React.MouseEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    const start = { x: e.clientX, y: e.clientY, origX: imeOffset.x, origY: imeOffset.y }
+    const onMove = (ev: MouseEvent): void => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      // bottom grows upward on screen, clientY grows downward — invert.
+      setImeOffset({ x: start.origX + (ev.clientX - start.x), y: start.origY - (ev.clientY - start.y) })
+    }
+    const onUp = (ev: MouseEvent): void => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      window.removeEventListener('mousemove', onMove, true)
+      window.removeEventListener('mouseup', onUp, true)
+    }
+    // Capture phase, ahead of InputHandler's bubble-phase listeners on the
+    // frame div — otherwise dragging here would also move the remote cursor.
+    window.addEventListener('mousemove', onMove, true)
+    window.addEventListener('mouseup', onUp, true)
+  }
 
   // Recompute canvas CSS size when container or stream dimensions change
   useEffect(() => {
@@ -254,11 +284,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             centering off relative to what the user is actually looking at.
             The OS candidate window anchors to this element's caret and grows
             rightward from it — the browser never exposes the popup's actual
-            width, so true centering isn't possible. Anchoring dead-center
-            makes the window read as shifted right; nudging the anchor left
-            by half a "typical" candidate-window width (~240px) approximates
-            a centered look instead.
-            Always 1x1/invisible — kept fixed on purpose. Resizing or
+            width or the OS's own scaling, so there's no way to compute a
+            correct anchor; it's user-calibrated instead by dragging the echo
+            box below (see imeOffset.ts and onEchoMouseDown).
+            Always invisible — kept fixed in size on purpose. Resizing or
             restyling *this* element to show the typed pinyin moves the exact
             box the OS measures for candidate-window placement, which threw
             the candidate window out of alignment with the spot calibrated
@@ -287,24 +316,29 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             // regardless of wrapping) but wide enough that the whole
             // composition always fits on a single internal line, plus
             // `wrap="off"` as a belt-and-suspenders guard against wrapping.
-            position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
+            position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: imeOffset.y,
             width: 400, height: 20, padding: 0, border: 'none',
             opacity: 0, pointerEvents: 'none', resize: 'none',
             overflow: 'hidden', zIndex: -1, whiteSpace: 'pre',
           }}
         />
-        {/* Read-only echo of the composition text above — purely cosmetic,
-            doesn't touch the textarea's own box so it can't disturb the
-            candidate window's position. Sized to fit its content instead of
-            a fixed width so short or long compositions both look right. */}
+        {/* Read-only echo of the composition text above — doesn't touch the
+            textarea's own box so it can't disturb the candidate window's
+            position. Sized to fit its content instead of a fixed width so
+            short or long compositions both look right. Draggable: this is
+            also the handle for calibrating imeOffset (see onEchoMouseDown) —
+            it and the invisible textarea above share the same offset, just
+            4px apart, so dragging this visibly moves the real candidate
+            window's anchor too. */}
         {compositionText && (
           <div
+            onMouseDown={onEchoMouseDown}
             style={{
-              position: 'absolute', left: 'calc(50% - 120px)', bottom: 4,
+              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: imeOffset.y + 4,
               padding: '4px 8px', border: '2px solid #000', borderRadius: 4,
               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
               background: 'white', color: '#111', fontSize: 15,
-              whiteSpace: 'pre', pointerEvents: 'none', zIndex: 10,
+              whiteSpace: 'pre', pointerEvents: 'auto', cursor: 'move', zIndex: 10,
             }}
           >
             {compositionText}

@@ -37,6 +37,10 @@ final class InputController {
     }
 
     private func timedPost(_ e: CGEvent, tap: CGEventTapLocation) {
+        // Tag every event we inject so InputLocker's tap can tell "Remoter
+        // injected this" apart from "real hardware produced this" and let
+        // ours through even while local physical input is locked out.
+        e.setIntegerValueField(.eventSourceUserData, value: InputLocker.injectedTag)
         let t0 = CFAbsoluteTimeGetCurrent()
         e.post(tap: tap)
         let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000

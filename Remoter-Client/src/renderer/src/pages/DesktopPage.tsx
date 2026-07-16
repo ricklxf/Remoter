@@ -34,6 +34,12 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // don't silently pick up whatever's playing on the remote machine).
   const [audioOn, setAudioOn] = useState(false)
   const audioPlayerRef = useRef<AudioPlayer | null>(null)
+  // Machine-wide lock on the target's own physical keyboard/mouse — off by
+  // default, and only ever flipped by the input_lock_changed broadcast (see
+  // conn.onEvent below), never optimistically here, since the agent is the
+  // single source of truth (it can also change on its own via the local
+  // escape hatch, or from another connected client's toggle).
+  const [inputLocked, setInputLocked] = useState(false)
   // Which remote display is being captured. streamInfo carries the list and
   // the server's current pick on every (re)start, so this stays in sync
   // through pipeline rebuilds without extra messages.
@@ -88,12 +94,23 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
       if (e.type === 'audio_frame') {
         audioPlayerRef.current?.push(e.data)
       }
+      if (e.type === 'input_lock_changed') {
+        setInputLocked(e.locked)
+      }
     }
     return () => { conn.onEvent = prev }
   }, [conn])
 
   // Tear the audio player down with the page (tab close / disconnect).
   useEffect(() => () => { audioPlayerRef.current?.stop(); audioPlayerRef.current = null }, [])
+
+  // Just requests the change — inputLocked itself only ever updates from the
+  // input_lock_changed broadcast above, so it can't drift from what the
+  // agent actually did (e.g. if the toggle races with the local escape
+  // hatch on the other end).
+  function handleToggleInputLock() {
+    conn.sendInputLock(!inputLocked)
+  }
 
   function handleToggleAudio() {
     const next = !audioOn
@@ -181,6 +198,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             onCodecChange={setCodec}
             audioOn={audioOn}
             onToggleAudio={handleToggleAudio}
+            inputLocked={inputLocked}
+            onToggleInputLock={handleToggleInputLock}
             displays={streamInfo.displays ?? []}
             activeDisplay={activeDisplay}
             onDisplayChange={setActiveDisplay}

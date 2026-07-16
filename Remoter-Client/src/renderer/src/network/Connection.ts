@@ -22,6 +22,7 @@ export type ConnEvent =
   | { type: 'audio_frame'; data: ArrayBuffer }
   | { type: 'cursor_shape'; pngBase64: string; hotX: number; hotY: number }
   | { type: 'media_stream'; stream: MediaStream }
+  | { type: 'input_lock_changed'; locked: boolean }
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
@@ -251,6 +252,12 @@ export class Connection {
   }
   sendSetAudio(enabled: boolean): void {
     this.sendJson({ type: 'set_audio', enabled })
+  }
+  /** Locks/unlocks the target's own physical keyboard+mouse (machine-wide,
+   * not per-session) — see input_lock_changed for how the resulting state
+   * comes back. */
+  sendInputLock(locked: boolean): void {
+    this.sendJson({ type: 'set_input_lock', locked })
   }
   /** IME-composed text (e.g. Chinese) — injected remotely as a unicode string, not raw keys. */
   sendTextInput(text: string): void {
@@ -627,6 +634,9 @@ export class Connection {
             saveMachineInfo(this.params.directUrl, { computerName, modelId })
           }
         }
+        if (typeof msg.inputLocked === 'boolean') {
+          this.emit({ type: 'input_lock_changed', locked: msg.inputLocked })
+        }
         console.log('[Conn] hello, os=', this.serverOs, 'e2e-avail=', !!(typeof crypto !== 'undefined' && crypto.subtle))
         // crypto.subtle requires a secure context (HTTPS / localhost).
         // On plain HTTP, skip E2E and stay in plaintext mode.
@@ -711,6 +721,15 @@ export class Connection {
         const fps = msg.fps as number
         const bitrate = msg.bitrate as number
         this.emit({ type: 'quality_active', fps, bitrate })
+        break
+      }
+
+      // Broadcast whenever the machine-wide input lock changes — from this
+      // client's own toggle, another connected client's toggle, or the
+      // local escape hatch on the agent — so the toggle here always
+      // reflects the real, single, shared lock state.
+      case 'input_lock_changed': {
+        this.emit({ type: 'input_lock_changed', locked: msg.locked as boolean })
         break
       }
 

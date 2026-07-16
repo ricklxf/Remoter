@@ -21,6 +21,8 @@ interface Props {
   onCodecChange: (codec: 'h264' | 'h265') => void
   audioOn: boolean
   onToggleAudio: () => void
+  inputLocked: boolean
+  onToggleInputLock: () => void
   displays: DisplayInfo[]
   activeDisplay: number
   onDisplayChange: (id: number) => void
@@ -59,6 +61,7 @@ export function Toolbar({
   resolution, onResolutionChange,
   codec, onCodecChange,
   audioOn, onToggleAudio,
+  inputLocked, onToggleInputLock,
   displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
   onMouseEnter, onMouseLeave,
@@ -102,7 +105,11 @@ export function Toolbar({
         }}
       />
 
-      <ControlMenu conn={conn} audioOn={audioOn} onToggleAudio={onToggleAudio} />
+      <ControlMenu
+        conn={conn}
+        audioOn={audioOn} onToggleAudio={onToggleAudio}
+        inputLocked={inputLocked} onToggleInputLock={onToggleInputLock}
+      />
       <ShortcutMenu conn={conn} />
       <KeymapMenu />
 
@@ -289,7 +296,13 @@ function CodecSelect({ value, onChange }: { value: 'h264' | 'h265'; onChange: (c
 
 // ─── Control menu ─────────────────────────────────────────────────────
 
-function ControlMenu({ conn, audioOn, onToggleAudio }: { conn: Connection; audioOn: boolean; onToggleAudio: () => void }) {
+function ControlMenu({ conn, audioOn, onToggleAudio, inputLocked, onToggleInputLock }: {
+  conn: Connection
+  audioOn: boolean
+  onToggleAudio: () => void
+  inputLocked: boolean
+  onToggleInputLock: () => void
+}) {
   const [open, setOpen] = useState(false)
   const [clipSync, setClipSync]     = useState(true)
   const [inputEnabled, setInput]    = useState(true)
@@ -332,11 +345,24 @@ function ControlMenu({ conn, audioOn, onToggleAudio }: { conn: Connection; audio
             <Toggle checked={clipSync} onToggle={toggleClip} />
           </div>
 
-          {/* Input enabled toggle */}
+          {/* Input enabled toggle — this client's own input, view-only mode */}
           <div style={s.ctrlItem}>
             <span style={s.ctrlItemIcon}>🖱</span>
             <span style={{ flex: 1 }}>禁用被控端键鼠</span>
             <Toggle checked={!inputEnabled} onToggle={toggleInput} />
+          </div>
+
+          {/* Locks out the target's own physical keyboard/mouse (Mac agent
+              only for now) — the opposite direction from the toggle above,
+              which only affects what *this* client is allowed to send.
+              Machine-wide, not per-session: whoever's physically there loses
+              all local keyboard/mouse until unlocked, with Control+Option+
+              Command+Escape as their local way out if no controller is
+              reachable to release it remotely. */}
+          <div style={s.ctrlItem} title="锁定后被控端本地物理键鼠完全失效，被控端可按 Control+Option+Command+Esc 强制解锁">
+            <span style={s.ctrlItemIcon}>🔐</span>
+            <span style={{ flex: 1 }}>锁定被控端物理键鼠</span>
+            <Toggle checked={inputLocked} onToggle={onToggleInputLock} />
           </div>
 
           {/* Remote audio forwarding (Mac agent only for now) */}

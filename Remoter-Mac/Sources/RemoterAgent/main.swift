@@ -76,6 +76,19 @@ final class RemoterAgent {
             self?.removeSession(for: conn)
         }
 
+        // Broadcast to every connected session whenever the input lock state
+        // changes, whether triggered by a client's own request or by the
+        // local escape hatch (Control+Option+Command+Escape) — every open
+        // client's toggle needs to reflect the same, single, machine-wide
+        // lock state regardless of who changed it.
+        InputLocker.shared.onLockChanged = { [weak self] locked in
+            guard let self else { return }
+            self.sessionsLock.lock()
+            let snapshot = Array(self.sessions.values)
+            self.sessionsLock.unlock()
+            snapshot.forEach { $0.notifyInputLockChanged(locked: locked) }
+        }
+
         wsServer.webDir = webDir
         try wsServer.start(port: config.port)
 
@@ -130,9 +143,15 @@ final class RemoterAgent {
         sessionsLock.lock()
         let entry = sessions.first(where: { $0.value.connection === conn })
         if let entry { sessions.removeValue(forKey: entry.key) }
+        let noSessionsLeft = sessions.isEmpty
         sessionsLock.unlock()
         guard let entry else { return }
         entry.value.close()
+        // Safety net: if the last connected controller disconnects while the
+        // input lock is on, nobody remote is left who could send an unlock —
+        // the only way out would be the local escape hatch. Release it
+        // automatically instead of trusting that to always happen.
+        if noSessionsLeft { InputLocker.shared.setLocked(false) }
         notifyStatus()
     }
 

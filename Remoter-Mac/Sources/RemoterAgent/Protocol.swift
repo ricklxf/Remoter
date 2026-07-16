@@ -43,6 +43,7 @@ enum ClientMessage {
     case restart
     case authCredentials(username: String, password: String)
     case authToken(token: String)
+    case setInputLock(locked: Bool)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -151,6 +152,8 @@ enum ClientMessage {
                 password: json["password"] as? String ?? "")
         case "auth_token":
             return .authToken(token: json["token"] as? String ?? "")
+        case "set_input_lock":
+            return .setInputLock(locked: json["locked"] as? Bool ?? false)
         default:
             return .unknown
         }

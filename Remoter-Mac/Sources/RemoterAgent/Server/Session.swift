@@ -135,7 +135,8 @@ final class Session {
                 "type": "hello", "version": "1.0", "os": "macOS",
                 "pubkey": crypto.publicKeyBase64,
                 "computerName": Self.computerName(),
-                "modelId": Self.modelId()
+                "modelId": Self.modelId(),
+                "inputLocked": InputLocker.shared.isLocked
             ]
             // TURN info lets the client's WebRTC offer include a relay candidate —
             // without it, P2P only works when STUN/direct already succeeds (LAN,
@@ -468,6 +469,14 @@ final class Session {
         case .setInputEnabled(let enabled):
             inputEnabled = enabled
 
+        case .setInputLock(let locked):
+            // Broadcasting the resulting state to every session (including
+            // this one) happens via InputLocker.onLockChanged, wired once in
+            // main.swift — not here, so it stays correct regardless of
+            // whether the change came from a client request or the local
+            // escape hatch.
+            InputLocker.shared.setLocked(locked)
+
         case .lockScreen:
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession")
@@ -648,6 +657,14 @@ final class Session {
             p.arguments = ["-e", "display notification \"\(safe)\" with title \"Remoter\""]
             try? p.run()
         }
+    }
+
+    /// Broadcast target for InputLocker.onLockChanged (wired in main.swift) —
+    /// lets every connected client's lock toggle stay accurate regardless of
+    /// whether the state changed via a client request or the local escape
+    /// hatch (Control+Option+Command+Escape).
+    func notifyInputLockChanged(locked: Bool) {
+        sendJson(["type": "input_lock_changed", "locked": locked])
     }
 
     // MARK: - 光标形状同步

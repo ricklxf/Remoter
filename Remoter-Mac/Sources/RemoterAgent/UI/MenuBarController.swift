@@ -20,7 +20,7 @@ struct AgentStatus {
 // MARK: - MenuBarController
 
 @MainActor
-final class MenuBarController: NSObject, NSApplicationDelegate {
+final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var status = AgentStatus(pin: "…", sessionId: nil, localIPs: [], connectedClients: 0)
 
@@ -47,6 +47,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 btn.title = "R"
             }
             btn.toolTip = "Remoter"
+        }
+        // Lets InputLocker exempt clicks on this icon from the input-lock
+        // tap — otherwise the very click meant to open this menu (to reach
+        // the explicit unlock item) never reaches AppKit while locked.
+        InputLocker.shared.statusItemFrameProvider = { [weak self] in
+            self?.statusItem?.button?.window?.frame
         }
         refresh()
         // 依次申请权限：先屏幕录制，再辅助功能，避免同时弹两个框
@@ -101,6 +107,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
 
         let menu = NSMenu()
+        menu.delegate = self   // menuWillOpen/menuDidClose suspend InputLocker while this menu is tracking
 
         // ── 连接状态 ──────────────────────────────────────────
         let stateLabel = isConnected
@@ -301,6 +308,21 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let exePath = ProcessInfo.processInfo.arguments[0]
         _ = try? Process.run(URL(fileURLWithPath: exePath), arguments: [])
         NSApp.terminate(nil)
+    }
+
+    // MARK: - NSMenuDelegate
+
+    // While this menu is actually open and tracking clicks, suspend
+    // InputLocker's block entirely — its items (like the explicit unlock
+    // button) sit at screen positions outside the status icon's own frame,
+    // so the icon-only hit-test in InputLocker isn't enough on its own to
+    // let the user click *inside* the open menu.
+    func menuWillOpen(_ menu: NSMenu) {
+        InputLocker.shared.setSuspended(true)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        InputLocker.shared.setSuspended(false)
     }
 
     // MARK: - Actions

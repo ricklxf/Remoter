@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import AppKit
 
 /// System-wide keyboard/mouse blocker: while locked, real hardware input is
 /// swallowed before it reaches any app on this Mac, while Remoter's own
@@ -24,6 +25,23 @@ final class InputLocker {
     /// wires this to broadcast the new state to every connected session so
     /// each client's toggle stays in sync regardless of who changed it.
     var onLockChanged: ((Bool) -> Void)?
+
+    /// MenuBarController supplies its status item button's screen frame
+    /// (Cocoa coordinates — origin bottom-left) so clicks landing on our own
+    /// menu bar icon can pass through even while locked. Without this, the
+    /// click meant to *open* the unlock menu never reaches AppKit in the
+    /// first place — it's swallowed by this same tap before the menu ever
+    /// gets a chance to show, so there'd be no way to reach the explicit
+    /// "解除键鼠锁定" menu item with the mouse at all once locked.
+    var statusItemFrameProvider: (() -> CGRect?)?
+
+    /// Set by MenuBarController for as long as its own menu is open
+    /// (menuWillOpen/menuDidClose) — lets every subsequent click through
+    /// while the user is actually navigating our menu (their clicks land on
+    /// menu item rects elsewhere on screen, not just the icon itself, so the
+    /// hit-test above only gets them as far as opening it).
+    private var suspended = false
+    func setSuspended(_ v: Bool) { suspended = v }
 
     private init() {}
 
@@ -110,6 +128,22 @@ final class InputLocker {
             return Unmanaged.passUnretained(event)
         }
 
+        // Our own menu bar dropdown is open — let everything through so the
+        // user can actually navigate it and click "解除键鼠锁定".
+        if suspended {
+            return Unmanaged.passUnretained(event)
+        }
+
+        // Clicking directly on our own status bar icon always passes
+        // through — the one click that's allowed to actually reach AppKit
+        // and open the menu in the first place (see setSuspended above for
+        // what happens once it's open).
+        if type == .leftMouseDown || type == .leftMouseUp,
+           let frame = statusItemFrameProvider?(),
+           frame.contains(Self.cocoaPoint(from: event)) {
+            return Unmanaged.passUnretained(event)
+        }
+
         // Escape hatch: Control+Option+Command+Escape, physically pressed at
         // this Mac, always breaks the lock — the one way out that doesn't
         // depend on the remote session still being reachable.
@@ -127,5 +161,17 @@ final class InputLocker {
 
         // Everything else real-hardware-produced is swallowed while locked.
         return nil
+    }
+
+    /// CGEvent.location is in Quartz's global display space (origin at the
+    /// top-left of the primary screen, Y increasing downward). NSScreen /
+    /// NSWindow frames are in Cocoa's space (origin at the *bottom*-left,
+    /// Y increasing upward) — comparing the two directly without this
+    /// conversion silently mismatches every hit-test.
+    private static func cocoaPoint(from event: CGEvent) -> CGPoint {
+        let loc = event.location
+        let primaryHeight = NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
+            ?? NSScreen.main?.frame.height ?? 0
+        return CGPoint(x: loc.x, y: primaryHeight - loc.y)
     }
 }

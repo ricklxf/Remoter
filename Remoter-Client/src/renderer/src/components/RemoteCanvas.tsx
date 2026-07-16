@@ -27,6 +27,11 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   // (WS fallback). Driven by the track's mute/unmute events, which is how
   // the browser signals "RTP packets stopped/resumed arriving".
   const [mediaActive, setMediaActive] = useState(false)
+  // The IME staging textarea is invisible by default (see below) — but that
+  // also hides the raw composition text (e.g. pinyin) while typing, so a
+  // typo is invisible until the wrong character actually lands remotely.
+  // Show the box only while a composition is in progress.
+  const [composing, setComposing] = useState(false)
 
   // Recompute canvas CSS size when container or stream dimensions change
   useEffect(() => {
@@ -234,32 +239,49 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             objectFit: 'fill',   // the frame div already has the correct aspect ratio
           }}
         />
-        {/* Invisible IME staging area: holds keyboard focus while capturing
-            so the local input method can compose CJK text (composition only
-            works on editable elements — the canvas/video can't host it).
-            Final committed text is sent to the remote via compositionend;
-            see InputHandler. Nested inside the frame div (not a sibling of
-            it) so its position is anchored to the actual visible picture,
-            not to the outer window — a window that's bigger than the
-            picture (letterboxed, toolbars, etc.) would otherwise throw the
+        {/* IME staging area: holds keyboard focus while capturing so the
+            local input method can compose CJK text (composition only works
+            on editable elements — the canvas/video can't host it). Final
+            committed text is sent to the remote via compositionend; see
+            InputHandler. Nested inside the frame div (not a sibling of it)
+            so its position is anchored to the actual visible picture, not
+            to the outer window — a window that's bigger than the picture
+            (letterboxed, toolbars, etc.) would otherwise throw the
             centering off relative to what the user is actually looking at.
             The OS candidate window anchors to this element's caret and grows
             rightward from it — the browser never exposes the popup's actual
             width, so true centering isn't possible. Anchoring dead-center
             makes the window read as shifted right; nudging the anchor left
             by half a "typical" candidate-window width (~240px) approximates
-            a centered look instead. */}
+            a centered look instead.
+            Invisible (1x1, opacity 0) except while actively composing: while
+            typing pinyin the raw keystrokes would otherwise be completely
+            invisible (only the candidate list shows), so a typo is invisible
+            until the wrong character actually lands remotely — showing this
+            box during composition lets you see and backspace it like any
+            normal text field. */}
         <textarea
           ref={imeRef}
           tabIndex={-1}
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
           style={{
             position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
-            width: 1, height: 1, padding: 0, border: 'none',
-            opacity: 0, pointerEvents: 'none', resize: 'none',
-            overflow: 'hidden', zIndex: -1,
+            width: composing ? 240 : 1,
+            height: composing ? 28 : 1,
+            padding: composing ? '4px 8px' : 0,
+            border: composing ? '1px solid #0d9488' : 'none',
+            borderRadius: composing ? 4 : 0,
+            background: composing ? 'white' : 'transparent',
+            color: composing ? '#111' : 'inherit',
+            fontSize: composing ? 15 : undefined,
+            opacity: composing ? 1 : 0,
+            pointerEvents: 'none', resize: 'none',
+            overflow: composing ? 'visible' : 'hidden',
+            zIndex: composing ? 10 : -1,
           }}
         />
       </div>

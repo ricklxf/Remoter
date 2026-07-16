@@ -1,15 +1,20 @@
 import Foundation
 import Carbon.HIToolbox
 
-/// While the input lock (InputLocker) is on, forces this Mac's system input
+/// For as long as any client is connected, forces this Mac's system input
 /// source to plain English (ABC layout) and keeps re-asserting it — tools
 /// like KeyboardHolder switch the input source per frontmost app, which
-/// fights with whoever's remote-controlling this machine. Safe to force:
+/// silently changes what a given keystroke actually produces out from under
+/// Remoter. This is unrelated to InputLocker (which blocks a *local physical
+/// user* — not the concern here, since nobody's expected to be at the
+/// machine while it's being controlled): begin()/end() are driven by
+/// session lifetime (Session.swift's auth handlers, main.swift's
+/// removeSession), not by the input lock toggle. Safe to force regardless:
 /// Remoter's own text injection never depends on the target's current input
 /// source (ASCII keys are raw keycodes, CJK text is written directly via
-/// keyboardSetUnicodeString bypassing system IME entirely), so locking this
-/// to English costs nothing on Remoter's side. Restores whatever was active
-/// before locking once the lock is released.
+/// keyboardSetUnicodeString bypassing system IME entirely), so this costs
+/// nothing on Remoter's side. Restores whatever was active before the first
+/// session connected once the last one disconnects.
 final class InputSourceForcer {
     static let shared = InputSourceForcer()
 

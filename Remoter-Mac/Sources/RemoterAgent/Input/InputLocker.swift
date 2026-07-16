@@ -48,13 +48,13 @@ final class InputLocker {
     func setLocked(_ locked: Bool) {
         guard locked != isLocked else { return }
         isLocked = locked
-        if locked {
-            installTap()
-            InputSourceForcer.shared.begin()
-        } else {
-            removeTap()
-            InputSourceForcer.shared.end()
-        }
+        // English-input forcing (InputSourceForcer) is a *separate* concern
+        // tied to session lifetime, not to this lock — see Session.swift's
+        // auth handlers and main.swift's removeSession. Blocking real
+        // hardware input only matters when someone might physically be at
+        // the machine; forcing English matters whenever a session is
+        // controlling it at all, locked or not.
+        if locked { installTap() } else { removeTap() }
         ConnectionLogger.shared.logStep(sessionId: "input", step: "input_lock", detail: locked ? "on" : "off")
         onLockChanged?(locked)
     }

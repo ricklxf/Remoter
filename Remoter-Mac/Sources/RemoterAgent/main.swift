@@ -151,11 +151,17 @@ final class RemoterAgent {
         sessionsLock.unlock()
         guard let entry else { return }
         entry.value.close()
-        // Safety net: if the last connected controller disconnects while the
-        // input lock is on, nobody remote is left who could send an unlock —
-        // the only way out would be the local escape hatch. Release it
-        // automatically instead of trusting that to always happen.
-        if noSessionsLeft { InputLocker.shared.setLocked(false) }
+        if noSessionsLeft {
+            // Safety net: if the last connected controller disconnects while
+            // the input lock is on, nobody remote is left who could send an
+            // unlock — the only way out would be the local escape hatch.
+            // Release it automatically instead of trusting that to always
+            // happen.
+            InputLocker.shared.setLocked(false)
+            // Independent of the lock — restore whatever input source was
+            // active before this Mac started being controlled.
+            InputSourceForcer.shared.end()
+        }
         notifyStatus()
     }
 

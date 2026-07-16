@@ -264,12 +264,14 @@ final class Session {
             authenticated = true
             ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
             notifyUser(connected: true)
-            // Default-on: lock the target's physical keyboard/mouse the
-            // moment any client authenticates, rather than requiring a
-            // manual toggle every session. Still a no-op if another session
-            // already locked it, and the client can toggle it back off at
-            // any point during the session same as before.
-            InputLocker.shared.setLocked(true)
+            // Force English input source for as long as any session is
+            // connected — independent of the input-lock toggle below, which
+            // is a different concern (blocking a *local physical user*).
+            // This machine has nobody sitting at it; the actual problem is
+            // the target's own current IME silently altering what Remoter
+            // injects, not a person fighting for control. No-op if another
+            // session already started it.
+            InputSourceForcer.shared.begin()
             sendJsonRaw(["type": "auth_ok", "token": token, "username": "__pin__"])
             Task { await self.beginCapture() }
             return
@@ -285,7 +287,7 @@ final class Session {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
-                InputLocker.shared.setLocked(true)
+                InputSourceForcer.shared.begin()
                 sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
             } else {
@@ -303,7 +305,7 @@ final class Session {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
-                InputLocker.shared.setLocked(true)
+                InputSourceForcer.shared.begin()
                 sendJsonRaw(["type": "auth_ok"])
                 NSLog("[Session] token auth as %@", username)
                 Task { await self.beginCapture() }

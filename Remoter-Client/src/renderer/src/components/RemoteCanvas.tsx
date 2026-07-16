@@ -268,6 +268,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         <textarea
           ref={imeRef}
           tabIndex={-1}
+          wrap="off"
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
@@ -275,17 +276,21 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           onCompositionUpdate={(e) => setCompositionText(e.data)}
           onCompositionEnd={() => setCompositionText('')}
           style={{
-            // Moving this anchor away from the bottom edge didn't stop the
-            // candidate window from jumping — so the jump isn't caused by
-            // this element being too close to the edge. Reverted back down;
-            // the jump looks like it's the OS/IME's own placement behavior
-            // (likely reacting to the candidate list's changing size as you
-            // type more/fewer characters), which this element's position
-            // can't fully control.
+            // A 1px-*wide* box was the real bug, not the vertical anchor:
+            // a <textarea> line-wraps by default, so at 1px wide every
+            // character after the first forces a new internal line — a
+            // 10-character composition means the caret sits on "line 10".
+            // The OS almost certainly positions the candidate window off
+            // that caret's row, so the window's position kept climbing/
+            // jumping as the composition got longer. Keep the box tall
+            // enough to render (1px would collapse the caret vertically
+            // regardless of wrapping) but wide enough that the whole
+            // composition always fits on a single internal line, plus
+            // `wrap="off"` as a belt-and-suspenders guard against wrapping.
             position: 'absolute', left: 'calc(50% - 120px)', bottom: 0,
-            width: 1, height: 1, padding: 0, border: 'none',
+            width: 400, height: 20, padding: 0, border: 'none',
             opacity: 0, pointerEvents: 'none', resize: 'none',
-            overflow: 'hidden', zIndex: -1,
+            overflow: 'hidden', zIndex: -1, whiteSpace: 'pre',
           }}
         />
         {/* Read-only echo of the composition text above — purely cosmetic,

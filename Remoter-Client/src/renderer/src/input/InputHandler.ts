@@ -283,13 +283,18 @@ export class InputHandler {
 
   // MARK: - Keyboard
 
-  // Plain, unmodified letter keys are never forwarded via raw keycode +
-  // preventDefault — see onImeInput for why. Everything else (digits,
-  // punctuation, arrows, function keys, Enter/Backspace/Tab, and any key
-  // held with Ctrl/Alt/Meta) still goes through the direct keycode path.
-  private static isPlainLetterKey(ke: KeyboardEvent): boolean {
+  // Plain, unmodified letter/digit keys are never forwarded via raw keycode +
+  // preventDefault — see onImeInput for why. Digits included because some
+  // IMEs intercept a digit typed right after a composition as a "reselect
+  // candidate" shortcut: preventDefault there stopped the IME from seeing
+  // it, but the IME still produced its own compositionend for it — so the
+  // digit landed twice (once from our raw forward, once from that stray
+  // composition). Everything else (punctuation, arrows, function keys,
+  // Enter/Backspace/Tab, and any key held with Ctrl/Alt/Meta) still goes
+  // through the direct keycode path.
+  private static isPlainTextKey(ke: KeyboardEvent): boolean {
     if (ke.ctrlKey || ke.altKey || ke.metaKey) return false
-    return /^Key[A-Z]$/.test(ke.code)
+    return /^Key[A-Z]$/.test(ke.code) || /^Digit[0-9]$/.test(ke.code)
   }
 
   private onKeyDown = (e: Event): void => {
@@ -336,7 +341,7 @@ export class InputHandler {
     // same as before — and read back whatever text actually landed there
     // (onImeInput), whether that's plain typing or IME output. This makes
     // the ambiguity irrelevant: we no longer have to guess in advance.
-    if (InputHandler.isPlainLetterKey(ke)) return
+    if (InputHandler.isPlainTextKey(ke)) return
 
     ke.preventDefault()
     const km = getKeymap()
@@ -360,7 +365,7 @@ export class InputHandler {
   }
 
   // Catches plain-letter text that landed in the textarea via its default
-  // browser behavior (see isPlainLetterKey above) — covers both ordinary
+  // browser behavior (see isPlainTextKey above) — covers both ordinary
   // English typing (no IME involved at all) and the ambiguous first
   // keystroke of a composition that hasn't engaged the IME after all (e.g.
   // a single letter with no matching candidates). Composition-driven input
@@ -382,7 +387,7 @@ export class InputHandler {
     const ke = e as KeyboardEvent
     if (ke.code === 'CapsLock') return  // handled in keydown
     if (ke.isComposing) return
-    if (InputHandler.isPlainLetterKey(ke)) return   // see onKeyDown — no matching keydown was sent
+    if (InputHandler.isPlainTextKey(ke)) return   // see onKeyDown — no matching keydown was sent
     // Send keyup only if we previously sent keydown for this key.
     // This ensures keyup always pairs with keydown regardless of hover state,
     // preventing stuck keys when the mouse drifts out of the canvas.

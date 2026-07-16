@@ -329,10 +329,19 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             also the handle for calibrating imeOffset (see onEchoMouseDown) —
             it and the invisible textarea above share the same offset, just
             4px apart, so dragging this visibly moves the real candidate
-            window's anchor too. */}
+            window's anchor too.
+            onMouseDownCapture, not onMouseDown: InputHandler has its own
+            native 'mousedown' listener on the frame div (bubble phase) that
+            forwards every click to the remote as a real click-through. A
+            bubble-phase handler here would fire only after that native
+            ancestor listener already ran (React's delegated bubble dispatch
+            happens later than a real DOM bubble listener on an ancestor),
+            so the drag would start *after* the click already leaked to the
+            remote. Capture phase runs before the event ever reaches the
+            frame div, so stopPropagation here keeps it local. */}
         {compositionText && (
           <div
-            onMouseDown={onEchoMouseDown}
+            onMouseDownCapture={onEchoMouseDown}
             style={{
               position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: imeOffset.y + 4,
               padding: '4px 8px', border: '2px solid #000', borderRadius: 4,

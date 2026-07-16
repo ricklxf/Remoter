@@ -307,9 +307,9 @@ export class InputHandler {
     // leaks through" report; logging every keydown's full IME-relevant
     // fields to see what this browser/IME actually reports on that first
     // keystroke. Remove once root-caused.
-    console.log('[InputDiag2] keydown', {
+    console.log('[InputDiag2] keydown ' + JSON.stringify({
       code: ke.code, key: ke.key, keyCode: ke.keyCode, isComposing: ke.isComposing,
-    })
+    }))
     if (ke.isComposing || ke.key === 'Process') {
       console.log('[InputDiag2] dropped (composing/Process)')
       return

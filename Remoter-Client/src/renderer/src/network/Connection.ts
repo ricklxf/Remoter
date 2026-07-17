@@ -931,14 +931,25 @@ export class Connection {
         this.lastClipText = text
         this.sendJson({ type: 'clipboard_set', text })
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.warn('[ClipDiag] text read/send failed:', e)
+    }
     try {
       const img = await this.clipReadImage()
+      // TEMP DIAGNOSTIC — tracking down a report that an image copied on
+      // Windows never lands on the remote at all. Remove once root-caused.
+      console.log('[ClipDiag] image check: ' + JSON.stringify({
+        gotImage: !!img, len: img?.length ?? 0, lastLen: this.lastClipImgLen,
+        hasRemoterAPI: !!window.remoterAPI, hasReadImageBridge: !!window.remoterAPI?.readClipboardImage,
+      }))
       if (img && img.length !== this.lastClipImgLen) {
         this.lastClipImgLen = img.length
         this.sendJson({ type: 'clipboard_set_image', data: img })
+        console.log('[ClipDiag] sent clipboard_set_image, bytes=' + Math.round(img.length * 0.75))
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.warn('[ClipDiag] image read/send failed:', e)
+    }
   }
 
   /** Forces an out-of-cycle clipboard check instead of waiting for the next

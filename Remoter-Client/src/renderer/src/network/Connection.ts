@@ -927,10 +927,14 @@ export class Connection {
   /** Forces an out-of-cycle clipboard check instead of waiting for the next
    * 1s poll tick — called right as a paste shortcut (Cmd+V / Ctrl+V) is
    * detected, so a copy-then-immediately-paste within that same second
-   * doesn't send the remote a still-stale clipboard. Fire-and-forget: the
-   * paste keystroke itself is sent independently and isn't delayed by this. */
-  syncClipboardNow(): void {
-    void this.checkClipboardOnce()
+   * doesn't send the remote a still-stale clipboard. Callers that actually
+   * need the fresh content to land *before* the paste keystroke (not just
+   * "soon") must await this and only send the keystroke afterward — see
+   * InputHandler.onKeyDown. Both messages travel the same ordered
+   * WS/DataChannel connection, so sending clipboard_set first is enough to
+   * guarantee the agent processes it first too, without needing an ack. */
+  async syncClipboardNow(): Promise<void> {
+    await this.checkClipboardOnce()
   }
 
   private emit(e: ConnEvent): void {

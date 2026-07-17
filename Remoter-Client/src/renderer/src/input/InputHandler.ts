@@ -355,18 +355,29 @@ export class InputHandler {
     // the ambiguity irrelevant: we no longer have to guess in advance.
     if (InputHandler.isPlainTextKey(ke)) return
 
-    // Paste shortcut about to be forwarded — the clipboard sync loop only
-    // pushes changes once a second, so a copy-then-immediately-paste inside
-    // that window would send the remote whatever was on the clipboard
-    // *before* the copy. Force an out-of-cycle check right now instead of
-    // waiting for the next tick; runs independently of (and doesn't delay)
-    // the actual paste keystroke below.
-    if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) this.conn.syncClipboardNow()
-
     ke.preventDefault()
     const km = getKeymap()
-    this.conn.sendKey(mapKeyCode(ke.code, km), true, mapModifiers(collectModifiers(ke), km))
+    const mappedCode = mapKeyCode(ke.code, km)
+    const mods = mapModifiers(collectModifiers(ke), km)
     this.pressedKeys.add(ke.code)
+
+    // Paste shortcut — the clipboard sync loop only pushes changes once a
+    // second, so a copy-then-immediately-paste inside that window would
+    // send the remote whatever was on the clipboard *before* the copy.
+    // Firing the sync in parallel with the paste keystroke isn't enough: it
+    // only narrows the race, it doesn't close it (clipRead() + the send are
+    // both async, so the paste keystroke's own send can still land first).
+    // Actually wait for the sync's send to go out *before* sending the
+    // paste keystroke, so wire order — and therefore the agent's processing
+    // order — is guaranteed instead of merely likely.
+    if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
+      this.conn.syncClipboardNow().then(() => {
+        this.conn.sendKey(mappedCode, true, mods)
+      })
+      return
+    }
+
+    this.conn.sendKey(mappedCode, true, mods)
   }
 
   private onCompositionStart = (): void => {

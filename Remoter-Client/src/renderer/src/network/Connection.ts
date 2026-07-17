@@ -93,10 +93,13 @@ export class Connection {
 
   private downloads = new Map<string, DownloadState>()
 
-  // Clipboard auto-sync
+  // Clipboard auto-sync — gated by setClipboardSyncActive (see below) so a
+  // background tab controlling a different machine never starts polling at
+  // all, not even briefly.
   private clipTimer: ReturnType<typeof setInterval> | null = null
   private lastClipText = ''
   private lastClipImgLen = -1
+  private clipboardSyncActive = true
 
   onEvent:      ((e: ConnEvent) => void)                               | null = null
   onDirListing: ((path: string, entries: DirEntry[]) => void)          | null = null
@@ -707,7 +710,7 @@ export class Connection {
           display: msg.display as number | undefined,
         }, codec })
         this.startStatsLoop()
-        this.startClipboardSync()
+        if (this.clipboardSyncActive) this.startClipboardSync()
         break
       }
 
@@ -901,6 +904,20 @@ export class Connection {
     this.clipRead().then(t => { this.lastClipText = t }).catch(() => {})
     this.clipReadImage().then(img => { if (img) this.lastClipImgLen = img.length }).catch(() => {})
     this.clipTimer = setInterval(() => { this.checkClipboardOnce() }, 1000)
+  }
+
+  /** Multi-tab clipboard sync is bidirectional per session, but the OS
+   * clipboard is a single shared resource — with two tabs open to two
+   * different machines, each one's remote→local push (a legitimate part of
+   * normal 2-way sync) gets picked up as a "local change" by the *other*
+   * tab's poll loop and forwarded to the wrong machine, so the two ends can
+   * end up with different, cross-contaminated content. Only the tab the
+   * user is actually looking at should be syncing at any given moment —
+   * DesktopPage calls this whenever its isActive prop changes. */
+  setClipboardSyncActive(active: boolean): void {
+    this.clipboardSyncActive = active
+    if (active) this.startClipboardSync()
+    else this.stopClipboardSync()
   }
 
   private stopClipboardSync(): void {

@@ -52,6 +52,14 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // Cancel hide timer on unmount
   useEffect(() => () => clearTimeout(hideTimerRef.current), [])
 
+  // Clipboard sync must only run for the tab actually in front — with
+  // multiple tabs open to different machines, each one's remote→local push
+  // otherwise gets picked up as a "local change" by every *other* tab's own
+  // poll loop and forwarded to the wrong machine (see setClipboardSyncActive).
+  useEffect(() => {
+    conn.setClipboardSyncActive(isActive)
+  }, [conn, isActive])
+
   const startHideTimer = useCallback(() => {
     hideTimerRef.current = setTimeout(() => setToolbarVisible(false), 3000)
   }, [])

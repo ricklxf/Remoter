@@ -25,17 +25,13 @@ sealed class Session
     private int    _textCount  = 0;
     private int    _inputLogCount = 0;
     private int    _routeLogCount = 0;
-    private bool   _clipSync  = true;
-    private string _lastClip  = "";
-    private int    _lastClipImgSize = -1;
     private uint   _frameId   = 0;
     private DateTime _connectTime;
     private long   _bytesSent = 0;
     private long   _bytesRecv = 0;
 
     private CancellationTokenSource? _cts;
-    private System.Threading.Timer?  _clipTimer;
-    
+
     // Adaptive quality control - 延迟优先配置
     private int    _currentFps = 60;  // 提高默认FPS到60，最大限度减少延迟
     private int    _currentQuality = 50;  // 降低质量到50，提高编码速度
@@ -128,8 +124,7 @@ sealed class Session
     public void Close()
     {
         _cts?.Cancel();
-        _clipTimer?.Dispose();
-        
+
         // 主动断开WebSocket连接
         try
         {
@@ -276,8 +271,11 @@ sealed class Session
                 AppLog.Write($"[Input] Key {k.Code} down={k.Down}");
                 _input?.KeyEvent(k.Code, k.Down, k.Mods); break;
 
+            // One-directional: the controller's clipboard is the sole
+            // source of truth, this agent never pushes its own clipboard
+            // back (see the removed StartClipboard poll loop), so there's
+            // no echo-prevention bookkeeping needed here anymore — just apply it.
             case ClientMsg.ClipboardSet c:
-                _lastClip = c.Text;
                 SetClipboard(c.Text); break;
 
             case ClientMsg.ClipboardSetImage ci:
@@ -286,11 +284,7 @@ sealed class Session
                     try
                     {
                         var png = Convert.FromBase64String(ci.Data);
-                        if (SetClipboardImageFromPng(png))
-                        {
-                            var readback = GetClipboardImageBytes();
-                            _lastClipImgSize = readback?.Length ?? png.Length;
-                        }
+                        SetClipboardImageFromPng(png);
                     }
                     catch { }
                 }
@@ -307,11 +301,6 @@ sealed class Session
             case ClientMsg.CtrlAltDel:
                 AppLog.Write("[Input] CtrlAltDel received");
                 SendSAS(); break;
-
-            case ClientMsg.SetClipboardSync sc:
-                _clipSync = sc.Enabled;
-                if (_clipSync) StartClipboard(); else StopClipboard();
-                break;
 
             // 注释掉SetInputEnabled处理，防止Web端禁用输入控制
             // case ClientMsg.SetInputEnabled si:
@@ -423,7 +412,6 @@ sealed class Session
 
             Send(new { type = "stream_started", width = c.Width, height = c.Height, codec, fps = _currentFps });
             ConnectionLogger.Shared.LogConnected(_id, codec, _crypto.IsReady);
-            StartClipboard();
 
             await CaptureLoopAsync(_cts.Token);
         }
@@ -780,58 +768,6 @@ sealed class Session
 
     // ── Clipboard ────────────────────────────────────────────────────────
 
-    private void StartClipboard()
-    {
-        if (_clipTimer != null) return;
-        _lastClip = GetClipboard();
-        var initImg = GetClipboardImageBytes();
-        _lastClipImgSize = initImg?.Length ?? -1;
-
-        _clipTimer = new System.Threading.Timer(_ =>
-        {
-            try
-            {
-                if (!_clipSync) return;
-                // Text
-                var text = GetClipboard();
-                if (!string.IsNullOrEmpty(text) && text != _lastClip)
-                {
-                    _lastClip = text;
-                    Send(new { type = "clipboard", text });
-                }
-                // Image
-                var pngBytes = GetClipboardImageBytes();
-                if (pngBytes != null && pngBytes.Length != _lastClipImgSize)
-                {
-                    _lastClipImgSize = pngBytes.Length;
-                    if (pngBytes.Length <= 4 * 1024 * 1024)
-                        Send(new { type = "clipboard", image = Convert.ToBase64String(pngBytes) });
-                }
-            }
-            catch (Exception ex)
-            {
-                AppLog.Write($"[Session] Clipboard poll error: {ex.Message}");
-            }
-        }, null, 500, 500);
-    }
-
-    private void StopClipboard() { _clipTimer?.Dispose(); _clipTimer = null; }
-
-    private static string GetClipboard()
-    {
-        if (!OpenClipboard(0)) return "";
-        try
-        {
-            var h = GetClipboardData(CF_UNICODETEXT);
-            if (h == 0) return "";
-            var p = GlobalLock(h);
-            if (p == 0) return "";
-            try { return Marshal.PtrToStringUni((nint)p) ?? ""; }
-            finally { GlobalUnlock(h); }
-        }
-        finally { CloseClipboard(); }
-    }
-
     private static void SetClipboard(string text)
     {
         if (!OpenClipboard(0)) return;
@@ -847,48 +783,6 @@ sealed class Session
             GlobalUnlock(h);
             SetClipboardData(CF_UNICODETEXT, h);
         }
-        finally { CloseClipboard(); }
-    }
-
-    private static byte[]? GetClipboardImageBytes()
-    {
-        if (!OpenClipboard(0)) return null;
-        try
-        {
-            var h = GetClipboardData(CF_DIB);
-            if (h == 0) return null;
-            var size = (int)GlobalSize(h);
-            if (size == 0) return null;
-            var p = GlobalLock(h);
-            if (p == 0) return null;
-            try
-            {
-                var dib = new byte[size];
-                Marshal.Copy((nint)p, dib, 0, size);
-
-                // Reconstruct BITMAPFILEHEADER (14 bytes) and prepend to DIB
-                var dibHeaderSize  = BitConverter.ToUInt32(dib, 0);
-                var bitCount       = BitConverter.ToUInt16(dib, 14);
-                var colorsUsed     = BitConverter.ToUInt32(dib, 32);
-                uint colorEntries  = colorsUsed != 0 ? colorsUsed
-                                   : bitCount  <= 8 ? (uint)(1 << bitCount) : 0u;
-                uint offBits       = 14 + dibHeaderSize + colorEntries * 4;
-
-                var bmpData = new byte[14 + size];
-                bmpData[0] = (byte)'B'; bmpData[1] = (byte)'M';
-                Buffer.BlockCopy(BitConverter.GetBytes((uint)(14 + size)), 0, bmpData,  2, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(offBits),            0, bmpData, 10, 4);
-                Buffer.BlockCopy(dib, 0, bmpData, 14, size);
-
-                using var ms    = new MemoryStream(bmpData);
-                using var bmp   = new System.Drawing.Bitmap(ms);
-                using var pngMs = new MemoryStream();
-                bmp.Save(pngMs, System.Drawing.Imaging.ImageFormat.Png);
-                return pngMs.ToArray();
-            }
-            finally { GlobalUnlock(h); }
-        }
-        catch { return null; }
         finally { CloseClipboard(); }
     }
 

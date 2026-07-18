@@ -112,10 +112,6 @@ final class Session {
     private var bytesRecv: Int64 = 0
     private var loggedFirstInput = false
 
-    // Clipboard auto-sync
-    private var clipboardTimer: DispatchSourceTimer?
-    private var lastClipboardContent = ""
-    private var lastClipboardImageSize: Int = -1
 
     // Keepalive: send a JSON message every 3s so the client's stale-timeout (6s)
     // doesn't fire when the screen is static and CGDisplayStream pushes no frames.
@@ -227,7 +223,6 @@ final class Session {
         }
         input?.releaseAllKeys()
         stopKeepalive()
-        stopClipboardMonitor()
         cursorMonitor?.stop()
         cursorMonitor = nil
         encoder?.close()
@@ -360,13 +355,15 @@ final class Session {
             input?.typeText(text)
 
         case .clipboardSet(let text):
-            lastClipboardContent = text   // prevent echo-back
+            // One-directional now: the controller's clipboard is the sole
+            // source of truth, this agent never pushes its own clipboard
+            // back (see the removed startClipboardMonitor) — so there's
+            // nothing to echo-prevent against anymore, just apply it.
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
 
         case .clipboardSetImage(let data):
             guard !data.isEmpty, let imgData = Data(base64Encoded: data) else { break }
-            lastClipboardImageSize = imgData.count
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.declareTypes([.png, .tiff], owner: nil)
@@ -481,9 +478,6 @@ final class Session {
         case .ctrlAltDel:
             input?.keyEvent(code: "Delete", down: true,  modifiers: ["ctrl", "alt"])
             input?.keyEvent(code: "Delete", down: false, modifiers: ["ctrl", "alt"])
-
-        case .setClipboardSync(let enabled):
-            if enabled { startClipboardMonitor() } else { stopClipboardMonitor() }
 
         case .setInputEnabled(let enabled):
             inputEnabled = enabled
@@ -736,7 +730,6 @@ final class Session {
             encoder = enc
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: currentCodec.rawValue, encrypted: crypto.isReady)
-            startClipboardMonitor()
             startKeepalive()
             startCursorMonitor()
             sendJson([
@@ -1078,49 +1071,6 @@ final class Session {
         }
 
         sendJson(["type": "dir_listing", "path": expandedPath, "entries": entries])
-    }
-
-    // MARK: - 剪贴板监控（双向自动同步）
-
-    private func startClipboardMonitor() {
-        stopClipboardMonitor()  // safe to call repeatedly (e.g. beginCapture() re-run for a resolution switch)
-        lastClipboardContent = NSPasteboard.general.string(forType: .string) ?? ""
-        lastClipboardImageSize = clipboardImagePNG()?.count ?? -1
-
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + .milliseconds(500), repeating: .milliseconds(500))
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            // Text
-            let text = NSPasteboard.general.string(forType: .string) ?? ""
-            if !text.isEmpty && text != self.lastClipboardContent {
-                self.lastClipboardContent = text
-                self.sendJson(["type": "clipboard", "text": text])
-            }
-            // Image
-            guard let pngData = self.clipboardImagePNG() else { return }
-            guard pngData.count != self.lastClipboardImageSize else { return }
-            guard pngData.count <= 4 * 1024 * 1024 else { return }
-            self.lastClipboardImageSize = pngData.count
-            self.sendJson(["type": "clipboard", "image": pngData.base64EncodedString()])
-        }
-        timer.resume()
-        clipboardTimer = timer
-    }
-
-    private func clipboardImagePNG() -> Data? {
-        let pb = NSPasteboard.general
-        if let png = pb.data(forType: .png) { return png }
-        if let tiff = pb.data(forType: .tiff),
-           let rep = NSBitmapImageRep(data: tiff) {
-            return rep.representation(using: .png, properties: [:])
-        }
-        return nil
-    }
-
-    private func stopClipboardMonitor() {
-        clipboardTimer?.cancel()
-        clipboardTimer = nil
     }
 
     // MARK: - 保活定时器

@@ -320,7 +320,11 @@ function ControlMenu({ conn, audioOn, onToggleAudio, inputLocked, onToggleInputL
   function toggleClip() {
     const next = !clipSync
     setClipSync(next)
-    conn.sendSetClipboardSync(next)
+    // Client-local now — clipboard sync is one-directional (this controller
+    // pushes out, the agent never pushes its own clipboard back), so there's
+    // nothing left for the agent to toggle; this just gates the local poll
+    // loop directly.
+    conn.setClipboardSyncManualEnabled(next)
   }
 
   function toggleInput() {

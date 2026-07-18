@@ -35,7 +35,6 @@ enum ClientMessage {
     case requestFile(path: String)
     case setMuted(muted: Bool)
     case ctrlAltDel
-    case setClipboardSync(enabled: Bool)
     case setInputEnabled(enabled: Bool)
     case clipboardSetImage(data: String)
     case lockScreen
@@ -134,8 +133,6 @@ enum ClientMessage {
             return .setMuted(muted: json["muted"] as? Bool ?? false)
         case "ctrl_alt_del":
             return .ctrlAltDel
-        case "set_clipboard_sync":
-            return .setClipboardSync(enabled: json["enabled"] as? Bool ?? true)
         case "set_input_enabled":
             return .setInputEnabled(enabled: json["enabled"] as? Bool ?? true)
         case "clipboard_set_image":

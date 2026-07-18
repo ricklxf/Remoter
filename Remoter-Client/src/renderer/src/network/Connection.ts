@@ -3,6 +3,7 @@ import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoCodec } from '../video/Decoder'
+import { clipboardBroadcaster } from './ClipboardBroadcaster'
 
 export interface ConnStats {
   fps: number
@@ -93,19 +94,14 @@ export class Connection {
 
   private downloads = new Map<string, DownloadState>()
 
-  // Clipboard auto-sync — one-directional: this controller's clipboard is
-  // the source of truth, pushed out to whichever machine this session is
-  // controlling. Gated by two independent switches, both of which must be
-  // on for the poll loop to actually run: clipboardTabActive (this tab is
-  // the one in front — a background tab controlling a different machine
-  // must never push its own clipboard, not even briefly, or two sessions
-  // fight over the one shared local clipboard) and clipboardManualEnabled
-  // (the user's own "同步剪贴板" toggle).
-  private clipTimer: ReturnType<typeof setInterval> | null = null
-  private lastClipText = ''
-  private lastClipImgLen = -1
-  private clipboardTabActive = true
-  private clipboardManualEnabled = true
+  // Clipboard auto-sync — one-directional broadcast: this controller's
+  // clipboard is the source of truth, and the shared ClipboardBroadcaster
+  // singleton (one poll loop, not one per Connection) pushes every change
+  // to every currently-registered session at once, regardless of which tab
+  // is in front. This Connection just registers/unregisters itself and
+  // gates whether a broadcast actually gets sent to ITS target via the
+  // user's own "同步剪贴板" toggle.
+  private clipboardEnabled = true
 
   onEvent:      ((e: ConnEvent) => void)                               | null = null
   onDirListing: ((path: string, entries: DirEntry[]) => void)          | null = null
@@ -132,7 +128,7 @@ export class Connection {
       this.ws = null
     }
     this.stopStats()
-    this.stopClipboardSync()
+    clipboardBroadcaster.unregister(this)
     this.webrtc?.close()
     this.webrtc = null
     this.lastMediaStream = null
@@ -187,7 +183,7 @@ export class Connection {
       this.webrtc = null
       this.lastMediaStream = null
       this.stopStats()
-      this.stopClipboardSync()
+      clipboardBroadcaster.unregister(this)
 
       const canReconnect = !this.intentionalClose
         && this.wasStreaming
@@ -220,7 +216,7 @@ export class Connection {
     if (this.webrtcRestartTimer) { clearTimeout(this.webrtcRestartTimer); this.webrtcRestartTimer = null }
     this.webrtcRestartAttempts = 0
     this.stopStats()
-    this.stopClipboardSync()
+    clipboardBroadcaster.unregister(this)
     this.webrtc?.close()
     this.webrtc = null
     this.ws?.close()
@@ -712,7 +708,7 @@ export class Connection {
           display: msg.display as number | undefined,
         }, codec })
         this.startStatsLoop()
-        this.applyClipboardSyncGate()
+        if (this.clipboardEnabled) clipboardBroadcaster.register(this)
         break
       }
 
@@ -845,93 +841,20 @@ export class Connection {
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null }
   }
 
-  private clipRead(): Promise<string> {
-    if (window.remoterAPI) return window.remoterAPI.readClipboard()
-    return navigator.clipboard.readText()
+  /** Called by ClipboardBroadcaster when the shared local clipboard
+   * changes — pushes it to this session's target, unless the user's own
+   * "同步剪贴板" toggle for this session is off. */
+  receiveClipboardBroadcast(text: string | undefined, img: string | undefined): void {
+    if (!this.clipboardEnabled) return
+    if (text !== undefined) this.sendJson({ type: 'clipboard_set', text })
+    if (img !== undefined) this.sendJson({ type: 'clipboard_set_image', data: img })
   }
 
-  private async clipReadImage(): Promise<string | null> {
-    if (window.remoterAPI?.readClipboardImage) {
-      return window.remoterAPI.readClipboardImage()
-    }
-    try {
-      const items = await navigator.clipboard.read()
-      for (const item of items) {
-        if (item.types.includes('image/png')) {
-          const blob = await item.getType('image/png')
-          return new Promise<string>((resolve) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve((reader.result as string).split(',')[1])
-            reader.readAsDataURL(blob)
-          })
-        }
-      }
-    } catch { /* ignore */ }
-    return null
-  }
-
-  private startClipboardSync(): void {
-    if (this.clipTimer) return
-    this.clipRead().then(t => { this.lastClipText = t }).catch(() => {})
-    this.clipReadImage().then(img => { if (img) this.lastClipImgLen = img.length }).catch(() => {})
-    this.clipTimer = setInterval(() => { this.checkClipboardOnce() }, 1000)
-  }
-
-  private applyClipboardSyncGate(): void {
-    if (this.clipboardTabActive && this.clipboardManualEnabled) this.startClipboardSync()
-    else this.stopClipboardSync()
-  }
-
-  /** With two tabs open to two different machines, a background tab's poll
-   * loop pushing its clipboard reads at whatever machine it's connected to
-   * has nothing to do with what the user is currently looking at, and just
-   * fights the active tab's own sync over the one shared local clipboard.
-   * Only the tab actually in front should ever be pushing — DesktopPage
-   * calls this whenever its isActive prop changes. */
-  setClipboardSyncActive(active: boolean): void {
-    this.clipboardTabActive = active
-    this.applyClipboardSyncGate()
-  }
-
-  /** The "同步剪贴板" toggle in the UI — now purely client-local (the
-   * one-directional design means there's nothing meaningful left for the
-   * agent to do with a "sync on/off" message; it never pushes its own
-   * clipboard back regardless). */
+  /** The "同步剪贴板" toggle in the UI. */
   setClipboardSyncManualEnabled(enabled: boolean): void {
-    this.clipboardManualEnabled = enabled
-    this.applyClipboardSyncGate()
-  }
-
-  private stopClipboardSync(): void {
-    if (this.clipTimer) { clearInterval(this.clipTimer); this.clipTimer = null }
-  }
-
-  private async checkClipboardOnce(): Promise<void> {
-    try {
-      const text = await this.clipRead()
-      if (text && text !== this.lastClipText) {
-        this.lastClipText = text
-        this.sendJson({ type: 'clipboard_set', text })
-      }
-    } catch (e) {
-      console.warn('[ClipDiag] text read/send failed:', e)
-    }
-    try {
-      const img = await this.clipReadImage()
-      // TEMP DIAGNOSTIC — tracking down a report that an image copied on
-      // Windows never lands on the remote at all. Remove once root-caused.
-      console.log('[ClipDiag] image check: ' + JSON.stringify({
-        gotImage: !!img, len: img?.length ?? 0, lastLen: this.lastClipImgLen,
-        hasRemoterAPI: !!window.remoterAPI, hasReadImageBridge: !!window.remoterAPI?.readClipboardImage,
-      }))
-      if (img && img.length !== this.lastClipImgLen) {
-        this.lastClipImgLen = img.length
-        this.sendJson({ type: 'clipboard_set_image', data: img })
-        console.log('[ClipDiag] sent clipboard_set_image, bytes=' + Math.round(img.length * 0.75))
-      }
-    } catch (e) {
-      console.warn('[ClipDiag] image read/send failed:', e)
-    }
+    this.clipboardEnabled = enabled
+    if (enabled && this.wasStreaming) clipboardBroadcaster.register(this)
+    else clipboardBroadcaster.unregister(this)
   }
 
   /** Forces an out-of-cycle clipboard check instead of waiting for the next
@@ -944,7 +867,7 @@ export class Connection {
    * WS/DataChannel connection, so sending clipboard_set first is enough to
    * guarantee the agent processes it first too, without needing an ack. */
   async syncClipboardNow(): Promise<void> {
-    await this.checkClipboardOnce()
+    await clipboardBroadcaster.forceSyncNow()
   }
 
   private emit(e: ConnEvent): void {

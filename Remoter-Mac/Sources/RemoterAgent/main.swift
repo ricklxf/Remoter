@@ -308,6 +308,24 @@ MainActor.assumeIsolated {
 
 NSApplication.shared.delegate = menuBar
 
+// `pkill`/Ctrl+C 发送的是 SIGTERM，不会走 AppKit 的正常退出回调
+// （applicationWillTerminate），InputSourceForcer.begin() 强制的输入法
+// 因此永远等不到 end() 恢复，进程死后被控端系统输入法就永久卡在英文。
+// SIG_IGN + DispatchSourceSignal 把清理代码放到普通 Swift 上下文里跑，
+// 避开裸信号处理函数的 async-signal-safety 限制。
+var terminationSignalSources: [DispatchSourceSignal] = []
+for sig in [SIGTERM, SIGINT] {
+    signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    source.setEventHandler {
+        InputSourceForcer.shared.end()
+        InputLocker.shared.setLocked(false)
+        exit(0)
+    }
+    source.resume()
+    terminationSignalSources.append(source)
+}
+
 // 在主 RunLoop 启动前，先在后台 Task 中启动 Agent
 Task.detached {
     do {

@@ -3,7 +3,6 @@ import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
 import { VideoCodec } from '../video/Decoder'
-import { clipboardBroadcaster } from './ClipboardBroadcaster'
 
 export interface ConnStats {
   fps: number
@@ -94,13 +93,17 @@ export class Connection {
 
   private downloads = new Map<string, DownloadState>()
 
-  // Clipboard auto-sync — one-directional broadcast: this controller's
-  // clipboard is the source of truth, and the shared ClipboardBroadcaster
-  // singleton (one poll loop, not one per Connection) pushes every change
-  // to every currently-registered session at once, regardless of which tab
-  // is in front. This Connection just registers/unregisters itself and
-  // gates whether a broadcast actually gets sent to ITS target via the
-  // user's own "同步剪贴板" toggle.
+  // Clipboard sync — one-directional and paste-triggered only: no
+  // background polling, no push to any session other than this one. A
+  // background poll (tried earlier) that broadcasts on every clipboard
+  // change to every connected session is what caused cross-session bleed
+  // (copying something meant for one target's paste would eagerly overwrite
+  // every *other* connected target's clipboard too, before you ever meant
+  // to touch them). Reading fresh, only at the moment of an actual Cmd+V/
+  // Ctrl+V in *this* session (see InputHandler's paste-shortcut handling),
+  // scopes the push to exactly the target you're pasting into, right when
+  // you need it — closing the lag complaint without reopening the
+  // cross-contamination one.
   private clipboardEnabled = true
 
   onEvent:      ((e: ConnEvent) => void)                               | null = null
@@ -128,7 +131,6 @@ export class Connection {
       this.ws = null
     }
     this.stopStats()
-    clipboardBroadcaster.unregister(this)
     this.webrtc?.close()
     this.webrtc = null
     this.lastMediaStream = null
@@ -183,7 +185,6 @@ export class Connection {
       this.webrtc = null
       this.lastMediaStream = null
       this.stopStats()
-      clipboardBroadcaster.unregister(this)
 
       const canReconnect = !this.intentionalClose
         && this.wasStreaming
@@ -216,7 +217,6 @@ export class Connection {
     if (this.webrtcRestartTimer) { clearTimeout(this.webrtcRestartTimer); this.webrtcRestartTimer = null }
     this.webrtcRestartAttempts = 0
     this.stopStats()
-    clipboardBroadcaster.unregister(this)
     this.webrtc?.close()
     this.webrtc = null
     this.ws?.close()
@@ -708,7 +708,6 @@ export class Connection {
           display: msg.display as number | undefined,
         }, codec })
         this.startStatsLoop()
-        if (this.clipboardEnabled) clipboardBroadcaster.register(this)
         break
       }
 
@@ -841,33 +840,59 @@ export class Connection {
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null }
   }
 
-  /** Called by ClipboardBroadcaster when the shared local clipboard
-   * changes — pushes it to this session's target, unless the user's own
-   * "同步剪贴板" toggle for this session is off. */
-  receiveClipboardBroadcast(text: string | undefined, img: string | undefined): void {
-    if (!this.clipboardEnabled) return
-    if (text !== undefined) this.sendJson({ type: 'clipboard_set', text })
-    if (img !== undefined) this.sendJson({ type: 'clipboard_set_image', data: img })
-  }
-
-  /** The "同步剪贴板" toggle in the UI. */
+  /** The "同步剪贴板" toggle in the UI — gates whether pasting into this
+   * session pushes the controller's current clipboard first. */
   setClipboardSyncManualEnabled(enabled: boolean): void {
     this.clipboardEnabled = enabled
-    if (enabled && this.wasStreaming) clipboardBroadcaster.register(this)
-    else clipboardBroadcaster.unregister(this)
   }
 
-  /** Forces an out-of-cycle clipboard check instead of waiting for the next
-   * 1s poll tick — called right as a paste shortcut (Cmd+V / Ctrl+V) is
-   * detected, so a copy-then-immediately-paste within that same second
-   * doesn't send the remote a still-stale clipboard. Callers that actually
-   * need the fresh content to land *before* the paste keystroke (not just
-   * "soon") must await this and only send the keystroke afterward — see
-   * InputHandler.onKeyDown. Both messages travel the same ordered
-   * WS/DataChannel connection, so sending clipboard_set first is enough to
-   * guarantee the agent processes it first too, without needing an ack. */
+  private clipRead(): Promise<string> {
+    if (window.remoterAPI) return window.remoterAPI.readClipboard()
+    return navigator.clipboard.readText()
+  }
+
+  private async clipReadImage(): Promise<string | null> {
+    if (window.remoterAPI?.readClipboardImage) {
+      return window.remoterAPI.readClipboardImage()
+    }
+    try {
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        if (item.types.includes('image/png')) {
+          const blob = await item.getType('image/png')
+          return new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve((reader.result as string).split(',')[1])
+            reader.readAsDataURL(blob)
+          })
+        }
+      }
+    } catch { /* ignore */ }
+    return null
+  }
+
+  /** Reads the controller's clipboard fresh and pushes it to *this*
+   * session's target only — called right as a paste shortcut (Cmd+V /
+   * Ctrl+V) is detected, so the content is never more than one keystroke
+   * stale. Callers must await this and only send the paste keystroke
+   * afterward, not fire them in parallel — see InputHandler.onKeyDown. Both
+   * messages travel the same ordered WS/DataChannel connection, so sending
+   * clipboard_set first is enough to guarantee the agent processes it
+   * first too, without needing an ack. */
   async syncClipboardNow(): Promise<void> {
-    await clipboardBroadcaster.forceSyncNow()
+    if (!this.clipboardEnabled) return
+    try {
+      const text = await this.clipRead()
+      if (text) this.sendJson({ type: 'clipboard_set', text })
+    } catch (e) {
+      console.warn('[Conn] clipboard text read failed:', e)
+    }
+    try {
+      const img = await this.clipReadImage()
+      if (img) this.sendJson({ type: 'clipboard_set_image', data: img })
+    } catch (e) {
+      console.warn('[Conn] clipboard image read failed:', e)
+    }
   }
 
   private emit(e: ConnEvent): void {

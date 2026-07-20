@@ -871,25 +871,43 @@ export class Connection {
     return null
   }
 
-  /** Reads the controller's clipboard fresh and pushes it to *this*
-   * session's target only — called right as a paste shortcut (Cmd+V /
-   * Ctrl+V) is detected, so the content is never more than one keystroke
-   * stale. Callers must await this and only send the paste keystroke
-   * afterward, not fire them in parallel — see InputHandler.onKeyDown. Both
-   * messages travel the same ordered WS/DataChannel connection, so sending
+  // Dedup state for syncClipboardNow — only what *this* Connection has
+  // itself last pushed, so an unchanged controller clipboard never
+  // re-sends. Without this, every remote paste would unconditionally
+  // overwrite the target's clipboard with the controller's, even for a
+  // paste that has nothing to do with the controller at all (e.g. the user
+  // remotely Cmd+C'd something on the target itself, then Cmd+V'd it
+  // elsewhere on the target — that copy never touched the controller's
+  // clipboard, so it must be left alone).
+  private lastSyncedText = ''
+  private lastSyncedImgLen = -1
+
+  /** Reads the controller's clipboard fresh and, only if it's changed since
+   * the last time this session pushed one, sends it to *this* session's
+   * target — called right as a paste shortcut (Cmd+V / Ctrl+V) is
+   * detected, so the content is never more than one keystroke stale.
+   * Callers must await this and only send the paste keystroke afterward,
+   * not fire them in parallel — see InputHandler.onKeyDown. Both messages
+   * travel the same ordered WS/DataChannel connection, so sending
    * clipboard_set first is enough to guarantee the agent processes it
    * first too, without needing an ack. */
   async syncClipboardNow(): Promise<void> {
     if (!this.clipboardEnabled) return
     try {
       const text = await this.clipRead()
-      if (text) this.sendJson({ type: 'clipboard_set', text })
+      if (text && text !== this.lastSyncedText) {
+        this.lastSyncedText = text
+        this.sendJson({ type: 'clipboard_set', text })
+      }
     } catch (e) {
       console.warn('[Conn] clipboard text read failed:', e)
     }
     try {
       const img = await this.clipReadImage()
-      if (img) this.sendJson({ type: 'clipboard_set_image', data: img })
+      if (img && img.length !== this.lastSyncedImgLen) {
+        this.lastSyncedImgLen = img.length
+        this.sendJson({ type: 'clipboard_set_image', data: img })
+      }
     } catch (e) {
       console.warn('[Conn] clipboard image read failed:', e)
     }

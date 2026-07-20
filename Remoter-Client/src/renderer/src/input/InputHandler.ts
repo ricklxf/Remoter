@@ -36,6 +36,11 @@ export class InputHandler {
   // (isComposing / key==='Process') can't reliably tell us this on its own.
   private composing = false
 
+  // Modifiers captured at the paste-shortcut keydown, consumed by onPaste
+  // once the browser's native paste ClipboardEvent actually fires — see
+  // onKeyDown's KeyV branch for why the two are split apart.
+  private pendingPasteMods: string[] = []
+
   // Mouse-move send throttle: native mousemove can fire 100-240Hz, each one
   // synchronously injects a CGEvent on the Mac side (an IPC round-trip to
   // WindowServer — the same process that drives the screen compositor
@@ -137,6 +142,7 @@ export class InputHandler {
     if (this.imeEl) add(this.imeEl, 'compositionstart', this.onCompositionStart)
     if (this.imeEl) add(this.imeEl, 'compositionend',   this.onCompositionEnd)
     if (this.imeEl) add(this.imeEl, 'input',            this.onImeInput)
+    if (this.imeEl) add(this.imeEl, 'paste',            this.onPaste)
   }
 
   private removeListeners(): void {
@@ -355,31 +361,30 @@ export class InputHandler {
     // the ambiguity irrelevant: we no longer have to guess in advance.
     if (InputHandler.isPlainTextKey(ke)) return
 
+    // Paste shortcut — deliberately NOT preventDefault'd, and no keycode
+    // sent yet: letting the browser run its own paste command is what
+    // makes it fire a native `paste` ClipboardEvent on the focused hidden
+    // textarea (see onPaste), handing us clipboardData synchronously with
+    // no permission grant needed at all. This replaced an earlier design
+    // built on the Async Clipboard API (navigator.clipboard.readText),
+    // whose read permission can be silently denied per-origin or, worse,
+    // leave its promise pending forever — which once meant the paste
+    // keystroke itself silently never reached the target, even for a pure
+    // target-side-local paste with no controller clipboard involved at
+    // all. The native paste event is what production web remote-desktop
+    // clients (Chrome Remote Desktop, Guacamole) use for exactly this
+    // reason. onPaste does the actual sendKey once it has the data.
+    if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
+      this.pendingPasteMods = mapModifiers(collectModifiers(ke), getKeymap())
+      this.pressedKeys.add(ke.code)
+      return
+    }
+
     ke.preventDefault()
     const km = getKeymap()
     const mappedCode = mapKeyCode(ke.code, km)
     const mods = mapModifiers(collectModifiers(ke), km)
     this.pressedKeys.add(ke.code)
-
-    // Paste shortcut — read the controller's clipboard and, if it changed,
-    // push it before the paste keystroke so a copy-then-immediately-paste
-    // lands the new content instead of whatever was there before. Waiting
-    // for the sync to go out first (rather than firing both in parallel)
-    // guarantees wire order. But this must never be able to block the
-    // paste itself indefinitely — a clipboard read that hangs (permission
-    // prompt, browser quirk) must not silently eat the user's real
-    // keystroke, which is exactly what happened here once: the whole
-    // paste — even pure target-side-local paste with no controller
-    // clipboard involved at all — went dead because the send only ever
-    // ran inside syncClipboardNow's .then(). Race it against a short
-    // timeout so the keystroke always goes out either way.
-    if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
-      const sendPasteKey = (): void => this.conn.sendKey(mappedCode, true, mods)
-      const timeout = new Promise<void>(resolve => setTimeout(resolve, 200))
-      Promise.race([this.conn.syncClipboardNow(), timeout]).then(sendPasteKey)
-      return
-    }
-
     this.conn.sendKey(mappedCode, true, mods)
   }
 
@@ -413,6 +418,51 @@ export class InputHandler {
     if (text) {
       this.conn.sendTextInput(text)
       if (this.imeEl) this.imeEl.value = ''
+    }
+  }
+
+  // The browser's own paste command, fired synchronously as the default
+  // action of the Cmd+V/Ctrl+V keydown that onKeyDown deliberately left
+  // un-prevented (see there for why). clipboardData is available here with
+  // no permission check at all — this is the whole point of using the
+  // native event instead of the Async Clipboard API. preventDefault stops
+  // the browser from also inserting the pasted content into the hidden
+  // textarea itself (harmless either way since it's invisible, but there's
+  // no reason to let it accumulate there).
+  private onPaste = (e: Event): void => {
+    if (!this.enabled) return
+    const ce = e as ClipboardEvent
+    ce.preventDefault()
+
+    const text = ce.clipboardData?.getData('text/plain')
+    if (text) this.conn.sendClipboard(text)
+
+    let imageFile: File | null = null
+    const items = ce.clipboardData?.items
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) { imageFile = items[i].getAsFile(); break }
+      }
+    }
+
+    const km = getKeymap()
+    const mappedCode = mapKeyCode('KeyV', km)
+    const mods = this.pendingPasteMods
+
+    // The image (if any) must land on the target *before* the paste
+    // keystroke, same reasoning as the text case above — but reading it
+    // out of the File is itself async, so the keystroke has to wait for
+    // that specifically, not just for the (already-synchronous) text path.
+    if (imageFile) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1]
+        if (base64) this.conn.sendClipboardImage(base64)
+        this.conn.sendKey(mappedCode, true, mods)
+      }
+      reader.readAsDataURL(imageFile)
+    } else {
+      this.conn.sendKey(mappedCode, true, mods)
     }
   }
 

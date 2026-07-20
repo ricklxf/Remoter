@@ -93,17 +93,16 @@ export class Connection {
 
   private downloads = new Map<string, DownloadState>()
 
-  // Clipboard sync — one-directional and paste-triggered only: no
-  // background polling, no push to any session other than this one. A
-  // background poll (tried earlier) that broadcasts on every clipboard
-  // change to every connected session is what caused cross-session bleed
-  // (copying something meant for one target's paste would eagerly overwrite
-  // every *other* connected target's clipboard too, before you ever meant
-  // to touch them). Reading fresh, only at the moment of an actual Cmd+V/
-  // Ctrl+V in *this* session (see InputHandler's paste-shortcut handling),
-  // scopes the push to exactly the target you're pasting into, right when
-  // you need it — closing the lag complaint without reopening the
-  // cross-contamination one.
+  // Clipboard sync — one-directional and paste-triggered only, driven by
+  // the browser's native `paste` ClipboardEvent (see InputHandler.onPaste)
+  // rather than the Async Clipboard API (navigator.clipboard.readText).
+  // The native event fires synchronously off a real user keystroke and
+  // needs no permission grant at all — the async API's read permission can
+  // be silently denied or leave its promise pending forever, and polling
+  // it in the background is what caused cross-session bleed (copying
+  // something meant for one target eagerly overwrote every *other*
+  // connected target's clipboard too). Scoped to exactly the target you're
+  // pasting into, right when you need it.
   private clipboardEnabled = true
 
   onEvent:      ((e: ConnEvent) => void)                               | null = null
@@ -243,8 +242,14 @@ export class Connection {
   sendKey(code: string, down: boolean, modifiers: string[]): void {
     this.sendJson({ type: 'key', code, down, modifiers })
   }
+  /** Gated by the "同步剪贴板" toggle — see setClipboardSyncManualEnabled. */
   sendClipboard(text: string): void {
+    if (!this.clipboardEnabled) return
     this.sendJson({ type: 'clipboard_set', text })
+  }
+  sendClipboardImage(base64Png: string): void {
+    if (!this.clipboardEnabled) return
+    this.sendJson({ type: 'clipboard_set_image', data: base64Png })
   }
   sendFps(fps: number, auto = false): void {
     this.sendJson({ type: 'fps', fps, auto })
@@ -844,73 +849,6 @@ export class Connection {
    * session pushes the controller's current clipboard first. */
   setClipboardSyncManualEnabled(enabled: boolean): void {
     this.clipboardEnabled = enabled
-  }
-
-  private clipRead(): Promise<string> {
-    if (window.remoterAPI) return window.remoterAPI.readClipboard()
-    return navigator.clipboard.readText()
-  }
-
-  private async clipReadImage(): Promise<string | null> {
-    if (window.remoterAPI?.readClipboardImage) {
-      return window.remoterAPI.readClipboardImage()
-    }
-    try {
-      const items = await navigator.clipboard.read()
-      for (const item of items) {
-        if (item.types.includes('image/png')) {
-          const blob = await item.getType('image/png')
-          return new Promise<string>((resolve) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve((reader.result as string).split(',')[1])
-            reader.readAsDataURL(blob)
-          })
-        }
-      }
-    } catch { /* ignore */ }
-    return null
-  }
-
-  // Dedup state for syncClipboardNow — only what *this* Connection has
-  // itself last pushed, so an unchanged controller clipboard never
-  // re-sends. Without this, every remote paste would unconditionally
-  // overwrite the target's clipboard with the controller's, even for a
-  // paste that has nothing to do with the controller at all (e.g. the user
-  // remotely Cmd+C'd something on the target itself, then Cmd+V'd it
-  // elsewhere on the target — that copy never touched the controller's
-  // clipboard, so it must be left alone).
-  private lastSyncedText = ''
-  private lastSyncedImgLen = -1
-
-  /** Reads the controller's clipboard fresh and, only if it's changed since
-   * the last time this session pushed one, sends it to *this* session's
-   * target — called right as a paste shortcut (Cmd+V / Ctrl+V) is
-   * detected, so the content is never more than one keystroke stale.
-   * Callers must await this and only send the paste keystroke afterward,
-   * not fire them in parallel — see InputHandler.onKeyDown. Both messages
-   * travel the same ordered WS/DataChannel connection, so sending
-   * clipboard_set first is enough to guarantee the agent processes it
-   * first too, without needing an ack. */
-  async syncClipboardNow(): Promise<void> {
-    if (!this.clipboardEnabled) return
-    try {
-      const text = await this.clipRead()
-      if (text && text !== this.lastSyncedText) {
-        this.lastSyncedText = text
-        this.sendJson({ type: 'clipboard_set', text })
-      }
-    } catch (e) {
-      console.warn('[Conn] clipboard text read failed:', e)
-    }
-    try {
-      const img = await this.clipReadImage()
-      if (img && img.length !== this.lastSyncedImgLen) {
-        this.lastSyncedImgLen = img.length
-        this.sendJson({ type: 'clipboard_set_image', data: img })
-      }
-    } catch (e) {
-      console.warn('[Conn] clipboard image read failed:', e)
-    }
   }
 
   private emit(e: ConnEvent): void {

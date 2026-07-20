@@ -361,19 +361,22 @@ export class InputHandler {
     const mods = mapModifiers(collectModifiers(ke), km)
     this.pressedKeys.add(ke.code)
 
-    // Paste shortcut — the clipboard sync loop only pushes changes once a
-    // second, so a copy-then-immediately-paste inside that window would
-    // send the remote whatever was on the clipboard *before* the copy.
-    // Firing the sync in parallel with the paste keystroke isn't enough: it
-    // only narrows the race, it doesn't close it (clipRead() + the send are
-    // both async, so the paste keystroke's own send can still land first).
-    // Actually wait for the sync's send to go out *before* sending the
-    // paste keystroke, so wire order — and therefore the agent's processing
-    // order — is guaranteed instead of merely likely.
+    // Paste shortcut — read the controller's clipboard and, if it changed,
+    // push it before the paste keystroke so a copy-then-immediately-paste
+    // lands the new content instead of whatever was there before. Waiting
+    // for the sync to go out first (rather than firing both in parallel)
+    // guarantees wire order. But this must never be able to block the
+    // paste itself indefinitely — a clipboard read that hangs (permission
+    // prompt, browser quirk) must not silently eat the user's real
+    // keystroke, which is exactly what happened here once: the whole
+    // paste — even pure target-side-local paste with no controller
+    // clipboard involved at all — went dead because the send only ever
+    // ran inside syncClipboardNow's .then(). Race it against a short
+    // timeout so the keystroke always goes out either way.
     if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
-      this.conn.syncClipboardNow().then(() => {
-        this.conn.sendKey(mappedCode, true, mods)
-      })
+      const sendPasteKey = (): void => this.conn.sendKey(mappedCode, true, mods)
+      const timeout = new Promise<void>(resolve => setTimeout(resolve, 200))
+      Promise.race([this.conn.syncClipboardNow(), timeout]).then(sendPasteKey)
       return
     }
 

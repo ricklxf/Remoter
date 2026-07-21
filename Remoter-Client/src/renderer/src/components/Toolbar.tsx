@@ -29,6 +29,8 @@ interface Props {
   transferCount: number
   onToggleTransfers: () => void
   showTransfers: boolean
+  imeCalibrating: boolean
+  onToggleImeCalibration: () => void
   onMouseEnter?: () => void
   onMouseLeave?: () => void
 }
@@ -64,6 +66,7 @@ export function Toolbar({
   inputLocked, onToggleInputLock,
   displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
+  imeCalibrating, onToggleImeCalibration,
   onMouseEnter, onMouseLeave,
 }: Props) {
   const theme = useTheme()
@@ -121,6 +124,8 @@ export function Toolbar({
       <ToolBtn icon={THEME_ICON[theme]} title={`主题: ${THEME_LABEL[theme]}`}
         onClick={cycleTheme} />
       <ToolBtn icon="⛶" title="全屏" onClick={onToggleFullscreen} />
+      <ToolBtn icon="🎯" title={imeCalibrating ? '完成校准' : '校准输入法位置'}
+        onClick={onToggleImeCalibration} active={imeCalibrating} />
 
       <div style={s.sep} />
 

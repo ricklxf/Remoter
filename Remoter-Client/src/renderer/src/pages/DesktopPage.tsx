@@ -47,6 +47,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   useEffect(() => { setActiveDisplay(streamInfo.display ?? 0) }, [streamInfo.display])
   const [showTransfers, setShowTransfers] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(false)
+  // Lifted out of RemoteCanvas so the toolbar's icon button can drive it.
+  const [imeCalibrating, setImeCalibrating] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   // Cancel hide timer on unmount
@@ -145,6 +147,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
         streamInfo={streamInfo}
         initialCodec={initialCodec}
         isActive={isActive}
+        imeCalibrating={imeCalibrating}
       />
 
       {showTransfers && (
@@ -206,6 +209,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             transferCount={transfers.filter(t => !t.done).length}
             onToggleTransfers={() => setShowTransfers(v => !v)}
             showTransfers={showTransfers}
+            imeCalibrating={imeCalibrating}
+            onToggleImeCalibration={() => setImeCalibrating(v => !v)}
             onMouseEnter={cancelHideTimer}
             onMouseLeave={startHideTimer}
           />

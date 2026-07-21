@@ -11,9 +11,12 @@ interface Props {
   streamInfo: StreamInfo
   initialCodec?: VideoCodec | 'jpeg'
   isActive?: boolean
+  /** Toggled from the toolbar (see Toolbar's "🎯 校准输入法位置" button) — lifted
+   * up rather than kept as local state so the toolbar can show/drive it. */
+  imeCalibrating?: boolean
 }
 
-export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true }: Props) {
+export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true, imeCalibrating = false }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const videoRef    = useRef<HTMLVideoElement>(null)
   const frameRef    = useRef<HTMLDivElement>(null)
@@ -42,16 +45,14 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   const imeResKey = resolutionKey(streamInfo.width, streamInfo.height)
   const imeOffset = useImeOffset(imeResKey)
   // A real IME composition ends the instant the OS sees a mousedown
-  // anywhere outside the composing element — confirmed live: neither
-  // dragging nor clicking a nudge button ever took effect while an actual
-  // composition was in progress, because the box vanished (composition
-  // committed) before either gesture could complete. Calibration can't
-  // depend on a real composition surviving user interaction at all, so this
-  // mode shows a static placeholder box instead — nothing here is tied to
-  // compositionstart/compositionend, so no amount of clicking or dragging
-  // it can ever be interrupted by the OS ending anything.
-  const [calibrating, setCalibrating] = useState(false)
-  const showImeUi = !!compositionText || calibrating
+  // anywhere outside the composing element — confirmed live: dragging never
+  // took effect while an actual composition was in progress, because the
+  // box vanished (composition committed) before the gesture could complete.
+  // Calibration can't depend on a real composition surviving user
+  // interaction at all, so this mode shows a static placeholder box instead
+  // — nothing here is tied to compositionstart/compositionend, so dragging
+  // it can't be interrupted by the OS ending anything.
+  const showImeUi = !!compositionText || imeCalibrating
   const imeUiText = compositionText || '拼音示例'
 
   // Drag-to-calibrate: the OS candidate window's real size/position varies
@@ -377,67 +378,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             {imeUiText}
           </div>
         )}
-        {/* Only reachable in calibration mode (see calibrating above) — a
-            real composition ends the instant the OS sees a mousedown
-            anywhere outside the composing element, so neither this nor
-            dragging the box above ever had a chance to take effect while
-            actually typing (confirmed live: position never changed either
-            way). Calibration mode's box isn't tied to a real composition at
-            all, so nothing here can be interrupted by the OS ending one. */}
-        {calibrating && (
-          <div
-            style={{
-              position: 'absolute', left: `calc(50% + ${imeOffset.x + 56}px)`, bottom: imeOffset.y - 8,
-              display: 'grid', gridTemplateColumns: 'repeat(3, 20px)', gridTemplateRows: 'repeat(3, 20px)',
-              gap: 1, zIndex: 10,
-            }}
-          >
-            <div />
-            <NudgeBtn label="▲" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x, y: imeOffset.y + 5 })} />
-            <div />
-            <NudgeBtn label="◀" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x - 5, y: imeOffset.y })} />
-            <div />
-            <NudgeBtn label="▶" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x + 5, y: imeOffset.y })} />
-            <div />
-            <NudgeBtn label="▼" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x, y: imeOffset.y - 5 })} />
-            <div />
-          </div>
-        )}
-        {/* Always present (not gated on any composition state) so it's
-            reachable regardless of whether a real composition is even
-            possible to keep alive long enough to click anything else. */}
-        <div
-          onMouseDownCapture={(e) => { e.preventDefault(); e.stopPropagation(); setCalibrating(v => !v) }}
-          style={{
-            position: 'absolute', right: 8, bottom: 8, zIndex: 10,
-            padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', userSelect: 'none',
-            background: calibrating ? '#0a84ff' : 'rgba(0,0,0,0.55)', color: '#fff',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
-          }}
-        >
-          {calibrating ? '完成校准' : '校准输入法位置'}
-        </div>
       </div>
-    </div>
-  )
-}
-
-// onMouseDownCapture (not onClick) for the same reason as onEchoMouseDown
-// above: InputHandler's native 'mousedown' listener on the frame div fires
-// on the bubble phase, which happens before React's delegated onClick would
-// — without capture-phase stopPropagation here, the click leaks through to
-// the remote canvas as a real click on the target machine first.
-function NudgeBtn({ label, onNudge }: { label: string; onNudge: () => void }): React.JSX.Element {
-  return (
-    <div
-      onMouseDownCapture={(e) => { e.preventDefault(); e.stopPropagation(); onNudge() }}
-      style={{
-        width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'white', border: '1px solid #000', borderRadius: 3, fontSize: 10,
-        cursor: 'pointer', userSelect: 'none', boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
-      }}
-    >
-      {label}
     </div>
   )
 }

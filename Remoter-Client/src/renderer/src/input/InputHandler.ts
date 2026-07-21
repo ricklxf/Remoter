@@ -319,8 +319,11 @@ export class InputHandler {
     if (!this.enabled) return
     if (!this.hovering && !this.locked && !this.captured) return
     const ke = e as KeyboardEvent
-    // Never intercept these — let the browser handle its own fullscreen toggle/exit/devtools.
-    if (ke.code === 'F11' || ke.code === 'Escape' || ke.code === 'F12') return
+    // Never intercept these — let the browser handle its own fullscreen toggle/devtools.
+    // Escape is deliberately NOT in this list (see toolbar's fullscreen
+    // toggle button for exiting fullscreen instead): forwarding it to the
+    // target lets it close remote dialogs/menus like a real keypress would.
+    if (ke.code === 'F11' || ke.code === 'F12') return
     // The local IME is composing — hand off entirely: no preventDefault (the
     // IME needs the event) and no raw-key forwarding (the composed text
     // arrives via compositionend instead, see onCompositionEnd).

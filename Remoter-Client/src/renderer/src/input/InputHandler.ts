@@ -458,11 +458,11 @@ export class InputHandler {
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1]
         if (base64) this.conn.sendClipboardImage(base64)
-        this.conn.sendKey(mappedCode, true, mods)
+        this.conn.sendKeyViaWS(mappedCode, true, mods)
       }
       reader.readAsDataURL(imageFile)
     } else {
-      this.conn.sendKey(mappedCode, true, mods)
+      this.conn.sendKeyViaWS(mappedCode, true, mods)
     }
   }
 

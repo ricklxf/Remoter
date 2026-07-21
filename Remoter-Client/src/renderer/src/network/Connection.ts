@@ -242,6 +242,22 @@ export class Connection {
   sendKey(code: string, down: boolean, modifiers: string[]): void {
     this.sendJson({ type: 'key', code, down, modifiers })
   }
+  /** Same as sendKey, but forced onto the WS/encryption channel instead of
+   * the (usually faster) WebRTC DataChannel that 'key' messages normally
+   * prefer for input latency. Needed specifically for the keystroke that
+   * follows a clipboard push (see InputHandler.onPaste): clipboard_set/
+   * clipboard_set_image always travel the WS path, and two independent
+   * transports give no cross-channel ordering guarantee — under real
+   * network conditions the DataChannel-routed keystroke can reach the
+   * agent and get processed *before* the WS-routed clipboard content does,
+   * pasting stale data (the two only race-condition-free by luck on a
+   * near-zero-latency loopback connection, which is why this shipped
+   * without ever surfacing in that kind of testing). Forcing this specific
+   * keystroke onto the same channel as the clipboard message it depends on
+   * guarantees it arrives after, not just sends after. */
+  sendKeyViaWS(code: string, down: boolean, modifiers: string[]): void {
+    this.enqueueSend(() => ({ type: 'key', code, down, modifiers }), true)
+  }
   /** Gated by the "同步剪贴板" toggle — see setClipboardSyncManualEnabled. */
   sendClipboard(text: string): void {
     if (!this.clipboardEnabled) return
@@ -393,14 +409,14 @@ export class Connection {
     return true
   }
 
-  private enqueueSend(getObj: () => object): void {
+  private enqueueSend(getObj: () => object, forceWS = false): void {
     if (this.e2e.isReady) {
       const gen = this.queueGen
       this.sendQueue = this.sendQueue.then(async () => {
         if (this.queueGen !== gen) return
         try {
           const obj = getObj()
-          if (this.trySendViaControlChannel(obj)) return
+          if (!forceWS && this.trySendViaControlChannel(obj)) return
           const ct = await this.e2e.encryptJson(obj)
           const frame = new Uint8Array(1 + ct.length)
           frame[0] = ENCRYPTED_MSG
@@ -413,7 +429,7 @@ export class Connection {
     } else {
       try {
         const obj = getObj()
-        if (this.trySendViaControlChannel(obj)) return
+        if (!forceWS && this.trySendViaControlChannel(obj)) return
         this.ws!.send(JSON.stringify(obj))
       } catch (e) {
         console.warn('[Conn] send failed:', e)

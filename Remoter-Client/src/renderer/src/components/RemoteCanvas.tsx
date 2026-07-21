@@ -365,7 +365,56 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             {compositionText}
           </div>
         )}
+        {/* Click-based fallback for calibration: dragging depends on a
+            sustained mousedown→mousemove→mouseup sequence, but a real IME
+            composition can end the instant the OS sees a mousedown anywhere
+            outside the composing element — before that sequence ever
+            completes usefully, which looks exactly like "dragging does
+            nothing" and left calibration genuinely stuck for a mouse user
+            (confirmed: position didn't change even after a drag attempt). A
+            single click is atomic — even if it also ends composition as a
+            side effect, the click itself still lands and updates the offset
+            immediately, one small nudge at a time. */}
+        {compositionText && (
+          <div
+            style={{
+              position: 'absolute', left: `calc(50% + ${imeOffset.x + 56}px)`, bottom: imeOffset.y - 8,
+              display: 'grid', gridTemplateColumns: 'repeat(3, 20px)', gridTemplateRows: 'repeat(3, 20px)',
+              gap: 1, zIndex: 10,
+            }}
+          >
+            <div />
+            <NudgeBtn label="▲" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x, y: imeOffset.y + 5 })} />
+            <div />
+            <NudgeBtn label="◀" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x - 5, y: imeOffset.y })} />
+            <div />
+            <NudgeBtn label="▶" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x + 5, y: imeOffset.y })} />
+            <div />
+            <NudgeBtn label="▼" onNudge={() => setImeOffset(imeResKey, { x: imeOffset.x, y: imeOffset.y - 5 })} />
+            <div />
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+// onMouseDownCapture (not onClick) for the same reason as onEchoMouseDown
+// above: InputHandler's native 'mousedown' listener on the frame div fires
+// on the bubble phase, which happens before React's delegated onClick would
+// — without capture-phase stopPropagation here, the click leaks through to
+// the remote canvas as a real click on the target machine first.
+function NudgeBtn({ label, onNudge }: { label: string; onNudge: () => void }): React.JSX.Element {
+  return (
+    <div
+      onMouseDownCapture={(e) => { e.preventDefault(); e.stopPropagation(); onNudge() }}
+      style={{
+        width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'white', border: '1px solid #000', borderRadius: 3, fontSize: 10,
+        cursor: 'pointer', userSelect: 'none', boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+      }}
+    >
+      {label}
     </div>
   )
 }

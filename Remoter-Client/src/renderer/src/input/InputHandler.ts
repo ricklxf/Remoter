@@ -40,6 +40,9 @@ export class InputHandler {
   // once the browser's native paste ClipboardEvent actually fires — see
   // onKeyDown's KeyV branch for why the two are split apart.
   private pendingPasteMods: string[] = []
+  // TEMP DIAGNOSTIC state — see diag() / onPaste's 300ms check. Remove together.
+  private pasteAttemptId = 0
+  private lastPasteFiredId = -1
 
   // Mouse-move send throttle: native mousemove can fire 100-240Hz, each one
   // synchronously injects a CGEvent on the Mac side (an IPC round-trip to
@@ -315,8 +318,23 @@ export class InputHandler {
     return InputHandler.PLAIN_SYMBOL_CODES.has(ke.code)
   }
 
+  // TEMP DIAGNOSTIC — visible on-screen (not console, which prod strips)
+  // so we can see exactly which step a real paste attempt dies at. Remove
+  // once the paste bug is confirmed fixed.
+  private static diag(msg: string): void {
+    const el = document.createElement('div')
+    el.textContent = msg
+    el.style.cssText = 'position:fixed;top:10px;left:10px;z-index:2147483647;background:#e0245e;color:#fff;font:13px/1.4 monospace;padding:8px 12px;border-radius:6px;white-space:pre-wrap;max-width:70vw;box-shadow:0 2px 8px rgba(0,0,0,.4)'
+    document.body.appendChild(el)
+    setTimeout(() => el.remove(), 6000)
+  }
+
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
+    const ke0 = e as KeyboardEvent
+    if (ke0.code === 'KeyV' && (ke0.ctrlKey || ke0.metaKey)) {
+      InputHandler.diag(`[粘贴诊断 1/3] keydown 收到 hovering=${this.hovering} captured=${this.captured} locked=${this.locked}`)
+    }
     if (!this.hovering && !this.locked && !this.captured) return
     const ke = e as KeyboardEvent
     // Never intercept these — let the browser handle its own fullscreen toggle/exit/devtools.
@@ -375,6 +393,13 @@ export class InputHandler {
     // clients (Chrome Remote Desktop, Guacamole) use for exactly this
     // reason. onPaste does the actual sendKey once it has the data.
     if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
+      InputHandler.diag('[粘贴诊断 2/3] 进入粘贴分支，未 preventDefault，等待浏览器原生 paste 事件…')
+      const stamp = ++this.pasteAttemptId
+      setTimeout(() => {
+        if (this.lastPasteFiredId !== stamp) {
+          InputHandler.diag('[粘贴诊断] 300ms 内浏览器没有触发原生 paste 事件——浏览器没有识别成粘贴指令')
+        }
+      }, 300)
       this.pendingPasteMods = mapModifiers(collectModifiers(ke), getKeymap())
       this.pressedKeys.add(ke.code)
       return
@@ -430,6 +455,9 @@ export class InputHandler {
   // textarea itself (harmless either way since it's invisible, but there's
   // no reason to let it accumulate there).
   private onPaste = (e: Event): void => {
+    this.lastPasteFiredId = this.pasteAttemptId
+    const ce0 = e as ClipboardEvent
+    InputHandler.diag(`[粘贴诊断 3/3] paste 事件触发！enabled=${this.enabled} 文本长度=${ce0.clipboardData?.getData('text/plain')?.length ?? 'null'}`)
     if (!this.enabled) return
     const ce = e as ClipboardEvent
     ce.preventDefault()

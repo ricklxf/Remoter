@@ -41,6 +41,18 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   // couldn't work across, say, a 1080p session and a 2K one.
   const imeResKey = resolutionKey(streamInfo.width, streamInfo.height)
   const imeOffset = useImeOffset(imeResKey)
+  // A real IME composition ends the instant the OS sees a mousedown
+  // anywhere outside the composing element — confirmed live: neither
+  // dragging nor clicking a nudge button ever took effect while an actual
+  // composition was in progress, because the box vanished (composition
+  // committed) before either gesture could complete. Calibration can't
+  // depend on a real composition surviving user interaction at all, so this
+  // mode shows a static placeholder box instead — nothing here is tied to
+  // compositionstart/compositionend, so no amount of clicking or dragging
+  // it can ever be interrupted by the OS ending anything.
+  const [calibrating, setCalibrating] = useState(false)
+  const showImeUi = !!compositionText || calibrating
+  const imeUiText = compositionText || '拼音示例'
 
   // Drag-to-calibrate: the OS candidate window's real size/position varies
   // with the remote machine's resolution/DPI scaling, so no single hardcoded
@@ -342,7 +354,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             so the drag would start *after* the click already leaked to the
             remote. Capture phase runs before the event ever reaches the
             frame div, so stopPropagation here keeps it local. */}
-        {compositionText && (
+        {showImeUi && (
           <div
             onMouseDownCapture={onEchoMouseDown}
             style={{
@@ -362,20 +374,17 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
               whiteSpace: 'pre', pointerEvents: 'auto', cursor: 'move', zIndex: 10,
             }}
           >
-            {compositionText}
+            {imeUiText}
           </div>
         )}
-        {/* Click-based fallback for calibration: dragging depends on a
-            sustained mousedown→mousemove→mouseup sequence, but a real IME
-            composition can end the instant the OS sees a mousedown anywhere
-            outside the composing element — before that sequence ever
-            completes usefully, which looks exactly like "dragging does
-            nothing" and left calibration genuinely stuck for a mouse user
-            (confirmed: position didn't change even after a drag attempt). A
-            single click is atomic — even if it also ends composition as a
-            side effect, the click itself still lands and updates the offset
-            immediately, one small nudge at a time. */}
-        {compositionText && (
+        {/* Only reachable in calibration mode (see calibrating above) — a
+            real composition ends the instant the OS sees a mousedown
+            anywhere outside the composing element, so neither this nor
+            dragging the box above ever had a chance to take effect while
+            actually typing (confirmed live: position never changed either
+            way). Calibration mode's box isn't tied to a real composition at
+            all, so nothing here can be interrupted by the OS ending one. */}
+        {calibrating && (
           <div
             style={{
               position: 'absolute', left: `calc(50% + ${imeOffset.x + 56}px)`, bottom: imeOffset.y - 8,
@@ -394,6 +403,20 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             <div />
           </div>
         )}
+        {/* Always present (not gated on any composition state) so it's
+            reachable regardless of whether a real composition is even
+            possible to keep alive long enough to click anything else. */}
+        <div
+          onMouseDownCapture={(e) => { e.preventDefault(); e.stopPropagation(); setCalibrating(v => !v) }}
+          style={{
+            position: 'absolute', right: 8, bottom: 8, zIndex: 10,
+            padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', userSelect: 'none',
+            background: calibrating ? '#0a84ff' : 'rgba(0,0,0,0.55)', color: '#fff',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+          }}
+        >
+          {calibrating ? '完成校准' : '校准输入法位置'}
+        </div>
       </div>
     </div>
   )

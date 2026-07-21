@@ -4,7 +4,7 @@ import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
 import { StreamInfo } from '../types'
-import { useImeOffset, setImeOffset } from '../utils/imeOffset'
+import { useImeOffset, setImeOffset, resolutionKey } from '../utils/imeOffset'
 
 interface Props {
   conn: Connection
@@ -37,14 +37,17 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   // anchor along with it, which was throwing the candidate window out of
   // alignment with the fixed spot we calibrated it for.
   const [compositionText, setCompositionText] = useState('')
-  const imeOffset = useImeOffset()
+  // Keyed by remote resolution — see imeOffset.ts for why one global offset
+  // couldn't work across, say, a 1080p session and a 2K one.
+  const imeResKey = resolutionKey(streamInfo.width, streamInfo.height)
+  const imeOffset = useImeOffset(imeResKey)
 
   // Drag-to-calibrate: the OS candidate window's real size/position varies
   // with the remote machine's resolution/DPI scaling, so no single hardcoded
   // anchor looks right everywhere (see imeOffset.ts). Dragging the echo box
   // directly (no separate "calibration mode") moves both it and the anchor
   // the OS positions its candidate window against, live, and persists on
-  // release.
+  // release — scoped to the resolution currently streaming.
   function onEchoMouseDown(e: React.MouseEvent): void {
     e.preventDefault()
     e.stopPropagation()
@@ -53,7 +56,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       ev.preventDefault()
       ev.stopPropagation()
       // bottom grows upward on screen, clientY grows downward — invert.
-      setImeOffset({ x: start.origX + (ev.clientX - start.x), y: start.origY - (ev.clientY - start.y) })
+      setImeOffset(imeResKey, { x: start.origX + (ev.clientX - start.x), y: start.origY - (ev.clientY - start.y) })
     }
     const onUp = (ev: MouseEvent): void => {
       ev.preventDefault()

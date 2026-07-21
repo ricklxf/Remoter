@@ -40,9 +40,6 @@ export class InputHandler {
   // once the browser's native paste ClipboardEvent actually fires — see
   // onKeyDown's KeyV branch for why the two are split apart.
   private pendingPasteMods: string[] = []
-  // TEMP DIAGNOSTIC state — see diag() / onPaste's 300ms check. Remove together.
-  private pasteAttemptId = 0
-  private lastPasteFiredId = -1
 
   // Mouse-move send throttle: native mousemove can fire 100-240Hz, each one
   // synchronously injects a CGEvent on the Mac side (an IPC round-trip to
@@ -318,23 +315,8 @@ export class InputHandler {
     return InputHandler.PLAIN_SYMBOL_CODES.has(ke.code)
   }
 
-  // TEMP DIAGNOSTIC — visible on-screen (not console, which prod strips)
-  // so we can see exactly which step a real paste attempt dies at. Remove
-  // once the paste bug is confirmed fixed.
-  private static diag(msg: string): void {
-    const el = document.createElement('div')
-    el.textContent = msg
-    el.style.cssText = 'position:fixed;top:10px;left:10px;z-index:2147483647;background:#e0245e;color:#fff;font:13px/1.4 monospace;padding:8px 12px;border-radius:6px;white-space:pre-wrap;max-width:70vw;box-shadow:0 2px 8px rgba(0,0,0,.4)'
-    document.body.appendChild(el)
-    setTimeout(() => el.remove(), 6000)
-  }
-
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
-    const ke0 = e as KeyboardEvent
-    if (ke0.code === 'KeyV' && (ke0.ctrlKey || ke0.metaKey)) {
-      InputHandler.diag(`[粘贴诊断 1/3] keydown 收到 hovering=${this.hovering} captured=${this.captured} locked=${this.locked}`)
-    }
     if (!this.hovering && !this.locked && !this.captured) return
     const ke = e as KeyboardEvent
     // Never intercept these — let the browser handle its own fullscreen toggle/exit/devtools.
@@ -393,13 +375,6 @@ export class InputHandler {
     // clients (Chrome Remote Desktop, Guacamole) use for exactly this
     // reason. onPaste does the actual sendKey once it has the data.
     if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
-      InputHandler.diag('[粘贴诊断 2/3] 进入粘贴分支，未 preventDefault，等待浏览器原生 paste 事件…')
-      const stamp = ++this.pasteAttemptId
-      setTimeout(() => {
-        if (this.lastPasteFiredId !== stamp) {
-          InputHandler.diag('[粘贴诊断] 300ms 内浏览器没有触发原生 paste 事件——浏览器没有识别成粘贴指令')
-        }
-      }, 300)
       this.pendingPasteMods = mapModifiers(collectModifiers(ke), getKeymap())
       this.pressedKeys.add(ke.code)
       return
@@ -455,32 +430,18 @@ export class InputHandler {
   // textarea itself (harmless either way since it's invisible, but there's
   // no reason to let it accumulate there).
   private onPaste = (e: Event): void => {
-    this.lastPasteFiredId = this.pasteAttemptId
-    const ce0 = e as ClipboardEvent
-    const hasImage = ce0.clipboardData ? Array.from(ce0.clipboardData.items).some(i => i.type.startsWith('image/')) : false
-    InputHandler.diag((hasImage
-      ? '【浏览器剪贴板里找到了图片格式】'
-      : `【浏览器剪贴板里没有图片，只有文字】types=${JSON.stringify(ce0.clipboardData?.types)}`)
-      + ` 同步开关=${this.conn.clipboardSyncEnabledForDiag ? '开' : '关！！'}`)
     if (!this.enabled) return
     const ce = e as ClipboardEvent
     ce.preventDefault()
 
     const text = ce.clipboardData?.getData('text/plain')
-    if (text) {
-      InputHandler.diag(`【同时还发现了文字，一起发了】"${text.slice(0, 30)}"`)
-      this.conn.sendClipboard(text)
-    }
+    if (text) this.conn.sendClipboard(text)
 
     let imageFile: File | null = null
     const items = ce.clipboardData?.items
     if (items) {
       for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) {
-          imageFile = items[i].getAsFile()
-          InputHandler.diag(`【尝试取出图片文件】kind=${items[i].kind} type=${items[i].type} getAsFile结果=${imageFile ? ('成功，大小=' + imageFile.size + 'B') : '返回了 null！'}`)
-          break
-        }
+        if (items[i].type.startsWith('image/')) { imageFile = items[i].getAsFile(); break }
       }
     }
 
@@ -496,12 +457,7 @@ export class InputHandler {
       const reader = new FileReader()
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1]
-        InputHandler.diag(`【图片编码完成，发送 clipboard_set_image】base64长度=${base64?.length ?? 'null'}，随后发送粘贴键`)
         if (base64) this.conn.sendClipboardImage(base64)
-        this.conn.sendKey(mappedCode, true, mods)
-      }
-      reader.onerror = () => {
-        InputHandler.diag('【FileReader 读取图片失败】' + String(reader.error))
         this.conn.sendKey(mappedCode, true, mods)
       }
       reader.readAsDataURL(imageFile)

@@ -199,6 +199,19 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     private var lastPong = Date()
     private var pingTask: Scheduled<Void>?
 
+    // Reassembly state for fragmented messages (fin: false, followed by one
+    // or more .continuation frames) — a large single WebSocket message like
+    // an encrypted clipboard image (the base64 PNG pushes the encrypted
+    // frame past ~1MB) gets split by the browser into multiple frames even
+    // though maxFrameSize above is 32MB (that cap is per-*frame*, not
+    // per-message). Every other message type here has always been small
+    // enough to arrive as one fin:true frame, so this path went untested
+    // until an image-sized payload actually exercised it — before this fix,
+    // .continuation frames fell through to `default: break` and were
+    // silently dropped, truncating/losing the message entirely.
+    private var reassemblyOpcode: WebSocketOpcode?
+    private var reassemblyBuffer: ByteBuffer?
+
     init(client: WSClient, server: WebSocketServer) {
         self.client = client
         self.server = server
@@ -240,14 +253,26 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let frame = unwrapInboundIn(data)
         switch frame.opcode {
-        case .text:
-            var buf = frame.unmaskedData
-            if let text = buf.readString(length: buf.readableBytes) {
-                server?.onText?(client, text)
+        case .text, .binary:
+            if frame.fin {
+                dispatch(opcode: frame.opcode, buf: frame.unmaskedData)
+            } else {
+                // First fragment of a multi-frame message — start accumulating;
+                // more .continuation frames follow before this message is complete.
+                reassemblyOpcode = frame.opcode
+                reassemblyBuffer = frame.unmaskedData
             }
-        case .binary:
-            let buf = frame.unmaskedData
-            server?.onBinary?(client, Data(buf.readableBytesView))
+        case .continuation:
+            guard var buf = reassemblyBuffer, let opcode = reassemblyOpcode else { break }
+            var part = frame.unmaskedData
+            buf.writeBuffer(&part)
+            if frame.fin {
+                reassemblyBuffer = nil
+                reassemblyOpcode = nil
+                dispatch(opcode: opcode, buf: buf)
+            } else {
+                reassemblyBuffer = buf
+            }
         case .connectionClose:
             if !closed { closed = true; server?.onDisconnect?(client) }
             context.close(promise: nil)
@@ -256,6 +281,20 @@ private final class WSFrameHandler: ChannelInboundHandler, @unchecked Sendable {
             context.writeAndFlush(wrapOutboundOut(pong), promise: nil)
         case .pong:
             lastPong = Date()
+        default:
+            break
+        }
+    }
+
+    private func dispatch(opcode: WebSocketOpcode, buf: ByteBuffer) {
+        switch opcode {
+        case .text:
+            var b = buf
+            if let text = b.readString(length: b.readableBytes) {
+                server?.onText?(client, text)
+            }
+        case .binary:
+            server?.onBinary?(client, Data(buf.readableBytesView))
         default:
             break
         }

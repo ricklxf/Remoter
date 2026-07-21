@@ -347,6 +347,15 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
             onMouseDownCapture={onEchoMouseDown}
             style={{
               position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: imeOffset.y + 4,
+              // A short composition (e.g. one or two pinyin letters) sized
+              // this box down to a sliver a few dozen px wide — easy to miss
+              // by a couple pixels while dragging, which sends that click
+              // straight through to the remote canvas instead (looks like
+              // "dragging does nothing" from the user's side). Floor the hit
+              // target well above the text's own size so it's always easy
+              // to grab regardless of how short the composition is.
+              minWidth: 48, minHeight: 24, boxSizing: 'content-box',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
               padding: '4px 8px', border: '2px solid #000', borderRadius: 4,
               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
               background: 'white', color: '#111', fontSize: 15,

@@ -457,8 +457,10 @@ export class InputHandler {
   private onPaste = (e: Event): void => {
     this.lastPasteFiredId = this.pasteAttemptId
     const ce0 = e as ClipboardEvent
-    const itemTypes = ce0.clipboardData ? Array.from(ce0.clipboardData.items).map(i => i.kind + ':' + i.type) : []
-    InputHandler.diag(`[粘贴诊断 3/3] paste 触发 types=${JSON.stringify(ce0.clipboardData?.types)} items=${JSON.stringify(itemTypes)} 文本="${ce0.clipboardData?.getData('text/plain')?.slice(0, 40)}"`)
+    const hasImage = ce0.clipboardData ? Array.from(ce0.clipboardData.items).some(i => i.type.startsWith('image/')) : false
+    InputHandler.diag(hasImage
+      ? '【浏览器剪贴板里找到了图片格式】'
+      : `【浏览器剪贴板里没有图片，只有文字】types=${JSON.stringify(ce0.clipboardData?.types)}`)
     if (!this.enabled) return
     const ce = e as ClipboardEvent
     ce.preventDefault()

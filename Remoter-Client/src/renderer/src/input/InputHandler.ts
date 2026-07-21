@@ -457,7 +457,8 @@ export class InputHandler {
   private onPaste = (e: Event): void => {
     this.lastPasteFiredId = this.pasteAttemptId
     const ce0 = e as ClipboardEvent
-    InputHandler.diag(`[粘贴诊断 3/3] paste 事件触发！enabled=${this.enabled} 文本长度=${ce0.clipboardData?.getData('text/plain')?.length ?? 'null'}`)
+    const itemTypes = ce0.clipboardData ? Array.from(ce0.clipboardData.items).map(i => i.kind + ':' + i.type) : []
+    InputHandler.diag(`[粘贴诊断 3/3] paste 触发 types=${JSON.stringify(ce0.clipboardData?.types)} items=${JSON.stringify(itemTypes)} 文本="${ce0.clipboardData?.getData('text/plain')?.slice(0, 40)}"`)
     if (!this.enabled) return
     const ce = e as ClipboardEvent
     ce.preventDefault()

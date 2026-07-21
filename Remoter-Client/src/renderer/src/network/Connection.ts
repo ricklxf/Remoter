@@ -243,6 +243,9 @@ export class Connection {
     this.sendJson({ type: 'key', code, down, modifiers })
   }
   /** Gated by the "同步剪贴板" toggle — see setClipboardSyncManualEnabled. */
+  // TEMP DIAGNOSTIC getter — remove together with InputHandler.diag().
+  get clipboardSyncEnabledForDiag(): boolean { return this.clipboardEnabled }
+
   sendClipboard(text: string): void {
     if (!this.clipboardEnabled) return
     this.sendJson({ type: 'clipboard_set', text })

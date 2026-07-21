@@ -458,21 +458,29 @@ export class InputHandler {
     this.lastPasteFiredId = this.pasteAttemptId
     const ce0 = e as ClipboardEvent
     const hasImage = ce0.clipboardData ? Array.from(ce0.clipboardData.items).some(i => i.type.startsWith('image/')) : false
-    InputHandler.diag(hasImage
+    InputHandler.diag((hasImage
       ? '【浏览器剪贴板里找到了图片格式】'
       : `【浏览器剪贴板里没有图片，只有文字】types=${JSON.stringify(ce0.clipboardData?.types)}`)
+      + ` 同步开关=${this.conn.clipboardSyncEnabledForDiag ? '开' : '关！！'}`)
     if (!this.enabled) return
     const ce = e as ClipboardEvent
     ce.preventDefault()
 
     const text = ce.clipboardData?.getData('text/plain')
-    if (text) this.conn.sendClipboard(text)
+    if (text) {
+      InputHandler.diag(`【同时还发现了文字，一起发了】"${text.slice(0, 30)}"`)
+      this.conn.sendClipboard(text)
+    }
 
     let imageFile: File | null = null
     const items = ce.clipboardData?.items
     if (items) {
       for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) { imageFile = items[i].getAsFile(); break }
+        if (items[i].type.startsWith('image/')) {
+          imageFile = items[i].getAsFile()
+          InputHandler.diag(`【尝试取出图片文件】kind=${items[i].kind} type=${items[i].type} getAsFile结果=${imageFile ? ('成功，大小=' + imageFile.size + 'B') : '返回了 null！'}`)
+          break
+        }
       }
     }
 
@@ -488,7 +496,12 @@ export class InputHandler {
       const reader = new FileReader()
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1]
+        InputHandler.diag(`【图片编码完成，发送 clipboard_set_image】base64长度=${base64?.length ?? 'null'}，随后发送粘贴键`)
         if (base64) this.conn.sendClipboardImage(base64)
+        this.conn.sendKey(mappedCode, true, mods)
+      }
+      reader.onerror = () => {
+        InputHandler.diag('【FileReader 读取图片失败】' + String(reader.error))
         this.conn.sendKey(mappedCode, true, mods)
       }
       reader.readAsDataURL(imageFile)

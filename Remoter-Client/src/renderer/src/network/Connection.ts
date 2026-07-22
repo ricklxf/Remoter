@@ -268,13 +268,30 @@ export class Connection {
   sendKeyViaWS(code: string, down: boolean, modifiers: string[]): void {
     this.enqueueSend(() => ({ type: 'key', code, down, modifiers }), true)
   }
+  // Dedup state for sendClipboard/sendClipboardImage — only what *this*
+  // Connection has itself last pushed. Without this, every single paste
+  // (native paste event fires on every Cmd+V/Ctrl+V, whether or not the
+  // controller's clipboard has anything to do with it) would unconditionally
+  // re-push the controller's clipboard, clobbering a paste that was meant
+  // to be pure target-side-local (copy something on the target itself, then
+  // paste it elsewhere on the target — that copy never touched the
+  // controller's clipboard, so it must be left alone). Fixed this exact bug
+  // once already on the old async-clipboard-read design; lost it in the
+  // rewrite to native paste events and never carried it back over.
+  private lastSyncedText = ''
+  private lastSyncedImgLen = -1
+
   /** Gated by the "同步剪贴板" toggle — see setClipboardSyncManualEnabled. */
   sendClipboard(text: string): void {
     if (!this.clipboardEnabled) return
+    if (text === this.lastSyncedText) return
+    this.lastSyncedText = text
     this.sendJson({ type: 'clipboard_set', text })
   }
   sendClipboardImage(base64Png: string): void {
     if (!this.clipboardEnabled) return
+    if (base64Png.length === this.lastSyncedImgLen) return
+    this.lastSyncedImgLen = base64Png.length
     this.sendJson({ type: 'clipboard_set_image', data: base64Png })
   }
   sendFps(fps: number, auto = false): void {

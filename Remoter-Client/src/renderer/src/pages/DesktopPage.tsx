@@ -54,6 +54,15 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // Cancel hide timer on unmount
   useEffect(() => () => clearTimeout(hideTimerRef.current), [])
 
+  // Reverse clipboard sync (target → local) must only apply for the tab
+  // actually in front — with multiple tabs open to different machines, a
+  // background tab's target could otherwise silently overwrite the local
+  // clipboard with content meant for a machine the user isn't even looking
+  // at right now. See Connection.setReverseClipboardActive.
+  useEffect(() => {
+    conn.setReverseClipboardActive(isActive)
+  }, [conn, isActive])
+
   const startHideTimer = useCallback(() => {
     hideTimerRef.current = setTimeout(() => setToolbarVisible(false), 3000)
   }, [])

@@ -105,6 +105,16 @@ export class Connection {
   // pasting into, right when you need it.
   private clipboardEnabled = true
 
+  // Reverse direction (target's own clipboard → this local machine) —
+  // low-priority, agent-polled every few seconds (see Session.swift's
+  // startClipboardMonitor), and only ever actually applied while this
+  // session's tab is the one in front. Without that gate, a background tab
+  // controlling a different machine could silently overwrite the local
+  // clipboard with whatever *that* target happens to have, clobbering
+  // something the user just deliberately copied for the tab they're
+  // actually looking at — see DesktopPage's isActive wiring.
+  private reverseClipboardActive = true
+
   onEvent:      ((e: ConnEvent) => void)                               | null = null
   onDirListing: ((path: string, entries: DirEntry[]) => void)          | null = null
 
@@ -815,6 +825,15 @@ export class Connection {
         break
       }
 
+      case 'clipboard_from_target': {
+        if (!this.reverseClipboardActive) break
+        const fromTargetText  = msg.text  as string | undefined
+        const fromTargetImage = msg.image as string | undefined
+        if (fromTargetText) window.remoterAPI?.writeClipboard(fromTargetText)
+        if (fromTargetImage) window.remoterAPI?.writeClipboardImage?.(fromTargetImage)
+        break
+      }
+
       case 'host_disconnected':
         this.emit({ type: 'state', state: 'disconnected' })
         break
@@ -865,6 +884,13 @@ export class Connection {
    * session pushes the controller's current clipboard first. */
   setClipboardSyncManualEnabled(enabled: boolean): void {
     this.clipboardEnabled = enabled
+  }
+
+  /** Gates the reverse direction (target's clipboard → local machine) —
+   * DesktopPage calls this whenever its isActive prop changes, so only the
+   * tab actually in front ever writes to the shared local clipboard. */
+  setReverseClipboardActive(active: boolean): void {
+    this.reverseClipboardActive = active
   }
 
   private emit(e: ConnEvent): void {

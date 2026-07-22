@@ -117,6 +117,18 @@ final class Session {
     // doesn't fire when the screen is static and CGDisplayStream pushes no frames.
     private var keepaliveTimer: DispatchSourceTimer?
 
+    // Low-priority reverse sync: this agent's own clipboard → controller.
+    // Deliberately much slower than the controller→agent path (which is
+    // paste-triggered, effectively instant) — the controller's clipboard is
+    // the side that matters for responsiveness; this direction only needs
+    // to eventually catch up. Tracks what it last SENT (not what a
+    // clipboard_set/clipboard_set_image just applied) so applying the
+    // controller's own push right back doesn't get echoed straight back to
+    // it as if it were a fresh local copy.
+    private var clipboardTimer: DispatchSourceTimer?
+    private var lastSentClipboardText = ""
+    private var lastSentClipboardImageSize = -1
+
     init(id: UUID, connection: WSClient, pin: String) {
         self.id = id
         self.connection = connection
@@ -223,6 +235,7 @@ final class Session {
         }
         input?.releaseAllKeys()
         stopKeepalive()
+        stopClipboardMonitor()
         cursorMonitor?.stop()
         cursorMonitor = nil
         encoder?.close()
@@ -268,6 +281,7 @@ final class Session {
             // injects, not a person fighting for control. No-op if another
             // session already started it.
             InputSourceForcer.shared.begin()
+            startClipboardMonitor()
             sendJsonRaw(["type": "auth_ok", "token": token, "username": "__pin__"])
             Task { await self.beginCapture() }
             return
@@ -284,6 +298,7 @@ final class Session {
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
                 InputSourceForcer.shared.begin()
+                startClipboardMonitor()
                 sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
             } else {
@@ -302,6 +317,7 @@ final class Session {
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
                 InputSourceForcer.shared.begin()
+                startClipboardMonitor()
                 sendJsonRaw(["type": "auth_ok"])
                 NSLog("[Session] token auth as %@", username)
                 Task { await self.beginCapture() }
@@ -355,12 +371,13 @@ final class Session {
             input?.typeText(text)
 
         case .clipboardSet(let text):
-            // One-directional now: the controller's clipboard is the sole
-            // source of truth, this agent never pushes its own clipboard
-            // back (see the removed startClipboardMonitor) — so there's
-            // nothing to echo-prevent against anymore, just apply it.
+            // The controller's push is the high-priority direction — apply
+            // it immediately. Also mark it as "already sent" so the slow
+            // reverse-sync poll below doesn't see this same content as a
+            // fresh local copy a moment later and echo it straight back.
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
+            lastSentClipboardText = text
 
         case .clipboardSetImage(let data):
             guard !data.isEmpty, let imgData = Data(base64Encoded: data) else { break }
@@ -372,6 +389,7 @@ final class Session {
                let tiff = rep.representation(using: .tiff, properties: [:]) {
                 pb.setData(tiff, forType: .tiff)
             }
+            lastSentClipboardImageSize = imgData.count
 
         case .fileStart(let fid, let name, let size):
             fileReceiver?.start(id: fid, name: name, size: size)
@@ -1089,6 +1107,51 @@ final class Session {
     private func stopKeepalive() {
         keepaliveTimer?.cancel()
         keepaliveTimer = nil
+    }
+
+    // MARK: - 剪贴板反向同步（低优先级：被控端 → 控制端）
+
+    // Much slower than the controller→agent path on purpose — see the field
+    // comments on lastSentClipboardText/lastSentClipboardImageSize. The
+    // client only actually applies this to its local OS clipboard while its
+    // tab is the active one (see Connection.ts), so a background session
+    // controlling a different machine can't clobber what the user is
+    // currently working with — but that gating lives entirely on the client
+    // side; this agent just reports its own clipboard changes unconditionally.
+    private func startClipboardMonitor() {
+        lastSentClipboardText = NSPasteboard.general.string(forType: .string) ?? ""
+        lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let text = NSPasteboard.general.string(forType: .string) ?? ""
+            if !text.isEmpty && text != self.lastSentClipboardText {
+                self.lastSentClipboardText = text
+                self.sendJson(["type": "clipboard_from_target", "text": text])
+            }
+            guard let pngData = self.clipboardImagePNG(), pngData.count != self.lastSentClipboardImageSize else { return }
+            guard pngData.count <= 4 * 1024 * 1024 else { return }
+            self.lastSentClipboardImageSize = pngData.count
+            self.sendJson(["type": "clipboard_from_target", "image": pngData.base64EncodedString()])
+        }
+        timer.resume()
+        clipboardTimer = timer
+    }
+
+    private func clipboardImagePNG() -> Data? {
+        let pb = NSPasteboard.general
+        if let png = pb.data(forType: .png) { return png }
+        if let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
+            return rep.representation(using: .png, properties: [:])
+        }
+        return nil
+    }
+
+    private func stopClipboardMonitor() {
+        clipboardTimer?.cancel()
+        clipboardTimer = nil
     }
 
     // MARK: - 系统静音控制

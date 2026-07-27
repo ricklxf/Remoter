@@ -74,6 +74,8 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
     <string>1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -91,6 +93,10 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
 </dict>
 </plist>
 PLIST
+
+# ── 拷贝 App 图标 ─────────────────────────────────────────────────────────
+mkdir -p "$APP_DIR/Contents/Resources"
+cp "$PKG_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 echo "✅ Built: $APP_DIR"
 

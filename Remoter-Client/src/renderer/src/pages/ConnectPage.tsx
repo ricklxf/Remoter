@@ -18,6 +18,27 @@ function upgradeToWss(url: string): string {
   return url.startsWith('ws://') ? 'wss://' + url.slice('ws://'.length) : url
 }
 
+// App logo — three hexagons in a triangular cluster, duck-egg-teal gradient
+// (matches the Mac/Windows app icons and the web favicon). Inline SVG rather
+// than a raster image so it stays crisp at any size/DPI.
+function RemoterLogo({ size }: { size: number }): React.JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" fill="none">
+      <defs>
+        <linearGradient id="remoterLogoGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#7DD8D8" />
+          <stop offset="100%" stopColor="#0D9488" />
+        </linearGradient>
+      </defs>
+      <g stroke="url(#remoterLogoGrad)" strokeWidth={5.66} strokeLinejoin="round" strokeLinecap="round">
+        <polygon points="50,13.67 66.91,23.44 66.91,42.97 50,52.73 33.09,42.97 33.09,23.44" />
+        <polygon points="33.09,42.97 50,52.73 50,72.27 33.09,82.03 16.17,72.27 16.17,52.73" />
+        <polygon points="66.91,42.97 83.83,52.73 83.83,72.27 66.91,82.03 50,72.27 50,52.73" />
+      </g>
+    </svg>
+  )
+}
+
 // "wss://192.168.1.144:7788" → "192.168.1.144"，下拉里只展示这部分作为 (ip) 标识
 function addressHost(address: string): string {
   try { return new URL(address).hostname } catch { return address }
@@ -161,7 +182,7 @@ export function ConnectPage({ onConnect, isConnecting, errorMsg }: Props) {
             WebkitAppRegion: 'drag' }} />
         )}
         <div style={s.logo}>
-          <span style={s.logoIcon}>⬡</span>
+          <RemoterLogo size={32} />
           <h1 style={s.logoText}>Remoter</h1>
         </div>
         <p style={s.sub}>远程控制 · 超清 2K · 60fps</p>
@@ -343,7 +364,6 @@ const s: Record<string, React.CSSProperties> = {
   wrap:    { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg)', overflowX: 'hidden' },
   card:    { background: 'var(--bg2)', borderRadius: 16, padding: '40px 36px 28px', width: '100%', maxWidth: 420, boxSizing: 'border-box' as const, boxShadow: 'var(--shadow)', position: 'relative' as const },
   logo:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 0 },
-  logoIcon:{ fontSize: 32, color: 'var(--primary)' },
   logoText:{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px', margin: 0 },
   sub:     { color: 'var(--text2)', fontSize: 13, marginTop: 4, marginBottom: 10 },
   tabs:    { display: 'flex', gap: 8, marginBottom: 16 },

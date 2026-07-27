@@ -8,6 +8,7 @@
     <AssemblyName>RemoterWin</AssemblyName>
     <RootNamespace>RemoterWin</RootNamespace>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Remoter.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <!-- DXGI Desktop Duplication for GPU-side screen capture -->
@@ -26,5 +27,14 @@
     <Content Include="web\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <!-- MainForm.cs loads this at runtime (window/tray icon) from
+       AppContext.BaseDirectory, separately from ApplicationIcon above
+       (which only sets the .exe file's own icon) -->
+  <ItemGroup>
+    <None Include="Remoter.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>

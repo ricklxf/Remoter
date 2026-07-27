@@ -114,30 +114,9 @@ export class Connection {
   // something the user just deliberately copied for the tab they're
   // actually looking at — see DesktopPage's isActive wiring.
   private reverseClipboardActive = true
-  private pendingReverseText: string | null = null
-  private pendingReverseImage: string | null = null
 
   onEvent:      ((e: ConnEvent) => void)                               | null = null
   onDirListing: ((path: string, entries: DirEntry[]) => void)          | null = null
-
-  constructor() {
-    // Retry the reverse-clipboard write once real focus comes back — see
-    // the 'clipboard_from_target' handler in routeMessage for why a write
-    // attempted the instant the message arrives so often silently fails.
-    window.addEventListener('focus', () => this.flushReverseClipboard())
-  }
-
-  private flushReverseClipboard(): void {
-    if (!document.hasFocus()) return
-    if (this.pendingReverseText !== null) {
-      window.remoterAPI?.writeClipboard(this.pendingReverseText)
-      this.pendingReverseText = null
-    }
-    if (this.pendingReverseImage !== null) {
-      window.remoterAPI?.writeClipboardImage?.(this.pendingReverseImage)
-      this.pendingReverseImage = null
-    }
-  }
 
   // MARK: - 连接 / 断开
 
@@ -867,15 +846,14 @@ export class Connection {
         if (!this.reverseClipboardActive) break
         const fromTargetText  = msg.text  as string | undefined
         const fromTargetImage = msg.image as string | undefined
-        // navigator.clipboard.writeText/write throw "Document is not
-        // focused" whenever the browser window/tab isn't the one with
-        // real OS focus at that exact instant — and since this message can
-        // arrive at any time over the wire, not tied to any user action,
-        // it very often isn't. Stash whatever arrives and retry once focus
-        // actually comes back instead of silently dropping it.
-        if (fromTargetText  !== undefined) this.pendingReverseText  = fromTargetText
-        if (fromTargetImage !== undefined) this.pendingReverseImage = fromTargetImage
-        this.flushReverseClipboard()
+        // Electron's real writeClipboard (Node's native clipboard module,
+        // via IPC) has no focus dependency at all — just call it. The web
+        // fallback's own retry-on-focus handling (see main.tsx) is what
+        // makes this safe to call unconditionally there too instead of
+        // needlessly gating every platform on a check only the browser
+        // path actually needs.
+        if (fromTargetText  !== undefined) window.remoterAPI?.writeClipboard(fromTargetText)
+        if (fromTargetImage !== undefined) window.remoterAPI?.writeClipboardImage?.(fromTargetImage)
         break
       }
 

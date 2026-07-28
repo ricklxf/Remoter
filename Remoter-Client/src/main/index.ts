@@ -49,6 +49,16 @@ function focusOrCreateWindow(): void {
 // Bring existing window to front when a second instance is launched
 app.on('second-instance', focusOrCreateWindow)
 
+// The packaged .exe/.app's own icon comes from electron-builder (build/icon.png),
+// but that's a separate thing from what BrowserWindow shows in the taskbar/dock
+// while actually running — without this, the running window falls back to
+// Electron's own default logo. build/icon.png itself is excluded from the
+// packaged app's files, so it isn't reachable at process.resourcesPath;
+// electron-builder.yml's extraResources copies it there under a plain name.
+const windowIconPath = is.dev
+  ? join(__dirname, '../../build/icon.png')
+  : join(process.resourcesPath, 'icon.png')
+
 function createWindow(): void {
   const isWin = process.platform === 'win32'
   const isMac = process.platform === 'darwin'
@@ -60,6 +70,7 @@ function createWindow(): void {
     minHeight: 580,
     fullscreen: false,     // 防止 macOS 恢复上次的全屏状态
     show: false,
+    icon: windowIconPath,
     // Windows: card bg before React renders; Mac: white matches card --bg2
     backgroundColor: isWin ? '#0fb8ab' : '#ffffff',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',

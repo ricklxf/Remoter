@@ -44,7 +44,15 @@ echo.
 echo [3/3] Starting new build...
 set "exePath=%~dp0dist\win-unpacked\Remoter.exe"
 if exist "%exePath%" (
-    start "" "%exePath%"
+    rem Plain `start` doesn't reliably detach when this script runs inside
+    rem Windows Terminal/VS Code's integrated terminal: those host the whole
+    rem console in a Job Object, and Windows silently adds `start`-launched
+    rem children to that same job unless it explicitly allows breakaway
+    rem (most don't) — closing that terminal tab then kills Remoter.exe right
+    rem along with it, even though it looks fully detached. PowerShell's
+    rem Start-Process requests CREATE_BREAKAWAY_FROM_JOB, which actually
+    rem escapes it.
+    powershell -NoProfile -Command "Start-Process -FilePath '%exePath%'"
     timeout /t 2 >nul
     tasklist /FI "IMAGENAME eq Remoter.exe" 2>nul | find /I "Remoter.exe" >nul
     if %errorLevel% == 0 (

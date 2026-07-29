@@ -30,7 +30,11 @@ if not exist "%exePath%" (
     exit /b 1
 )
 
-start "" "%exePath%"
+REM PowerShell's Start-Process (not plain `start`) — see run.bat for why:
+REM `start` doesn't reliably escape the parent terminal's Job Object when run
+REM from Windows Terminal/VS Code, so closing that window kills this process
+REM too even though it looks detached.
+powershell -NoProfile -Command "Start-Process -FilePath '%exePath%'"
 timeout /t 3 >nul
 
 REM Check if started successfully

@@ -44,8 +44,15 @@ echo        Found: %exePath%
 echo.
 
 REM Start program
+REM Plain `start` doesn't reliably detach when this script itself is running
+REM inside Windows Terminal/VS Code's integrated terminal: those host the
+REM whole console in a Job Object, and Windows silently adds `start`-launched
+REM children to that same job unless the job explicitly allows breakaway
+REM (most don't) — so closing that terminal tab kills RemoterWin.exe right
+REM along with it, even though it looks fully detached. PowerShell's
+REM Start-Process requests CREATE_BREAKAWAY_FROM_JOB, which actually escapes it.
 echo [3/4] Starting program...
-start "" "%exePath%"
+powershell -NoProfile -Command "Start-Process -FilePath '%exePath%'"
 timeout /t 2 >nul
 
 REM Check if program started successfully

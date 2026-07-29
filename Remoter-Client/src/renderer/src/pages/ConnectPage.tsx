@@ -26,14 +26,14 @@ function RemoterLogo({ size }: { size: number }): React.JSX.Element {
     <svg width={size} height={size} viewBox="0 0 100 100" fill="none">
       <defs>
         <linearGradient id="remoterLogoGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#7DD8D8" />
-          <stop offset="100%" stopColor="#0D9488" />
+          <stop offset="0%" stopColor="#67E8F9" />
+          <stop offset="100%" stopColor="#08598C" />
         </linearGradient>
       </defs>
-      <g stroke="url(#remoterLogoGrad)" strokeWidth={5.66} strokeLinejoin="round" strokeLinecap="round">
-        <polygon points="50,13.67 66.91,23.44 66.91,42.97 50,52.73 33.09,42.97 33.09,23.44" />
-        <polygon points="33.09,42.97 50,52.73 50,72.27 33.09,82.03 16.17,72.27 16.17,52.73" />
-        <polygon points="66.91,42.97 83.83,52.73 83.83,72.27 66.91,82.03 50,72.27 50,52.73" />
+      <g stroke="url(#remoterLogoGrad)" strokeWidth={5.47} strokeLinejoin="round" strokeLinecap="round">
+        <polygon points="50,8.82 66.49,18.34 66.49,37.38 50,46.91 33.51,37.38 33.51,18.34" />
+        <polygon points="29.39,44.53 45.88,54.05 45.88,73.09 29.39,82.61 12.89,73.09 12.89,54.05" />
+        <polygon points="70.61,44.53 87.11,54.05 87.11,73.09 70.61,82.61 54.12,73.09 54.12,54.05" />
       </g>
     </svg>
   )

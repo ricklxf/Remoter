@@ -5,16 +5,21 @@ copyright: Copyright © 2024
 directories:
   buildResources: build
 
-# build/icon.png is excluded from `files` below (it's only there for
+# build/icon.* is excluded from `files` below (it's only there for
 # electron-builder's own icon-generation step), so the running app has no
 # way to load it at runtime for BrowserWindow's `icon` option — without
 # this, the packaged .exe/.app gets the right icon on disk, but the actual
 # running window's taskbar/dock icon falls back to Electron's own default
-# logo. Copies it to resources/icon.png instead, which process.resourcesPath
-# can reach at runtime — see main/index.ts.
+# logo. Copies it to resources/ instead, which process.resourcesPath can
+# reach at runtime — see main/index.ts. Windows specifically needs the .ico
+# (multi-resolution) here, not the flat PNG that's enough on mac/linux — a
+# plain PNG BrowserWindow icon silently fails to register as the taskbar
+# icon on Windows even though it works fine as the in-window title bar icon.
 extraResources:
   - from: build/icon.png
     to: icon.png
+  - from: build/icon.ico
+    to: icon.ico
 
 files:
   - '!**/.vscode/*'

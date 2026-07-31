@@ -500,6 +500,20 @@ final class Session {
         case .setInputEnabled(let enabled):
             inputEnabled = enabled
 
+        case .setReverseClipboardSync(let enabled):
+            // Driven by the client's own tab-active state (DesktopPage's
+            // isActive → Connection.setReverseClipboardActive), not just a
+            // client-side filter on an always-on poll — see the field
+            // comments on lastSentClipboardText for why: gating only on the
+            // *receiving* end left a race where a background tab's target
+            // could still push a message that lands and gets applied right
+            // as the user switches away from (or into) a different tab,
+            // clobbering the local clipboard with the wrong machine's
+            // content. Actually stopping the poll on the inactive session's
+            // agent — not merely ignoring what it sends — closes that
+            // window instead of narrowing it.
+            if enabled { startClipboardMonitor() } else { stopClipboardMonitor() }
+
         case .setInputLock(let locked):
             // Broadcasting the resulting state to every session (including
             // this one) happens via InputLocker.onLockChanged, wired once in

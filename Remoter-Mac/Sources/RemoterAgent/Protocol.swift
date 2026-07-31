@@ -43,6 +43,7 @@ enum ClientMessage {
     case authCredentials(username: String, password: String)
     case authToken(token: String)
     case setInputLock(locked: Bool)
+    case setReverseClipboardSync(enabled: Bool)
     case unknown
 
     static func parse(_ json: [String: Any]) -> ClientMessage {
@@ -151,6 +152,8 @@ enum ClientMessage {
             return .authToken(token: json["token"] as? String ?? "")
         case "set_input_lock":
             return .setInputLock(locked: json["locked"] as? Bool ?? false)
+        case "set_reverse_clipboard_sync":
+            return .setReverseClipboardSync(enabled: json["enabled"] as? Bool ?? true)
         default:
             return .unknown
         }

@@ -910,10 +910,17 @@ export class Connection {
   }
 
   /** Gates the reverse direction (target's clipboard → local machine) —
-   * DesktopPage calls this whenever its isActive prop changes, so only the
-   * tab actually in front ever writes to the shared local clipboard. */
+   * DesktopPage calls this whenever its isActive prop changes. Tells the
+   * agent to actually stop/start its poll, not just filter what this
+   * Connection does with messages that already arrived: with multiple
+   * sessions open, a background session's target polls independently on
+   * its own timer, and a message already in flight when the user switches
+   * tabs can still land and get applied right at the moment of the switch
+   * — filtering client-side only narrows that race, it doesn't close it.
+   * Stopping the poll at the source does. */
   setReverseClipboardActive(active: boolean): void {
     this.reverseClipboardActive = active
+    this.sendJson({ type: 'set_reverse_clipboard_sync', enabled: active })
   }
 
   private emit(e: ConnEvent): void {

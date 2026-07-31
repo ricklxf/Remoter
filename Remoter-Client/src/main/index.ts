@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, clipboard, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, clipboard, nativeImage, Menu } from 'electron'
 import { writeFile, readdir, stat, readFile as fsReadFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -138,6 +138,19 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // Electron creates a default File/Edit/View/Window/Help menu unless we set
+  // one ourselves — autoHideMenuBar above only hides it *visually*, its
+  // accelerators (Ctrl+C/V/X/A/Z) stay live regardless, and the Edit menu's
+  // built-in "Paste" role can intercept Ctrl+V at the Electron/main-process
+  // level before the keydown ever reaches the renderer's own DOM handling in
+  // InputHandler.onKeyDown — the render-side paste logic (see
+  // InputHandler.onPaste) never even sees the keystroke it needs to forward
+  // the actual key mods for. Windows/Linux only: on macOS the default menu
+  // is also what provides Cmd+Q/Cmd+H/Cmd+M, which nothing else in this app
+  // re-implements, so removing it there needs its own pass, not a drive-by
+  // here.
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+
   electronApp.setAppUserModelId('com.remoter.client')
 
   app.on('browser-window-created', (_, win) => {

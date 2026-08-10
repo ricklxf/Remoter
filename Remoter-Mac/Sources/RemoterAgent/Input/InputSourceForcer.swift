@@ -25,32 +25,44 @@ final class InputSourceForcer {
 
     private init() {}
 
+    // TIS (Text Input Source) calls are only safe on the main thread —
+    // confirmed via a real crash (dispatch_assert_queue_fail inside
+    // TSMGetInputSourceProperty) with begin() called directly from
+    // Session.routeMessage, which runs on whichever NIO event loop thread
+    // is servicing that connection, not main. Every caller (Session.swift's
+    // auth handlers, main.swift's removeSession/SIGTERM handler) is off the
+    // main thread at least some of the time, so the dispatch belongs here,
+    // not at each call site.
     func begin() {
-        guard !active else { return }
-        active = true
-        savedSourceID = Self.currentInputSourceID()
-        forceEnglish()
-        // Re-assert immediately after anything switches the input source
-        // while locked (e.g. KeyboardHolder reacting to a focus change).
-        observer = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.forceEnglish()
+        DispatchQueue.main.async { [self] in
+            guard !active else { return }
+            active = true
+            savedSourceID = Self.currentInputSourceID()
+            forceEnglish()
+            // Re-assert immediately after anything switches the input source
+            // while locked (e.g. KeyboardHolder reacting to a focus change).
+            observer = DistributedNotificationCenter.default().addObserver(
+                forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.forceEnglish()
+            }
         }
     }
 
     func end() {
-        guard active else { return }
-        active = false
-        if let observer {
-            DistributedNotificationCenter.default().removeObserver(observer)
+        DispatchQueue.main.async { [self] in
+            guard active else { return }
+            active = false
+            if let observer {
+                DistributedNotificationCenter.default().removeObserver(observer)
+            }
+            observer = nil
+            if let saved = savedSourceID, let source = Self.findInputSource(id: saved) {
+                TISSelectInputSource(source)
+            }
+            savedSourceID = nil
         }
-        observer = nil
-        if let saved = savedSourceID, let source = Self.findInputSource(id: saved) {
-            TISSelectInputSource(source)
-        }
-        savedSourceID = nil
     }
 
     private func forceEnglish() {

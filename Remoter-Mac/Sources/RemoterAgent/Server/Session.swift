@@ -248,6 +248,7 @@ final class Session {
         cap?.onStopped = nil   // prevent stop() from triggering beginCapture restart
         Task { await cap?.stop() }
         webrtc?.close()
+        webrtc = nil
     }
 
     // MARK: - Message routing

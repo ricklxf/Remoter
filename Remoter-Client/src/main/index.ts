@@ -145,11 +145,36 @@ app.whenReady().then(() => {
   // level before the keydown ever reaches the renderer's own DOM handling in
   // InputHandler.onKeyDown — the render-side paste logic (see
   // InputHandler.onPaste) never even sees the keystroke it needs to forward
-  // the actual key mods for. Windows/Linux only: on macOS the default menu
-  // is also what provides Cmd+Q/Cmd+H/Cmd+M, which nothing else in this app
-  // re-implements, so removing it there needs its own pass, not a drive-by
-  // here.
-  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+  // the actual key mods for. Windows/Linux: drop the menu entirely. macOS:
+  // can't drop it wholesale — it's also what provides Cmd+Q/Cmd+H/Cmd+M,
+  // which nothing else in this app re-implements — so build a trimmed
+  // template that keeps the App/Window roles but omits Edit (the only
+  // submenu whose default role accelerators collide with paste).
+  if (process.platform === 'darwin') {
+    const template: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          { role: 'quit' }
+        ]
+      },
+      {
+        label: 'Window',
+        submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }]
+      }
+    ]
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  } else {
+    Menu.setApplicationMenu(null)
+  }
 
   electronApp.setAppUserModelId('com.remoter.client')
 

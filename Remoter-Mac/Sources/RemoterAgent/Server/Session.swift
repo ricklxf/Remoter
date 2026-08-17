@@ -379,6 +379,7 @@ final class Session {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             lastSentClipboardText = text
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_applied", detail: "len=\(text.count)")
 
         case .clipboardSetImage(let data):
             guard !data.isEmpty, let imgData = Data(base64Encoded: data) else { break }
@@ -391,6 +392,7 @@ final class Session {
                 pb.setData(tiff, forType: .tiff)
             }
             lastSentClipboardImageSize = imgData.count
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_image_applied", detail: "bytes=\(imgData.count)")
 
         case .fileStart(let fid, let name, let size):
             fileReceiver?.start(id: fid, name: name, size: size)
@@ -1134,25 +1136,53 @@ final class Session {
     // currently working with — but that gating lives entirely on the client
     // side; this agent just reports its own clipboard changes unconditionally.
     private func startClipboardMonitor() {
-        lastSentClipboardText = NSPasteboard.general.string(forType: .string) ?? ""
+        lastSentClipboardText = Self.clipboardPlainText() ?? ""
         lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_started")
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            let text = NSPasteboard.general.string(forType: .string) ?? ""
+            let text = Self.clipboardPlainText() ?? ""
             if !text.isEmpty && text != self.lastSentClipboardText {
                 self.lastSentClipboardText = text
+                ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "clipboard_reverse_sent",
+                    detail: "len=\(text.count)")
                 self.sendJson(["type": "clipboard_from_target", "text": text])
             }
             guard let pngData = self.clipboardImagePNG(), pngData.count != self.lastSentClipboardImageSize else { return }
             guard pngData.count <= 4 * 1024 * 1024 else { return }
             self.lastSentClipboardImageSize = pngData.count
+            ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "clipboard_reverse_sent",
+                detail: "image bytes=\(pngData.count)")
             self.sendJson(["type": "clipboard_from_target", "image": pngData.base64EncodedString()])
         }
         timer.resume()
         clipboardTimer = timer
+    }
+
+    // Plain "public.utf8-plain-text" isn't always on the pasteboard — a
+    // "copy" button in a web/Electron app (confirmed report: Claude Code's
+    // own copy buttons) can write only a rich representation (RTF/HTML)
+    // with no plain-text fallback, which NSPasteboard.string(forType: .string)
+    // silently returns nil for — the reverse-sync poll then sees an "empty"
+    // clipboard and never sends anything, even though something real was
+    // just copied. Fall back to extracting plain text out of RTF/HTML.
+    private static func clipboardPlainText() -> String? {
+        let pb = NSPasteboard.general
+        if let s = pb.string(forType: .string), !s.isEmpty { return s }
+        if let rtf = pb.data(forType: .rtf),
+           let attr = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil),
+           !attr.string.isEmpty {
+            return attr.string
+        }
+        if let html = pb.data(forType: .html),
+           let attr = try? NSAttributedString(data: html, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil),
+           !attr.string.isEmpty {
+            return attr.string
+        }
+        return nil
     }
 
     private func clipboardImagePNG() -> Data? {

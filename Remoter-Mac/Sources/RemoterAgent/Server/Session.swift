@@ -356,7 +356,21 @@ final class Session {
 
         case .key(let code, let down, let mods):
             guard inputEnabled else { break }
-            NSLog("[Session] keyEvent code=%@ down=%d input=%d", code, down ? 1 : 0, input != nil ? 1 : 0)
+            // Scoped to modifier combos only (not every keystroke) — this is
+            // for diagnosing reports like "Ctrl+C sent from the client does
+            // nothing on the target": confirms whether the key actually made
+            // it to this agent at all, vs. being eaten locally on the target
+            // (e.g. by a system-wide remapper such as Keybot) after CGEvent
+            // injection. The old NSLog here logged every keystroke but
+            // turned out to be unobservable — `log show`/`log stream`
+            // returned zero matches for this process even over a 30-minute
+            // window with an exact PID predicate — so this uses
+            // ConnectionLogger (connections.log) instead, already confirmed
+            // reliable for every other diagnostic in this file.
+            if !mods.isEmpty {
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "key_modifier_combo",
+                    detail: "code=\(code) down=\(down) mods=\(mods.joined(separator: "+"))")
+            }
             input?.keyEvent(code: code, down: down, modifiers: mods)
 
         case .textInput(let text):

@@ -128,6 +128,10 @@ final class Session {
     private var clipboardTimer: DispatchSourceTimer?
     private var lastSentClipboardText = ""
     private var lastSentClipboardImageSize = -1
+    // Set once the first time startClipboardMonitor() ever captures a
+    // baseline for this session — see there for why this must not happen
+    // again on every restart.
+    private var clipboardBaselineCaptured = false
 
     init(id: UUID, connection: WSClient, pin: String) {
         self.id = id
@@ -1150,20 +1154,25 @@ final class Session {
     // currently working with — but that gating lives entirely on the client
     // side; this agent just reports its own clipboard changes unconditionally.
     private func startClipboardMonitor() {
-        // Must be idempotent — the client resends set_reverse_clipboard_sync
-        // (enabled: true) on every isActive transition (tab switch, window
-        // focus), not just once at connect, and auth success also calls this.
-        // Without this guard, a redundant call while the timer's already
-        // running would reset lastSentClipboardText to whatever's on the
-        // pasteboard *right now* — silently adopting it as "already sent"
-        // even though it was never actually forwarded, i.e. a real copy on
-        // the target can vanish into this reset window instead of reaching
-        // the controller. Confirmed via connections.log: clipboard_monitor_
-        // started firing many times a minute within a single session.
-        guard clipboardTimer == nil else { return }
+        guard clipboardTimer == nil else { return }   // already running — don't recreate the timer
 
-        lastSentClipboardText = Self.clipboardPlainText() ?? ""
-        lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
+        // Capture the "don't push what was already there before reverse
+        // sync ever turned on" baseline exactly once per session, not on
+        // every (re)start. The client resends set_reverse_clipboard_sync
+        // far more often than "once at connect" — every isActive transition
+        // (tab switch, window focus/blur) triggers a real stop→start cycle,
+        // confirmed via connections.log showing clipboard_monitor_started
+        // firing many times a minute within a single session. Resetting the
+        // baseline on each of those restarts silently adopts whatever's on
+        // the pasteboard *at that instant* as "already sent" — if the user
+        // had just copied something on the target and the 3s poll hadn't
+        // caught it yet, a restart landing in that window swallows it
+        // forever, with no error and no way to tell anything went wrong.
+        if !clipboardBaselineCaptured {
+            clipboardBaselineCaptured = true
+            lastSentClipboardText = Self.clipboardPlainText() ?? ""
+            lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
+        }
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_started")
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))

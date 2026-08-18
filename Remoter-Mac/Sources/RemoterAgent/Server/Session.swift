@@ -1177,24 +1177,29 @@ final class Session {
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            let text = Self.clipboardPlainText() ?? ""
-            if !text.isEmpty && text != self.lastSentClipboardText {
-                self.lastSentClipboardText = text
-                ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "clipboard_reverse_sent",
-                    detail: "len=\(text.count)")
-                self.sendJson(["type": "clipboard_from_target", "text": text])
-            }
-            guard let pngData = self.clipboardImagePNG(), pngData.count != self.lastSentClipboardImageSize else { return }
-            guard pngData.count <= 4 * 1024 * 1024 else { return }
-            self.lastSentClipboardImageSize = pngData.count
-            ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "clipboard_reverse_sent",
-                detail: "image bytes=\(pngData.count)")
-            self.sendJson(["type": "clipboard_from_target", "image": pngData.base64EncodedString()])
-        }
+        timer.setEventHandler { [weak self] in self?.checkAndSendClipboardChanges() }
         timer.resume()
         clipboardTimer = timer
+    }
+
+    // Shared by the 3s poll tick and by stopClipboardMonitor()'s final
+    // flush — see there for why a copy-then-immediately-switch-tabs
+    // workflow needs this to run one extra time right as the monitor stops,
+    // not just on the regular interval.
+    private func checkAndSendClipboardChanges() {
+        let text = Self.clipboardPlainText() ?? ""
+        if !text.isEmpty && text != lastSentClipboardText {
+            lastSentClipboardText = text
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_reverse_sent",
+                detail: "len=\(text.count)")
+            sendJson(["type": "clipboard_from_target", "text": text])
+        }
+        guard let pngData = clipboardImagePNG(), pngData.count != lastSentClipboardImageSize else { return }
+        guard pngData.count <= 4 * 1024 * 1024 else { return }
+        lastSentClipboardImageSize = pngData.count
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_reverse_sent",
+            detail: "image bytes=\(pngData.count)")
+        sendJson(["type": "clipboard_from_target", "image": pngData.base64EncodedString()])
     }
 
     // Plain "public.utf8-plain-text" isn't always on the pasteboard — a
@@ -1230,6 +1235,15 @@ final class Session {
     }
 
     private func stopClipboardMonitor() {
+        guard clipboardTimer != nil else { return }
+        // Copy-then-immediately-switch-tabs is the whole point of reverse
+        // sync — without this, a copy landing inside the 3s gap before the
+        // next scheduled poll tick gets silently stranded: the monitor
+        // stops right here, and nothing checks the pasteboard again until
+        // the user switches back to this tab, which defeats the "copy here,
+        // paste elsewhere right away" workflow entirely. One last check
+        // before tearing down the timer closes that gap.
+        checkAndSendClipboardChanges()
         clipboardTimer?.cancel()
         clipboardTimer = nil
     }

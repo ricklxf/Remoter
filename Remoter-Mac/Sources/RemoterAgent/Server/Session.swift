@@ -1150,6 +1150,18 @@ final class Session {
     // currently working with — but that gating lives entirely on the client
     // side; this agent just reports its own clipboard changes unconditionally.
     private func startClipboardMonitor() {
+        // Must be idempotent — the client resends set_reverse_clipboard_sync
+        // (enabled: true) on every isActive transition (tab switch, window
+        // focus), not just once at connect, and auth success also calls this.
+        // Without this guard, a redundant call while the timer's already
+        // running would reset lastSentClipboardText to whatever's on the
+        // pasteboard *right now* — silently adopting it as "already sent"
+        // even though it was never actually forwarded, i.e. a real copy on
+        // the target can vanish into this reset window instead of reaching
+        // the controller. Confirmed via connections.log: clipboard_monitor_
+        // started firing many times a minute within a single session.
+        guard clipboardTimer == nil else { return }
+
         lastSentClipboardText = Self.clipboardPlainText() ?? ""
         lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_started")

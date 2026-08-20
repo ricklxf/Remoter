@@ -1250,6 +1250,12 @@ final class Session {
         checkAndSendClipboardChanges()
         clipboardTimer?.cancel()
         clipboardTimer = nil
+        // Previously unlogged — made it impossible to tell from
+        // connections.log whether a "copy didn't sync" report was because
+        // the monitor was stopped (client sent isActive=false right around
+        // the copy) at that moment, or something else. Pairs with
+        // clipboard_monitor_started.
+        ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_stopped")
     }
 
     // MARK: - 系统静音控制

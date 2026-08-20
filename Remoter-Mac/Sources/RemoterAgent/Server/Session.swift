@@ -1175,8 +1175,12 @@ final class Session {
         }
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_started")
 
+        // 10ms — as fast as this can usefully go. Below this, it's just
+        // more thread wakeups for no perceptible gain (10ms is already
+        // faster than a single frame at 60fps); NSPasteboard reads are
+        // cheap enough that even this rate costs nothing measurable.
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
+        timer.schedule(deadline: .now() + .milliseconds(10), repeating: .milliseconds(10))
         timer.setEventHandler { [weak self] in self?.checkAndSendClipboardChanges() }
         timer.resume()
         clipboardTimer = timer

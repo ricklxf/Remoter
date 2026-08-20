@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 
 namespace RemoterWin;
 
@@ -276,7 +277,7 @@ sealed class Session
             // back (see the removed StartClipboard poll loop), so there's
             // no echo-prevention bookkeeping needed here anymore — just apply it.
             case ClientMsg.ClipboardSet c:
-                SetClipboard(c.Text); break;
+                SetClipboard(_id, c.Text); break;
 
             case ClientMsg.ClipboardSetImage ci:
                 if (!string.IsNullOrEmpty(ci.Data))
@@ -284,7 +285,7 @@ sealed class Session
                     try
                     {
                         var png = Convert.FromBase64String(ci.Data);
-                        SetClipboardImageFromPng(png);
+                        SetClipboardImageFromPng(_id, png);
                     }
                     catch { }
                 }
@@ -768,9 +769,32 @@ sealed class Session
 
     // ── Clipboard ────────────────────────────────────────────────────────
 
-    private static void SetClipboard(string text)
+    // OpenClipboard fails transiently whenever another process (clipboard
+    // history, antivirus scanning what just got copied, even Explorer
+    // itself) happens to have it open at that instant — this is normal,
+    // well-documented Windows behavior, not an error condition. The
+    // original code called OpenClipboard once and silently gave up on
+    // failure: no retry, no log, paste just silently kept whatever was
+    // there before ("还是老的" — still the old content), with nothing in
+    // the logs to show a paste was even attempted. Retrying a handful of
+    // times with a short sleep is the standard, documented workaround.
+    private static bool TryOpenClipboardWithRetry(int attempts = 8, int delayMs = 20)
     {
-        if (!OpenClipboard(0)) return;
+        for (var i = 0; i < attempts; i++)
+        {
+            if (OpenClipboard(0)) return true;
+            Thread.Sleep(delayMs);
+        }
+        return false;
+    }
+
+    private static void SetClipboard(string sessionId, string text)
+    {
+        if (!TryOpenClipboardWithRetry())
+        {
+            ConnectionLogger.Shared.LogStep(sessionId, "clipboard_set_open_failed");
+            return;
+        }
         try
         {
             EmptyClipboard();
@@ -782,11 +806,12 @@ sealed class Session
             Marshal.Copy(bytes, 0, (nint)p, bytes.Length);
             GlobalUnlock(h);
             SetClipboardData(CF_UNICODETEXT, h);
+            ConnectionLogger.Shared.LogStep(sessionId, "clipboard_set_applied", $"len={text.Length}");
         }
         finally { CloseClipboard(); }
     }
 
-    private static bool SetClipboardImageFromPng(byte[] pngBytes)
+    private static bool SetClipboardImageFromPng(string sessionId, byte[] pngBytes)
     {
         try
         {
@@ -796,7 +821,11 @@ sealed class Session
             bmp.Save(bmpMs, System.Drawing.Imaging.ImageFormat.Bmp);
             var dib = bmpMs.ToArray()[14..]; // strip 14-byte BMP file header
 
-            if (!OpenClipboard(0)) return false;
+            if (!TryOpenClipboardWithRetry())
+            {
+                ConnectionLogger.Shared.LogStep(sessionId, "clipboard_set_image_open_failed");
+                return false;
+            }
             try
             {
                 EmptyClipboard();
@@ -807,6 +836,7 @@ sealed class Session
                 Marshal.Copy(dib, 0, (nint)p, dib.Length);
                 GlobalUnlock(h);
                 SetClipboardData(CF_DIB, h);
+                ConnectionLogger.Shared.LogStep(sessionId, "clipboard_set_image_applied", $"bytes={dib.Length}");
                 return true;
             }
             finally { CloseClipboard(); }

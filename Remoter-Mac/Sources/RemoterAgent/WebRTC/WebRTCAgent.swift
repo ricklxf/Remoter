@@ -37,6 +37,17 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private var videoCapturer: RTCVideoCapturer?
     private var videoSender: RTCRtpSender?
     private(set) var iceConnected = false
+    // TEMP DIAGNOSTIC — RTP fps has been observed collapsing to single
+    // digits while synthetic input is active and recovering ~60-90s after
+    // it stops, with our own backpressure/decode-overload counters staying
+    // at zero throughout (they're wired to the WS/DataChannel fallback path
+    // only, dead on RTP). qualityLimitationReason is libwebrtc's own answer
+    // to "why isn't the encoder running faster" (cpu/bandwidth/other/none)
+    // — polling it alongside GCC's target bitrate and the link's measured
+    // RTT settles whether this is GCC misreading local scheduling jitter as
+    // congestion, or the encoder itself being CPU-starved by the same
+    // contention. Remove once the cause is confirmed.
+    private var statsTimer: DispatchSourceTimer?
 
     // MARK: - 信令处理
 
@@ -161,6 +172,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     }
 
     func close() {
+        statsTimer?.cancel()
+        statsTimer = nil
         pc?.close()
         pc = nil
         videoChannel = nil
@@ -169,6 +182,42 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         videoCapturer = nil
         videoSender = nil
         iceConnected = false
+    }
+
+    // MARK: - TEMP DIAGNOSTIC — GCC stats polling
+
+    private func startStatsPolling() {
+        statsTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        t.schedule(deadline: .now() + 2, repeating: 2)
+        t.setEventHandler { [weak self] in self?.logGCCStats() }
+        t.resume()
+        statsTimer = t
+    }
+
+    private func logGCCStats() {
+        pc?.statistics { report in
+            var outboundDetail = "n/a"
+            var pairDetail = "n/a"
+            for stat in report.statistics.values {
+                if stat.type == "outbound-rtp", (stat.values["kind"] as? String) == "video" {
+                    let reason  = stat.values["qualityLimitationReason"] as? String ?? "?"
+                    let fps     = stat.values["framesPerSecond"] as? Double ?? -1
+                    let target  = (stat.values["targetBitrate"] as? Double).map { Int($0) }
+                    let encoded = stat.values["framesEncoded"] as? Double ?? -1
+                    outboundDetail = "qlr=\(reason) fps=\(fps) target=\(target.map(String.init) ?? "?") encoded=\(Int(encoded))"
+                }
+                if stat.type == "candidate-pair",
+                   (stat.values["state"] as? String) == "succeeded",
+                   (stat.values["nominated"] as? Bool) == true {
+                    let rtt   = stat.values["currentRoundTripTime"] as? Double ?? -1
+                    let avail = (stat.values["availableOutgoingBitrate"] as? Double).map { Int($0) }
+                    pairDetail = "rttMs=\(String(format: "%.1f", rtt * 1000)) availBps=\(avail.map(String.init) ?? "?")"
+                }
+            }
+            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
+                detail: "\(outboundDetail) | \(pairDetail)")
+        }
     }
 
     // MARK: - Private
@@ -201,9 +250,12 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
             iceConnected = true
             onConnected?()
             logSelectedCandidatePair(pc)
+            startStatsPolling()
         case .failed, .disconnected, .closed:
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "ice_disconnected", detail: "\(state)")
             iceConnected = false
+            statsTimer?.cancel()
+            statsTimer = nil
             onDisconnected?()
         default: break
         }

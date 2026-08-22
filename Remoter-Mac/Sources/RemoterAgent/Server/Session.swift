@@ -883,6 +883,24 @@ final class Session {
                         self.usingRtpVideo = true
                         ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
                             step: "video_transport", detail: "rtp")
+                        // evaluateAutoQuality() (which climbs autoBitrateTiers
+                        // over time) deliberately never runs on the RTP path —
+                        // libwebrtc's own GCC owns bandwidth adaptation there.
+                        // But setMaxBitrate is a hard ceiling GCC can never
+                        // exceed regardless of what it estimates is actually
+                        // available, and applyBitrate had only ever been
+                        // called with the ladder's conservative bottom tier
+                        // (2Mbps, from .bitrateSet's auto-mode starting
+                        // point) — with nothing left to ever raise it, every
+                        // RTP session was silently bitrate-capped at 2Mbps
+                        // for its entire lifetime, even on a fast direct LAN
+                        // connection with room to spare. Give GCC the ladder's
+                        // full ceiling to actually work with the moment RTP
+                        // is confirmed active; it already backs off on its
+                        // own when real conditions can't sustain that.
+                        if self.autoBitrateEnabled {
+                            self.applyBitrate(Self.autoBitrateTiers.last!, notify: false)
+                        }
                     }
                     webrtc.sendVideoBuffer(pixelBuffer)
                     self.recordSentFrame()

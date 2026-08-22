@@ -48,6 +48,22 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // congestion, or the encoder itself being CPU-starved by the same
     // contention. Remove once the cause is confirmed.
     private var statsTimer: DispatchSourceTimer?
+    // RTT-gated minimum-bitrate floor (see setMinBitrate) — only trusted on
+    // a link that looks like a real same-switch LAN, never a blanket floor.
+    // WireGuard-tunneled access (company laptop → gateway → this LAN) is a
+    // real bottleneck (gateway uplink/CPU for encryption), not a LAN, and
+    // must NOT get the floor even though its RTT can also be quite low —
+    // the asymmetry below (slow to commit, instant to revoke) is the
+    // actual safety net for that case: if the floor turns out to be more
+    // than that path can sustain, the resulting real queueing delay pushes
+    // RTT past wanRttThresholdMs on the very next poll and the floor comes
+    // back off automatically, no manual LAN/VPN detection required.
+    private static let lanFloorBps: Int = 1_500_000
+    private static let lanRttThresholdMs = 3.0
+    private static let wanRttThresholdMs = 8.0
+    private static let lanRttStreakRequired = 3   // consecutive 2s polls (~6s)
+    private var lowRttStreak = 0
+    private var minBitrateFloorActive = false
 
     // MARK: - 信令处理
 
@@ -116,6 +132,20 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         sender.parameters = params
     }
 
+    /// Floor GCC's own bandwidth estimate — see the gcc_stats diagnostic
+    /// this pairs with: on a real same-switch LAN link (RTT ~0-1ms) GCC's
+    /// delay-based congestion detector has been observed misreading tiny
+    /// scheduling jitter as severe congestion and crashing its estimate to
+    /// ~100Kbps, then taking 20-90s to climb back — a link that can
+    /// trivially sustain many Mbps gets rate-limited to single-digit fps in
+    /// the meantime. nil clears the floor (back to GCC's own judgment).
+    func setMinBitrate(_ bps: Int?) {
+        guard let sender = videoSender else { return }
+        let params = sender.parameters
+        for enc in params.encodings { enc.minBitrateBps = bps.map { NSNumber(value: $0) } }
+        sender.parameters = params
+    }
+
     func handleRemoteICE(_ json: String) {
         guard let data = json.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -174,6 +204,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     func close() {
         statsTimer?.cancel()
         statsTimer = nil
+        lowRttStreak = 0
+        minBitrateFloorActive = false
         pc?.close()
         pc = nil
         videoChannel = nil
@@ -196,9 +228,11 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     }
 
     private func logGCCStats() {
-        pc?.statistics { report in
+        pc?.statistics { [weak self] report in
+            guard let self else { return }
             var outboundDetail = "n/a"
             var pairDetail = "n/a"
+            var rttMs: Double?
             for stat in report.statistics.values {
                 if stat.type == "outbound-rtp", (stat.values["kind"] as? String) == "video" {
                     let reason  = stat.values["qualityLimitationReason"] as? String ?? "?"
@@ -212,12 +246,42 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                    (stat.values["nominated"] as? Bool) == true {
                     let rtt   = stat.values["currentRoundTripTime"] as? Double ?? -1
                     let avail = (stat.values["availableOutgoingBitrate"] as? Double).map { Int($0) }
-                    pairDetail = "rttMs=\(String(format: "%.1f", rtt * 1000)) availBps=\(avail.map(String.init) ?? "?")"
+                    rttMs = rtt * 1000
+                    pairDetail = "rttMs=\(String(format: "%.1f", rttMs ?? -1)) availBps=\(avail.map(String.init) ?? "?")"
                 }
             }
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
-                detail: "\(outboundDetail) | \(pairDetail)")
+                detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off")")
+            self.evaluateMinBitrateFloor(rttMs: rttMs)
         }
+    }
+
+    /// Slow to commit (needs several consecutive low-RTT polls before
+    /// trusting the link is a real LAN), instant to revoke (any one poll
+    /// at/above wanRttThresholdMs drops it immediately) — see the property
+    /// comment on minBitrateFloorActive for why that asymmetry is what
+    /// makes this safe on a WireGuard-tunneled path too, without needing to
+    /// actually distinguish "LAN" from "tunnel" up front.
+    private func evaluateMinBitrateFloor(rttMs: Double?) {
+        guard let rttMs, rttMs >= 0 else { return }
+        if rttMs >= Self.wanRttThresholdMs {
+            lowRttStreak = 0
+            if minBitrateFloorActive {
+                minBitrateFloorActive = false
+                setMinBitrate(nil)
+                ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
+                    detail: "off rttMs=\(String(format: "%.1f", rttMs))")
+            }
+        } else if rttMs <= Self.lanRttThresholdMs {
+            lowRttStreak += 1
+            if lowRttStreak >= Self.lanRttStreakRequired, !minBitrateFloorActive {
+                minBitrateFloorActive = true
+                setMinBitrate(Self.lanFloorBps)
+                ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
+                    detail: "on rttMs=\(String(format: "%.1f", rttMs))")
+            }
+        }
+        // Between the two thresholds: ambiguous, leave current state as-is.
     }
 
     // MARK: - Private
@@ -256,6 +320,8 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
             iceConnected = false
             statsTimer?.cancel()
             statsTimer = nil
+            lowRttStreak = 0
+            minBitrateFloorActive = false
             onDisconnected?()
         default: break
         }

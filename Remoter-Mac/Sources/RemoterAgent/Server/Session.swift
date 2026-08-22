@@ -497,10 +497,20 @@ final class Session {
             if codec == "jpeg" {
                 switchToJpeg()
             } else if let c = StreamCodec(rawValue: codec), c != currentCodec || usingJpeg {
-                // Codec is baked into the VTCompressionSession at creation, so
-                // like a resolution change this needs the full pipeline rebuild.
                 currentCodec = c
                 usingJpeg = false
+                // On RTP, codec is negotiated by libwebrtc via SDP
+                // (RTCDefaultVideoEncoderFactory) — currentCodec here only
+                // drives the VT encoder used by the WS/DataChannel fallback
+                // path, so it does nothing to the video actually on the
+                // wire. Rebuilding the pipeline anyway just cost a black-
+                // screen/keyframe-reset glitch for a codec switch that never
+                // took effect, and beginCapture()'s stream_started message
+                // told the client it had. Just remember the preference for
+                // whenever the session actually falls back to WS.
+                guard !usingRtpVideo else { break }
+                // Codec is baked into the VTCompressionSession at creation, so
+                // like a resolution change this needs the full pipeline rebuild.
                 Task { await rebuildPipeline() }
             }
 
@@ -898,9 +908,48 @@ final class Session {
                         // full ceiling to actually work with the moment RTP
                         // is confirmed active; it already backs off on its
                         // own when real conditions can't sustain that.
+                        var qualityBumped = false
                         if self.autoBitrateEnabled {
                             self.applyBitrate(Self.autoBitrateTiers.last!, notify: false)
+                            qualityBumped = true
+                        } else {
+                            // Manual bitrate cap: applyBitrate() only runs
+                            // when the client actually moves the slider, and
+                            // setMaxBitrate() targets whichever RTCRtpSender
+                            // exists *at that moment* — but setupWebRTC()
+                            // replaces the whole WebRTCAgent (and its sender)
+                            // on every renegotiation (ICE failure/network
+                            // roam), so a fresh sender starts uncapped until
+                            // the user touches the slider again. Reapply the
+                            // still-current manual choice to whichever
+                            // sender is live now.
+                            webrtc.setMaxBitrate(self.currentBitrate)
                         }
+                        // Same fix, fps side: evaluateAutoQuality() (which
+                        // climbs autoFpsTiers) never runs on RTP either, and
+                        // .fpsSet's auto-mode start point is the ladder's
+                        // bottom tier (30) — with nothing left to ever raise
+                        // it, RTP sessions stayed capped at 30fps for their
+                        // whole lifetime even with room to spare. Give it
+                        // the top tier the moment RTP is confirmed active;
+                        // the browser's own decode-overload handling (frame
+                        // dropping + PLI) is what backs it off if it can't
+                        // actually keep up.
+                        if self.autoFpsEnabled {
+                            self.autoFpsIndex = Self.autoFpsTiers.count - 1
+                            self.applyFps(Self.autoFpsTiers.last!, notify: false)
+                            qualityBumped = true
+                        }
+                        // Both applies above used notify:false to batch into
+                        // one message — but unlike evaluateAutoQuality(),
+                        // which always ends with notifyQualityActive(),
+                        // nothing here ever told the client the ladder had
+                        // moved. The quality picker reads its "current tier"
+                        // display purely from quality_active messages (see
+                        // client Toolbar), so it kept showing the original
+                        // 30fps/2Mbps selection while the server was
+                        // actually already running at the top tier.
+                        if qualityBumped { self.notifyQualityActive() }
                     }
                     webrtc.sendVideoBuffer(pixelBuffer)
                     self.recordSentFrame()

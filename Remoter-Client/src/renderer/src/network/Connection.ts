@@ -854,6 +854,20 @@ export class Connection {
         // path actually needs.
         if (fromTargetText  !== undefined) window.remoterAPI?.writeClipboard(fromTargetText)
         if (fromTargetImage !== undefined) window.remoterAPI?.writeClipboardImage?.(fromTargetImage)
+        // Also feed sendClipboard/sendClipboardImage's own dedup state —
+        // without this, a copy-on-target-then-paste-on-target round trip
+        // (the whole point of reverse sync existing) gets clobbered: the
+        // native paste event that follows reads this exact text back out of
+        // the controller's OS clipboard and, not recognizing it as
+        // something that just arrived *from* the target, pushes it straight
+        // back as if it were a fresh controller-side copy — a pointless
+        // but harmless echo when it matches, and actively wrong (paste
+        // shows stale content) if a real new controller-side copy landed in
+        // the gap. Marking it as "already synced" here means that echo
+        // never gets sent in the first place — the target's own clipboard
+        // is already correct, nothing to push.
+        if (fromTargetText  !== undefined) this.lastSyncedText    = fromTargetText
+        if (fromTargetImage !== undefined) this.lastSyncedImgLen  = fromTargetImage.length
         break
       }
 

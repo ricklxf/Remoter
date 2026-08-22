@@ -893,6 +893,8 @@ export class Connection {
       // RTP path: numbers come from the browser's own inbound-rtp stats
       // (frames actually decoded, decode time, received bytes). Fallback
       // path: locally-counted WS/WebCodecs figures, same as before.
+      // TEMP DIAGNOSTIC — see debugState()'s doc comment.
+      if (this.webrtc) console.log('[Conn] stats gate:', this.webrtc.debugState())
       const rtp = this.webrtc?.mediaActive ? await this.webrtc.getInboundVideoStats() : null
       const fps         = rtp ? rtp.fps         : Math.round(this._frameCount / (INTERVAL / 1000))
       const bitrateKbps = rtp ? rtp.bitrateKbps : Math.round(this._bytesCount * 8 / INTERVAL)

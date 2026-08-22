@@ -106,6 +106,17 @@ export class WebRTCClient {
       && this.pc?.connectionState === 'connected'
   }
 
+  // TEMP DIAGNOSTIC — fps stat stuck at 0 was already traced once to
+  // mediaActive's now-removed muted check; this exposes the two conditions
+  // still gating it (pc.connectionState, track.readyState) plus
+  // iceConnectionState for comparison, so a stuck fps readout can be
+  // diagnosed straight from a console.log instead of guessing again.
+  debugState(): string {
+    return `pcState=${this.pc?.connectionState ?? 'no-pc'} ice=${this.pc?.iceConnectionState ?? 'no-pc'} ` +
+      `trackState=${this.videoTrack?.readyState ?? 'no-track'} trackMuted=${this.videoTrack?.muted ?? 'no-track'} ` +
+      `mediaActive=${this.mediaActive}`
+  }
+
   get controlOpen(): boolean {
     return this.controlChannel?.readyState === 'open'
   }

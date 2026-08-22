@@ -35,7 +35,11 @@ final class VideoEncoder {
     // into encode submission — exactly the kind of stall that made fps dip
     // in bursts. Hop off VT's callback thread immediately so it can always
     // free its queue slot right away, regardless of how long sending takes.
-    private let outputQueue = DispatchQueue(label: "remoter.encode.output", qos: .userInitiated)
+    // .userInteractive — same reasoning as ScreenCapturer's captureQueue:
+    // this is on the same synchronous per-frame real-time path, so it needs
+    // to stay resistant to getting deprioritized under background system
+    // load just as much as the capture callback does.
+    private let outputQueue = DispatchQueue(label: "remoter.encode.output", qos: .userInteractive)
 
     /// Forces the *next* encode() call to emit a keyframe immediately,
     /// instead of waiting for the next scheduled one — used when a client

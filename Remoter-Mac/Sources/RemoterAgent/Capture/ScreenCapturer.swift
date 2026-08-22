@@ -49,7 +49,14 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
 
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
-    private let captureQueue    = DispatchQueue(label: "remoter.capture.cb", qos: .userInitiated)
+    // .userInteractive, not .userInitiated — the comment on handle() below
+    // (and on onFrame above) already documents that background CPU
+    // contention on this Mac shows up directly as capture-side fps
+    // collapse. .userInitiated can still get deprioritized under real
+    // system load; .userInteractive is the one QoS tier the scheduler
+    // treats as near-realtime, which is what a synchronous per-frame
+    // capture callback actually is.
+    private let captureQueue    = DispatchQueue(label: "remoter.capture.cb", qos: .userInteractive)
     private let audioQueue      = DispatchQueue(label: "remoter.capture.audio", qos: .userInitiated)
 
     // Diagnostics (benign data-race on counters — log only)

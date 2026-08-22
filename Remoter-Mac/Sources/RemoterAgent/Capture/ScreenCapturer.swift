@@ -127,7 +127,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
-        config.queueDepth = 3
+        config.queueDepth = 2
         config.capturesAudio = true
         config.sampleRate = 48000
         config.channelCount = 2
@@ -138,7 +138,17 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         do {
             try s.addStreamOutput(output, type: .screen, sampleHandlerQueue: captureQueue)
             try s.addStreamOutput(output, type: .audio,  sampleHandlerQueue: audioQueue)
-            try await s.startCapture()
+            // startCapture() 在某些 macOS 版本上会无限挂起（见 9c24e14），
+            // 用 10s 超时兜底，避免 beginCapture() 卡死不报错。
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await s.startCapture() }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                    throw RemoterError.captureTimeout
+                }
+                try await group.next()
+                group.cancelAll()
+            }
         } catch {
             ConnectionLogger.shared.logStep(sessionId: "capturer", step: "stream_start_failed",
                 detail: "\(error)")
@@ -168,7 +178,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
-        config.queueDepth = 3
+        config.queueDepth = 2
         Task {
             do {
                 try await stream.updateConfiguration(config)
@@ -253,4 +263,5 @@ private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
 enum RemoterError: Error {
     case encoderSetupFailed
     case captureUnavailable
+    case captureTimeout
 }

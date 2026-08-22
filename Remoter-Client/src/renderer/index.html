@@ -3,9 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Allow WebCodecs + WebSocket -->
+    <!-- Allow WebCodecs + WebSocket + data: cursor images (RemoteCanvas sets
+         CSS cursor: url(data:image/png;base64,...) for the remote cursor
+         shape — img-src governs that too, and falls back to default-src
+         'self' without it, which excludes data:, so the custom cursor
+         silently failed to load and fell back to the default arrow) -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ws: wss: http: https:" />
+          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ws: wss: http: https:" />
     <title>Remoter</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   </head>

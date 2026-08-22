@@ -197,14 +197,40 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
     func peerConnection(_ pc: RTCPeerConnection, didChange state: RTCIceConnectionState) {
         switch state {
         case .connected, .completed:
-            print("[WebRTC] P2P connected ✓")
+            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "ice_connected")
             iceConnected = true
             onConnected?()
+            logSelectedCandidatePair(pc)
         case .failed, .disconnected, .closed:
-            print("[WebRTC] P2P disconnected")
+            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "ice_disconnected", detail: "\(state)")
             iceConnected = false
             onDisconnected?()
         default: break
+        }
+    }
+
+    // Same-LAN peers going through a TURN relay instead of a direct P2P
+    // (host/srflx) candidate pair adds a real extra hop's worth of latency
+    // and jitter — enough for libwebrtc's own GCC bandwidth estimator to
+    // misjudge available bandwidth and throttle the send rate, which shows
+    // up as low fps in sent_5s with nothing else pointing to why. Previously
+    // had zero visibility into which kind of pair actually got selected
+    // (the old P2P/relay distinction was only ever printed, never logged to
+    // connections.log — see feedback_build_mac memory's note on print()
+    // being unobservable for this process). Query once right after ICE
+    // connects.
+    private func logSelectedCandidatePair(_ pc: RTCPeerConnection) {
+        pc.statistics { report in
+            for stat in report.statistics.values where stat.type == "candidate-pair" {
+                guard (stat.values["state"] as? String) == "succeeded",
+                      (stat.values["nominated"] as? Bool) == true else { continue }
+                let localId  = stat.values["localCandidateId"]  as? String
+                let remoteId = stat.values["remoteCandidateId"] as? String
+                let localType  = localId.flatMap  { report.statistics[$0]?.values["candidateType"] as? String } ?? "?"
+                let remoteType = remoteId.flatMap { report.statistics[$0]?.values["candidateType"] as? String } ?? "?"
+                ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "candidate_pair",
+                    detail: "local=\(localType) remote=\(remoteType)")
+            }
         }
     }
 

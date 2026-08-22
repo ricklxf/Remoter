@@ -94,7 +94,15 @@ export class WebRTCClient {
   }
 
   get mediaActive(): boolean {
-    return this.videoTrack?.readyState === 'live' && !this.videoTrack.muted
+    // No !videoTrack.muted check — that flag is the browser's own "seen an
+    // RTP gap" signal and doesn't reliably clear again afterward (observed
+    // stuck true following a severe bandwidth dip). Gating stats on it just
+    // freezes the fps readout at 0 forever (getInboundVideoStats's fallback,
+    // _frameCount, only increments on the legacy WS binary-frame path and
+    // never counts RTP frames), even once real frames are flowing again.
+    // getInboundVideoStats() already measures actual framesDecoded deltas,
+    // so it self-reports 0 correctly during a real stall with no help needed.
+    return this.videoTrack?.readyState === 'live'
       && this.pc?.connectionState === 'connected'
   }
 

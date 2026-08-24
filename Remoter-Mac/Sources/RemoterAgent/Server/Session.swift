@@ -421,9 +421,17 @@ final class Session {
         case .fpsSet(let fps, let auto):
             autoFpsEnabled = auto
             if auto {
-                autoFpsIndex = 0
+                // Race with the RTP-ready one-shot bump below (onFrame,
+                // ~line 900): that bump only fires on the false→true
+                // transition of usingRtpVideo, so if THIS message (client's
+                // initial auto=true on mount) arrives after RTP already
+                // flipped it, starting at tier 0 here would overwrite the
+                // bump and get permanently stuck at the bottom — no second
+                // chance ever comes. Start at the top tier ourselves
+                // whenever RTP is already live, same as that bump does.
+                autoFpsIndex = usingRtpVideo ? Self.autoFpsTiers.count - 1 : 0
                 autoFpsCleanStreak = 0
-                applyFps(Self.autoFpsTiers[0])
+                applyFps(Self.autoFpsTiers[autoFpsIndex])
             } else {
                 applyFps(fps)
             }
@@ -431,9 +439,10 @@ final class Session {
         case .bitrateSet(let bitrate, let auto):
             autoBitrateEnabled = auto
             if auto {
-                autoBitrateIndex = 0
+                // Same race as .fpsSet above, same fix.
+                autoBitrateIndex = usingRtpVideo ? Self.autoBitrateTiers.count - 1 : 0
                 autoBitrateCleanStreak = 0
-                applyBitrate(Self.autoBitrateTiers[0])
+                applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
             } else {
                 applyBitrate(bitrate)
             }

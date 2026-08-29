@@ -74,6 +74,7 @@ final class Session {
     private var usingWebRTCVideo = false  // legacy DataChannel video path active
     private var usingRtpVideo = false     // RTP media-track path active
     private var pendingTextInputSince: Date?   // TEMP DIAGNOSTIC — see .textInput case
+    private var pendingScrollSince: Date?      // TEMP DIAGNOSTIC — see .mouseScroll case, mirrors pendingTextInputSince
 
     // Auto quality: fps and bitrate step on separate ladders — collapsing
     // them into one combined tier meant any problem (network congestion OR
@@ -356,6 +357,12 @@ final class Session {
 
         case .mouseScroll(let dx, let dy):
             guard inputEnabled else { break }
+            // TEMP DIAGNOSTIC — user reports scrolling feels laggy even
+            // though sent_5s now shows ~60fps; fps alone doesn't measure
+            // input-to-pixels latency, and unlike text input there was no
+            // existing measurement for scroll at all. Mirrors
+            // pendingTextInputSince/frame_after_text_input below.
+            pendingScrollSince = Date()
             input?.mouseScroll(dx: dx, dy: dy)
 
         case .key(let code, let down, let mods):
@@ -890,6 +897,23 @@ final class Session {
                     let ms = Date().timeIntervalSince(since) * 1000
                     ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
                         step: "frame_after_text_input", detail: "delayMs=\(String(format: "%.1f", ms))")
+                }
+                // TEMP DIAGNOSTIC — same idea as frame_after_text_input, for
+                // scroll. Single-shot per scroll message like the text-input
+                // one (cleared right after logging), not left to log forever
+                // after scrolling stops — but since a sustained scroll
+                // re-arms this on every throttled scroll message (~16ms
+                // apart, see InputHandler.sendScrollThrottled), a continuous
+                // scroll gesture still yields one measurement per frame
+                // while it's happening, which is enough to see whether
+                // latency grows over the gesture (buffer filling up
+                // somewhere downstream — queueDepth, GCC's pacer, the
+                // client's own jitter buffer) or stays flat.
+                if let since = self.pendingScrollSince {
+                    self.pendingScrollSince = nil
+                    let ms = Date().timeIntervalSince(since) * 1000
+                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                        step: "frame_after_scroll", detail: "delayMs=\(String(format: "%.1f", ms))")
                 }
                 // RTP media track first: raw buffer straight into libwebrtc
                 // (it encodes + paces + congestion-controls internally). Our

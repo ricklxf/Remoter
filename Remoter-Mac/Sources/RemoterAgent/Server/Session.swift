@@ -96,7 +96,12 @@ final class Session {
     // climbs after proving stable, rather than starting high and visibly
     // stuttering before settling.
     private static let autoFpsTiers:     [Int] = [30, 60]
-    private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 15_000_000]
+    // Top tier raised 15M→30M for LAN headroom — WebRTCAgent's lanFloorBps
+    // (RTT-gated minimum) now sits at 12M, so the ceiling needs real
+    // clearance above that for GCC to still have room to climb on genuinely
+    // demanding content (e.g. full-screen video played back inside the
+    // remote session) rather than immediately pinning against the max.
+    private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 30_000_000]
     // Independent — the client can put either on auto while pinning the
     // other to a manual value, matching the fact they're genuinely two
     // separate knobs, not one bundled "quality" choice.

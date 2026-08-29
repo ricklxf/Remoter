@@ -58,7 +58,16 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // than that path can sustain, the resulting real queueing delay pushes
     // RTT past wanRttThresholdMs on the very next poll and the floor comes
     // back off automatically, no manual LAN/VPN detection required.
-    private static let lanFloorBps: Int = 1_500_000
+    // Raised from 1.5Mbps after confirming via gcc_stats that GCC's own
+    // target was bouncing around 3-5Mbps on a proven ~1ms-RTT LAN — nowhere
+    // near the 15Mbps ceiling, so the ceiling wasn't the constraint anymore,
+    // GCC's own conservative bandwidth probing was. 5Mbps visibly blurs text
+    // (high-frequency detail is the first thing H.264 sacrifices under a
+    // tight bitrate budget). This floor only ever activates after the
+    // RTT-streak gate above proves it's a real same-switch LAN, so pushing
+    // it this high is safe — the same "instant to revoke" asymmetry still
+    // applies if it turns out the link can't actually sustain it.
+    private static let lanFloorBps: Int = 12_000_000
     private static let lanRttThresholdMs = 3.0
     private static let wanRttThresholdMs = 8.0
     private static let lanRttStreakRequired = 3   // consecutive 2s polls (~6s)

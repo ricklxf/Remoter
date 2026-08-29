@@ -201,6 +201,16 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     if (track) {
       track.onended = () => setMediaActive(false)
     }
+    // TEMP DIAGNOSTIC — see Connection.sendMouseScroll/markFrameRendered.
+    // <video> owns decode/render internally for the RTP path (no per-frame
+    // JS callback otherwise), so requestVideoFrameCallback is the only way
+    // to know when a frame actually got composited on screen, as opposed to
+    // when the server captured/sent it (already measured, and fast).
+    const tick = (): void => {
+      conn.markFrameRendered()
+      video.requestVideoFrameCallback(tick)
+    }
+    video.requestVideoFrameCallback(tick)
   }
 
   // Wire up video frames + codec_changed events

@@ -84,6 +84,17 @@ export class Connection {
   // loop can report decode latency without Connection knowing the decoder.
   decodeMsProvider: (() => number) | null = null
   private _pingTs      = 0
+  // TEMP DIAGNOSTIC — see sendMouseScroll/markFrameRendered.
+  private _lastScrollSentAt = 0
+
+  /** Call from wherever a decoded frame actually gets handed to the
+   * renderer — see sendMouseScroll's doc comment for why. */
+  markFrameRendered(): void {
+    if (this._lastScrollSentAt === 0) return
+    const ms = performance.now() - this._lastScrollSentAt
+    this._lastScrollSentAt = 0
+    console.log(`[Conn] scroll→rendered-frame delayMs=${ms.toFixed(1)}`)
+  }
 
   /** Already-arrived RTP video stream, if any — for a subscriber that mounts
    * after the media_stream event already fired (see lastMediaStream above). */
@@ -247,6 +258,16 @@ export class Connection {
     this.sendJson({ type: 'mouse_double_click', button, x, y })
   }
   sendMouseScroll(dx: number, dy: number): void {
+    // TEMP DIAGNOSTIC — reported: reversing scroll direction with a plain
+    // mouse (no trackpad momentum to blame) takes 1-2s to visibly take
+    // effect. frame_after_scroll (server-side: receipt → next captured
+    // frame) already measured 1-15ms, so that half is fine — this measures
+    // the other half (send → decoded frame actually rendered on screen) to
+    // find out whether the remaining latency is decode/jitter-buffer
+    // backlog rather than the input pipeline. Logs to the browser console,
+    // not connections.log (this is a client-side-only measurement with
+    // nothing to correlate on the server). Remove once root-caused.
+    this._lastScrollSentAt = performance.now()
     this.sendJson({ type: 'mouse_scroll', dx, dy })
   }
   sendKey(code: string, down: boolean, modifiers: string[]): void {

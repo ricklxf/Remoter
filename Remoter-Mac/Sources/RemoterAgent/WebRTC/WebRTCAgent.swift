@@ -68,8 +68,14 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // it this high is safe — the same "instant to revoke" asymmetry still
     // applies if it turns out the link can't actually sustain it.
     private static let lanFloorBps: Int = 12_000_000
-    private static let lanRttThresholdMs = 3.0
-    private static let wanRttThresholdMs = 8.0
+    // Raised from 3.0/8.0 after a confirmed same-switch wired LAN (user
+    // verified both machines wired, same network, repeatedly) showed a
+    // live session sitting at a *steady* 8.0ms RTT for its whole duration —
+    // exactly at the old wanRttThresholdMs, so the floor never armed at all
+    // for that session despite it being real LAN traffic. 1-8ms is real,
+    // observed LAN variance here, not a sign of a WAN/VPN hop.
+    private static let lanRttThresholdMs = 10.0
+    private static let wanRttThresholdMs = 20.0
     // 4 consecutive polls at the new 0.5s poll interval (see
     // startStatsPolling) = ~2s to re-arm, down from ~6s at the old 2s×3
     // pacing — confirmed via a live gcc_stats trace that a single brief RTT

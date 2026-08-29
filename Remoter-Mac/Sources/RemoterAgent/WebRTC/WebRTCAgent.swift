@@ -70,7 +70,17 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private static let lanFloorBps: Int = 12_000_000
     private static let lanRttThresholdMs = 3.0
     private static let wanRttThresholdMs = 8.0
-    private static let lanRttStreakRequired = 3   // consecutive 2s polls (~6s)
+    // 4 consecutive polls at the new 0.5s poll interval (see
+    // startStatsPolling) = ~2s to re-arm, down from ~6s at the old 2s×3
+    // pacing — confirmed via a live gcc_stats trace that a single brief RTT
+    // blip (a real one, not misdetection) revokes the floor instantly (by
+    // design), but then took ~6s just waiting on this streak before even
+    // starting to recover, on top of however long GCC's own crashed
+    // estimate takes to ramp back up afterward — measured total stall was
+    // ~12s for one transient spike. Keeping 4 samples (not fewer) instead
+    // of just shortening the interval preserves the same confirmation
+    // count, just gathered faster.
+    private static let lanRttStreakRequired = 4
     private var lowRttStreak = 0
     private var minBitrateFloorActive = false
 
@@ -230,7 +240,10 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private func startStatsPolling() {
         statsTimer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        t.schedule(deadline: .now() + 2, repeating: 2)
+        // 0.5s, not 2s — see lanRttStreakRequired's comment for why: this is
+        // what actually determines how fast the floor can re-arm after a
+        // transient RTT blip clears.
+        t.schedule(deadline: .now() + 0.5, repeating: 0.5)
         t.setEventHandler { [weak self] in self?.logGCCStats() }
         t.resume()
         statsTimer = t

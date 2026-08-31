@@ -360,7 +360,17 @@ private final class HTTPFileHandler: ChannelInboundHandler, RemovableChannelHand
             headers.add(name: "Content-Type",   value: contentType)
             headers.add(name: "Content-Length", value: "\(body.count)")
         }
-        headers.add(name: "Cache-Control", value: "no-cache")
+        // no-store, not no-cache: "no-cache" doesn't mean "don't cache" — it
+        // means "cache it, but revalidate with the server first," which
+        // needs an ETag/Last-Modified validator to actually work correctly.
+        // None is set here, so different browsers handle that ambiguity
+        // differently — confirmed recurring symptom: even a hard refresh
+        // (Cmd+Shift+R) sometimes still served a stale embedded web build
+        // after a fresh RemoterAgent restart. This server always serves the
+        // current build fresh from disk on every request anyway, so there's
+        // zero benefit to any caching here — no-store removes the ambiguity
+        // entirely instead of trying to get revalidation right.
+        headers.add(name: "Cache-Control", value: "no-store")
         headers.add(name: "Connection",    value: "close")
 
         context.write(wrapOutboundOut(.head(

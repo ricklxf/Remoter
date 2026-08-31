@@ -47,6 +47,18 @@ export class WebRTCClient {
     pc.ontrack = (ev) => {
       if (ev.track.kind !== 'video') return
       this.videoTrack = ev.track
+      // Measured via a TEMP DIAGNOSTIC (scroll→rendered-frame): most frames
+      // render in well under 100ms, but occasional ones spike to 1000ms+ —
+      // classic jitter-buffer behavior (Chrome grows the WebRTC playout
+      // buffer to absorb network jitter, which trades latency for
+      // resilience). playoutDelayHint asks the browser to target near-zero
+      // buffering instead — appropriate here since this is a same-LAN link
+      // that doesn't need much jitter tolerance, and low input-to-display
+      // latency matters far more for a remote-control session than for a
+      // typical video call. Chrome-specific API; unsupported browsers just
+      // ignore the assignment.
+      const receiver = ev.receiver as RTCRtpReceiver & { playoutDelayHint?: number }
+      if (receiver && 'playoutDelayHint' in receiver) receiver.playoutDelayHint = 0
       const stream = ev.streams[0] ?? new MediaStream([ev.track])
       this.onTrack?.(stream)
     }

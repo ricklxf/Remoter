@@ -406,22 +406,29 @@ final class Session {
             // it immediately. Also mark it as "already sent" so the slow
             // reverse-sync poll below doesn't see this same content as a
             // fresh local copy a moment later and echo it straight back.
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            // Dispatched onto main — routeMessage runs on a NIO event-loop
+            // thread, and a real crash report confirmed NSPasteboard isn't
+            // safe to touch off the main thread (see clipboardPlainText()).
             lastSentClipboardText = text
+            DispatchQueue.main.async {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_applied", detail: "len=\(text.count)")
 
         case .clipboardSetImage(let data):
             guard !data.isEmpty, let imgData = Data(base64Encoded: data) else { break }
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.declareTypes([.png, .tiff], owner: nil)
-            pb.setData(imgData, forType: .png)
-            if let rep = NSBitmapImageRep(data: imgData),
-               let tiff = rep.representation(using: .tiff, properties: [:]) {
-                pb.setData(tiff, forType: .tiff)
-            }
             lastSentClipboardImageSize = imgData.count
+            DispatchQueue.main.async {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.declareTypes([.png, .tiff], owner: nil)
+                pb.setData(imgData, forType: .png)
+                if let rep = NSBitmapImageRep(data: imgData),
+                   let tiff = rep.representation(using: .tiff, properties: [:]) {
+                    pb.setData(tiff, forType: .tiff)
+                }
+            }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_image_applied", detail: "bytes=\(imgData.count)")
 
         case .fileStart(let fid, let name, let size):
@@ -1280,12 +1287,18 @@ final class Session {
         }
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_started")
 
-        // 10ms — as fast as this can usefully go. Below this, it's just
-        // more thread wakeups for no perceptible gain (10ms is already
-        // faster than a single frame at 60fps); NSPasteboard reads are
-        // cheap enough that even this rate costs nothing measurable.
+        // 150ms, not 10ms — confirmed crash (EXC_BAD_ACCESS in AppKit's
+        // NSPasteboard _updateTypeCacheIfNeeded, from a real .ips crash
+        // report) from hammering NSPasteboard at 100 reads/sec from a
+        // background thread. 150ms is still ~20x faster than the original
+        // 3s poll — plenty for "instant" copy/paste — while giving AppKit's
+        // internal pasteboard cache enough breathing room not to corrupt
+        // itself. See clipboardPlainText()/clipboardImagePNG() for the
+        // other half of this fix (moving the actual NSPasteboard calls onto
+        // the main thread, same pattern as InputSourceForcer's fix for the
+        // same class of AppKit-off-main-thread crash).
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + .milliseconds(10), repeating: .milliseconds(10))
+        timer.schedule(deadline: .now() + .milliseconds(150), repeating: .milliseconds(150))
         timer.setEventHandler { [weak self] in self?.checkAndSendClipboardChanges() }
         timer.resume()
         clipboardTimer = timer
@@ -1319,28 +1332,39 @@ final class Session {
     // clipboard and never sends anything, even though something real was
     // just copied. Fall back to extracting plain text out of RTF/HTML.
     private static func clipboardPlainText() -> String? {
-        let pb = NSPasteboard.general
-        if let s = pb.string(forType: .string), !s.isEmpty { return s }
-        if let rtf = pb.data(forType: .rtf),
-           let attr = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil),
-           !attr.string.isEmpty {
-            return attr.string
+        // Dispatched onto main — see the timer setup comment in
+        // startClipboardMonitor() for why: a real crash report showed
+        // AppKit's NSPasteboard implementation isn't safe to hammer from a
+        // background thread (EXC_BAD_ACCESS deep in
+        // -[NSPasteboard _updateTypeCacheIfNeeded]), the same class of bug
+        // InputSourceForcer hit with TIS APIs.
+        DispatchQueue.main.sync {
+            let pb = NSPasteboard.general
+            if let s = pb.string(forType: .string), !s.isEmpty { return s }
+            if let rtf = pb.data(forType: .rtf),
+               let attr = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil),
+               !attr.string.isEmpty {
+                return attr.string
+            }
+            if let html = pb.data(forType: .html),
+               let attr = try? NSAttributedString(data: html, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil),
+               !attr.string.isEmpty {
+                return attr.string
+            }
+            return nil
         }
-        if let html = pb.data(forType: .html),
-           let attr = try? NSAttributedString(data: html, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil),
-           !attr.string.isEmpty {
-            return attr.string
-        }
-        return nil
     }
 
     private func clipboardImagePNG() -> Data? {
-        let pb = NSPasteboard.general
-        if let png = pb.data(forType: .png) { return png }
-        if let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
-            return rep.representation(using: .png, properties: [:])
+        // See clipboardPlainText() — same NSPasteboard-off-main-thread crash risk.
+        DispatchQueue.main.sync {
+            let pb = NSPasteboard.general
+            if let png = pb.data(forType: .png) { return png }
+            if let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
+                return rep.representation(using: .png, properties: [:])
+            }
+            return nil
         }
-        return nil
     }
 
     private func stopClipboardMonitor() {

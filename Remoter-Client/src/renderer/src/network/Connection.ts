@@ -906,7 +906,7 @@ export class Connection {
     this.statsTimer = setInterval(async () => {
       // Detect stale connection: server crashed / TCP hung without a clean close
       if (this._lastRecvTs > 0 && Date.now() - this._lastRecvTs > STALE_TIMEOUT) {
-        console.warn('[Conn] no data received for 15s — closing stale connection')
+        console.warn(`[Conn] no data received for ${STALE_TIMEOUT / 1000}s — closing stale connection`)
         this.ws?.close(4001, 'stale connection')
         return
       }
@@ -916,7 +916,7 @@ export class Connection {
       // path: locally-counted WS/WebCodecs figures, same as before.
       // TEMP DIAGNOSTIC — see debugState()'s doc comment.
       if (this.webrtc) console.log('[Conn] stats gate:', this.webrtc.debugState())
-      const rtp = this.webrtc?.mediaActive ? await this.webrtc.getInboundVideoStats() : null
+      const rtp = this.webrtc?.hasLiveVideoTrack ? await this.webrtc.getInboundVideoStats() : null
       const fps         = rtp ? rtp.fps         : Math.round(this._frameCount / (INTERVAL / 1000))
       const bitrateKbps = rtp ? rtp.bitrateKbps : Math.round(this._bytesCount * 8 / INTERVAL)
       const decodeMs    = rtp ? rtp.decodeMs    : Math.round(this.decodeMsProvider?.() ?? 0)

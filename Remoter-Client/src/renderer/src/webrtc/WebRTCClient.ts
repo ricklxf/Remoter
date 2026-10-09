@@ -118,6 +118,13 @@ export class WebRTCClient {
       && this.pc?.connectionState === 'connected'
   }
 
+  /** RTP 轨道是否存在且存活——统计用。不看 connectionState：它在网络抖动时
+   * 会短暂掉到 disconnected，而此时帧往往仍在解码；按 mediaActive 门控统计
+   * 会落到只数 WS 二进制帧的 _frameCount 上，RTP 会话里那个数永远是 0。 */
+  get hasLiveVideoTrack(): boolean {
+    return this.videoTrack?.readyState === 'live'
+  }
+
   // TEMP DIAGNOSTIC — fps stat stuck at 0 was already traced once to
   // mediaActive's now-removed muted check; this exposes the two conditions
   // still gating it (pc.connectionState, track.readyState) plus
@@ -141,7 +148,7 @@ export class WebRTCClient {
   /** 从 inbound-rtp 统计里取 fps/码率/解码耗时（增量计算），媒体未活跃返回 null */
   async getInboundVideoStats(): Promise<InboundVideoStats | null> {
     const pc = this.pc
-    if (!pc || pc.connectionState !== 'connected') return null
+    if (!pc) return null
     let s: { framesDecoded?: number; bytesReceived?: number; totalDecodeTime?: number; framesPerSecond?: number } | null = null
     try {
       const report = await pc.getStats()

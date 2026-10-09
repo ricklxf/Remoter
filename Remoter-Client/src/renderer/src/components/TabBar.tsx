@@ -116,7 +116,11 @@ function StatsPopup({ tab, pos }: { tab: TabInfo; pos: { left: number; top: numb
       {streaming && (
         <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5 }}>
           <StatRow label="连接时长" value={formatDuration(tab.streamStartTime)} color="#4a5568" />
-          <StatRow label="帧率" value={`${stats.fps} fps`}   color={fpsColor} />
+          {/* RTP 下被控端只在画面变化时出帧，静止时 0 fps 是如实反映不是卡住；
+              真卡住时仍有码流在走，码率不会贴零，以此区分 */}
+          <StatRow label="帧率"
+            value={stats.fps <= 0 && stats.transport === 'UDP' && stats.bitrateKbps < 20 ? '画面静止' : `${stats.fps} fps`}
+            color={fpsColor} />
           <StatRow label="码率" value={`${mbps} Mbps`}       color="#4a5568" />
           <StatRow label="传输" value={stats.transport}
             color={stats.transport === 'UDP' ? '#15803d' : '#d97706'} />

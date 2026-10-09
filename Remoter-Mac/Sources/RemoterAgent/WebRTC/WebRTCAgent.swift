@@ -68,6 +68,17 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // it this high is safe — the same "instant to revoke" asymmetry still
     // applies if it turns out the link can't actually sustain it.
     private static let lanFloorBps: Int = 12_000_000
+    // Unconditional floor, independent of the RTT gate above. connections.log
+    // (08-31, 13 sessions) showed 128 GCC estimate crashes, every one with
+    // the LAN floor off (same-subnet Wi-Fi sits at 20-80ms RTT, so it never
+    // arms): target fell from ~5Mbps to 35-90Kbps while capture kept
+    // delivering 57fps, the encoder emitted 1-3fps, and the climb back took
+    // up to 125s. Same trace: at target >= 0.6Mbps the encoder still holds a
+    // median 52-57fps, below 300Kbps it stalls. 1Mbps keeps a crash above
+    // that cliff, and sits under the lowest quality tier (2Mbps) so it
+    // never fights a manual cap. A path that can't carry 1Mbps can't carry
+    // a 1080p desktop either.
+    private static let baseFloorBps: Int = 1_000_000
     // Raised from 3.0/8.0 after a confirmed same-switch wired LAN (user
     // verified both machines wired, same network, repeatedly) showed a
     // live session sitting at a *steady* 8.0ms RTT for its whole duration —
@@ -153,7 +164,10 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     func setMaxBitrate(_ bps: Int) {
         guard let sender = videoSender else { return }
         let params = sender.parameters
-        for enc in params.encodings { enc.maxBitrateBps = NSNumber(value: bps) }
+        for enc in params.encodings {
+            enc.maxBitrateBps = NSNumber(value: bps)
+            if let m = enc.minBitrateBps?.intValue, m > bps { enc.minBitrateBps = NSNumber(value: bps) }
+        }
         sender.parameters = params
     }
 
@@ -163,11 +177,15 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// scheduling jitter as severe congestion and crashing its estimate to
     /// ~100Kbps, then taking 20-90s to climb back — a link that can
     /// trivially sustain many Mbps gets rate-limited to single-digit fps in
-    /// the meantime. nil clears the floor (back to GCC's own judgment).
+    /// the meantime. nil falls back to baseFloorBps, never to no floor at all.
     func setMinBitrate(_ bps: Int?) {
         guard let sender = videoSender else { return }
         let params = sender.parameters
-        for enc in params.encodings { enc.minBitrateBps = bps.map { NSNumber(value: $0) } }
+        for enc in params.encodings {
+            // Never above the encoding's own cap — min > max is rejected.
+            let cap = enc.maxBitrateBps?.intValue ?? Int.max
+            enc.minBitrateBps = NSNumber(value: min(bps ?? Self.baseFloorBps, cap))
+        }
         sender.parameters = params
     }
 
@@ -253,6 +271,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         t.setEventHandler { [weak self] in self?.logGCCStats() }
         t.resume()
         statsTimer = t
+        // Sender encodings exist by now (ICE is up) — arm the base floor.
+        setMinBitrate(nil)
     }
 
     private func logGCCStats() {

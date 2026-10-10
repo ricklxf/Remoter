@@ -123,12 +123,21 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// clientNotOnLan): never arm the LAN floor, and drop it if armed.
     var lanFloorAllowed = true {
         didSet {
-            guard !lanFloorAllowed, minBitrateFloorActive else { return }
-            minBitrateFloorActive = false
-            setMinBitrate(nil)
-            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor", detail: "off reason=client_not_lan")
+            applyMaxBitrate()
+            if minBitrateFloorActive { setMinBitrate(floorBps) }
         }
     }
+    // Not-on-LAN (tunnel) band. With no floor at all, GCC idled at 2.7-5.9Mbps
+    // on the WireGuard path: a scroll's full-screen frames then take hundreds
+    // of ms each to drain through the pacer — encoder output fell to 6-22fps,
+    // the receiver's jitter buffer reached 1.3s (zero packet loss), i.e. both
+    // the blur and the "inertia". The same path has carried 12-25Mbps cleanly
+    // and 12Mbps with loss, so hold it in a 6-10Mbps band instead: enough for
+    // a 30fps scroll, and no climbing to 25-30Mbps until it breaks. Loss
+    // still revokes the floor and lowers the cap (evaluateLossCap).
+    private static let tunnelFloorBps: Int = 6_000_000
+    private static let tunnelCapBps: Int = 10_000_000
+    private var floorBps: Int { lanFloorAllowed ? Self.lanFloorBps : Self.tunnelFloorBps }
     private var minBitrateFloorActive = false
 
     // MARK: - 信令处理
@@ -198,7 +207,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
     private func applyMaxBitrate() {
         guard let sender = videoSender else { return }
-        let bps = min(requestedMaxBps, lossCapBps ?? Int.max)
+        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, lanFloorAllowed ? Int.max : Self.tunnelCapBps)
+        guard bps != Int.max else { return }
         let params = sender.parameters
         for enc in params.encodings {
             enc.maxBitrateBps = NSNumber(value: bps)
@@ -344,6 +354,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         statsTimer = t
         // Sender encodings exist by now (ICE is up) — arm the base floor.
         setMinBitrate(nil)
+        applyMaxBitrate()
         // forScreenCast sources default to keeping resolution/sharpness and
         // shedding frames: measured during a scroll at a ~5Mbps target,
         // capture delivered 47fps and the encoder emitted ~18. For remote
@@ -419,14 +430,14 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
                     detail: "off reason=\(revokeReason) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
             }
-        } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil, lanFloorAllowed,
+        } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil,
                   CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
             lowRttStreak += 1
             if lowRttStreak >= Self.lanRttStreakRequired, !minBitrateFloorActive {
                 minBitrateFloorActive = true
-                setMinBitrate(Self.lanFloorBps)
+                setMinBitrate(floorBps)
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
-                    detail: "on rttMs=\(String(format: "%.1f", rttMs))")
+                    detail: "on bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
             }
         } else {
             lowRttStreak = 0

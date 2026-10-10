@@ -1166,7 +1166,8 @@ final class Session {
     /// notify=false lets evaluateAutoQuality() batch a single combined
     /// notice when it changes fps and bitrate in the same step, instead of
     /// sending two back-to-back messages for one logical update.
-    /// Holds capture at scrollFps until 0.4s after the last scroll event,
+    /// Holds capture at scrollFps until 1.5s after the last scroll event
+    /// (0.4s flip-flopped the SCStream config every pause between swipes),
     /// then restores currentFps. No-op when the session is already at or
     /// below scrollFps.
     private func limitFpsWhileScrolling() {
@@ -1178,7 +1179,7 @@ final class Session {
         scrollFpsLimited = true
         scrollFpsLock.unlock()
         if starting { capturer?.updateFps(Self.scrollFps) }
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4) { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
             self.scrollFpsLock.lock()
             guard gen == self.scrollFpsGen else { self.scrollFpsLock.unlock(); return }

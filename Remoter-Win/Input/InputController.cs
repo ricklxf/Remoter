@@ -82,6 +82,26 @@ sealed class InputController
         SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT { dx = ax, dy = ay, dwFlags = upFlag   | abs } });
     }
 
+    // Pixel deltas from newer clients. The whole-notch dx/dy path below only
+    // moves once 100px have accumulated, so a touchpad swipe did nothing and
+    // then jumped; wheel data may be any fraction of WHEEL_DELTA, so scale
+    // instead (100px = one notch = 120) and carry the remainder.
+    private int _scrollRemX, _scrollRemY;
+    public void MouseScrollPixels(int px, int py)
+    {
+        _scrollRemX += px * WHEEL_DELTA;
+        _scrollRemY += py * WHEEL_DELTA;
+        int wx = _scrollRemX / 100, wy = _scrollRemY / 100;
+        _scrollRemX -= wx * 100;
+        _scrollRemY -= wy * 100;
+        if (wy != 0)
+            SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT
+                { dwFlags = MOUSEEVENTF_WHEEL, mouseData = (uint)(-wy) } });
+        if (wx != 0)
+            SendInput1(new INPUT { type = IT_MOUSE, mi = new MOUSEINPUT
+                { dwFlags = MOUSEEVENTF_HWHEEL, mouseData = (uint)wx } });
+    }
+
     public void MouseScroll(int dx, int dy)
     {
         if (dy != 0)

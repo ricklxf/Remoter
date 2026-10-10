@@ -294,6 +294,15 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         statsTimer = t
         // Sender encodings exist by now (ICE is up) — arm the base floor.
         setMinBitrate(nil)
+        // forScreenCast sources default to keeping resolution/sharpness and
+        // shedding frames: measured during a scroll at a ~5Mbps target,
+        // capture delivered 47fps and the encoder emitted ~18. For remote
+        // control a scroll has to stay fluid, so prefer framerate.
+        if let sender = videoSender {
+            let params = sender.parameters
+            params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainFramerate.rawValue)
+            sender.parameters = params
+        }
     }
 
     private func logGCCStats() {

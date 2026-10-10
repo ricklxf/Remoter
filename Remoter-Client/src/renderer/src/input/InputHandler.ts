@@ -225,6 +225,7 @@ export class InputHandler {
 
   // Sub-unit remainders carried between sends so nothing is lost to rounding.
   private scrollRem = { px: 0, py: 0, lx: 0, ly: 0 }
+  private lastScrollAxisX = false
 
   /** Sends both forms: whole pixels (agents that support pixel-precise
    * scrolling) and whole wheel notches (older agents / Windows, which only
@@ -283,8 +284,14 @@ export class InputHandler {
     // precision touchpad's or smooth-scroll mouse's output — and turned the
     // rest into whole-line jumps. deltaMode 1 = lines (Firefox), 2 = pages.
     const unit = we.deltaMode === 1 ? 40 : we.deltaMode === 2 ? 800 : 1
-    const dx = we.deltaX * unit
-    const dy = we.deltaY * unit
+    let dx = we.deltaX * unit
+    let dy = we.deltaY * unit
+    // Axis lock: a vertical swipe always carries a little sideways drift,
+    // which showed up remotely as horizontal jitter. Keep the dominant axis;
+    // on a tie, stay with the previous one.
+    const ax = Math.abs(dx), ay = Math.abs(dy)
+    if (ax !== ay) this.lastScrollAxisX = ax > ay
+    if (this.lastScrollAxisX) dy = 0; else dx = 0
     if (dx !== 0 || dy !== 0) this.sendScrollThrottled(dx, dy)
   }
 

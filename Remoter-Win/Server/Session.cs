@@ -265,8 +265,9 @@ sealed class Session
                 _input?.MouseDoubleClick(m.Button, m.X, m.Y); break;
 
             case ClientMsg.MouseScroll m when _inputEnabled:
-                AppLog.Write($"[Input] MouseScroll dx={m.Dx} dy={m.Dy}");
-                _input?.MouseScroll(m.Dx, m.Dy); break;
+                if (m.Px is int px && m.Py is int py) _input?.MouseScrollPixels(px, py);
+                else _input?.MouseScroll(m.Dx, m.Dy);
+                break;
 
             case ClientMsg.KeyEvent k when _inputEnabled:
                 AppLog.Write($"[Input] Key {k.Code} down={k.Down}");

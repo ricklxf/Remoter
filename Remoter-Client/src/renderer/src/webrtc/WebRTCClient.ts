@@ -57,8 +57,12 @@ export class WebRTCClient {
       // latency matters far more for a remote-control session than for a
       // typical video call. Chrome-specific API; unsupported browsers just
       // ignore the assignment.
-      const receiver = ev.receiver as RTCRtpReceiver & { playoutDelayHint?: number }
+      const receiver = ev.receiver as RTCRtpReceiver & { playoutDelayHint?: number; jitterBufferTarget?: number | null }
       if (receiver && 'playoutDelayHint' in receiver) receiver.playoutDelayHint = 0
+      // The hint alone wasn't enough: client_rx still showed the jitter
+      // buffer holding 200-400ms with network jitter down at 6-15ms.
+      // jitterBufferTarget is the standard knob for the same thing.
+      if (receiver && 'jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0
       const stream = ev.streams[0] ?? new MediaStream([ev.track])
       this.onTrack?.(stream)
     }

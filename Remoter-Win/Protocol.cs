@@ -9,7 +9,7 @@ public abstract record ClientMsg
     public record Auth(string Pin) : ClientMsg;
     public record MouseMove(double X, double Y) : ClientMsg;
     public record MouseButton(string Button, bool Down, double X, double Y) : ClientMsg;
-    public record MouseScroll(int Dx, int Dy) : ClientMsg;
+    public record MouseScroll(int Dx, int Dy, int? Px = null, int? Py = null) : ClientMsg;
     public record KeyEvent(string Code, bool Down, string[] Mods) : ClientMsg;
     public record ClipboardSet(string Text) : ClientMsg;
     public record FileStart(string Id, string Name, long Size) : ClientMsg;
@@ -47,7 +47,9 @@ public abstract record ClientMsg
             "auth"              => new Auth(e.Str("pin")),
             "mouse_move"        => new MouseMove(e.Dbl("x"), e.Dbl("y")),
             "mouse_button"      => new MouseButton(e.Str("button"), e.Bool("down"), e.Dbl("x"), e.Dbl("y")),
-            "mouse_scroll"      => new MouseScroll(e.Int("dx"), e.Int("dy")),
+            "mouse_scroll"      => e.TryGetProperty("px", out _) && e.TryGetProperty("py", out _)
+                ? new MouseScroll(e.Int("dx"), e.Int("dy"), e.Int("px"), e.Int("py"))
+                : new MouseScroll(e.Int("dx"), e.Int("dy")),
             "key"               => new KeyEvent(e.Str("code"), e.Bool("down"), e.StrArr("modifiers")),
             "clipboard_set"     => new ClipboardSet(e.Str("text")),
             "file_start"        => new FileStart(e.Str("id"), e.Str("name"), e.Long("size")),

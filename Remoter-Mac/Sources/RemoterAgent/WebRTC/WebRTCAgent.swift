@@ -85,8 +85,28 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // exactly at the old wanRttThresholdMs, so the floor never armed at all
     // for that session despite it being real LAN traffic. 1-8ms is real,
     // observed LAN variance here, not a sign of a WAN/VPN hop.
-    private static let lanRttThresholdMs = 10.0
-    private static let wanRttThresholdMs = 20.0
+    // Re-tuned 10-10 from a WireGuard session's own numbers (company laptop
+    // → gateway → this LAN), which the 10/20ms pair handled badly both ways:
+    //  - idle RTT there is 8-15ms; at 15 the floor never armed, GCC sat at
+    //    ~5Mbps and the encoder dropped a scroll to ~18fps (capture: 47fps),
+    //  - when it did arm, the same path carried 12Mbps at a flat 12ms RTT
+    //    for two minutes — then one 49ms sample with zero packet loss
+    //    revoked it, GCC restarted from 1.4Mbps, and the next scroll was mush.
+    // So: arm up to 20ms, and revoke on evidence the path is actually
+    // overloaded — receiver-reported loss, one very high RTT sample, or two
+    // *new* samples in a row above wanRttThresholdMs — not on a single blip.
+    private static let lanRttThresholdMs = 20.0
+    private static let wanRttThresholdMs = 40.0
+    private static let hardRttThresholdMs = 150.0
+    private static let lossRevokeFraction = 0.05
+    // After a revoke, don't re-arm for a while: the same session later showed
+    // this path at ~1.5Mbps with real loss and ~1s receiver jitter, where
+    // idle RTT still reads 8-15ms — without a hold-off the floor would re-arm
+    // every 2s and flood a link that just proved it can't take it.
+    private static let rearmCooldownSec = 30.0
+    private var floorRevokedAt: CFAbsoluteTime = 0
+    private var highRttStreak = 0
+    private var lastRttSampleCount = -1.0
     // 4 consecutive polls at the new 0.5s poll interval (see
     // startStatsPolling) = ~2s to re-arm, down from ~6s at the old 2s×3
     // pacing — confirmed via a live gcc_stats trace that a single brief RTT
@@ -247,6 +267,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     func close() {
         statsTimer?.cancel()
         statsTimer = nil
+        highRttStreak = 0
         lowRttStreak = 0
         minBitrateFloorActive = false
         pc?.close()
@@ -281,7 +302,12 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             var outboundDetail = "n/a"
             var pairDetail = "n/a"
             var rttMs: Double?
+            var rttSamples = -1.0
+            var lossFraction = 0.0
             for stat in report.statistics.values {
+                if stat.type == "remote-inbound-rtp", (stat.values["kind"] as? String) == "video" {
+                    lossFraction = stat.values["fractionLost"] as? Double ?? 0
+                }
                 if stat.type == "outbound-rtp", (stat.values["kind"] as? String) == "video" {
                     let reason  = stat.values["qualityLimitationReason"] as? String ?? "?"
                     let fps     = stat.values["framesPerSecond"] as? Double ?? -1
@@ -295,32 +321,44 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                     let rtt   = stat.values["currentRoundTripTime"] as? Double ?? -1
                     let avail = (stat.values["availableOutgoingBitrate"] as? Double).map { Int($0) }
                     rttMs = rtt * 1000
+                    // currentRoundTripTime only changes per STUN check (every
+                    // few seconds); this counter tells a fresh sample apart
+                    // from the same one being re-read on each 0.5s poll.
+                    rttSamples = stat.values["responsesReceived"] as? Double ?? -1
                     pairDetail = "rttMs=\(String(format: "%.1f", rttMs ?? -1)) availBps=\(avail.map(String.init) ?? "?")"
                 }
             }
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
-                detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off")")
-            self.evaluateMinBitrateFloor(rttMs: rttMs)
+                detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off") loss=\(String(format: "%.3f", lossFraction))")
+            self.evaluateMinBitrateFloor(rttMs: rttMs, rttSamples: rttSamples, lossFraction: lossFraction)
         }
     }
 
-    /// Slow to commit (needs several consecutive low-RTT polls before
-    /// trusting the link is a real LAN), instant to revoke (any one poll
-    /// at/above wanRttThresholdMs drops it immediately) — see the property
-    /// comment on minBitrateFloorActive for why that asymmetry is what
-    /// makes this safe on a WireGuard-tunneled path too, without needing to
-    /// actually distinguish "LAN" from "tunnel" up front.
-    private func evaluateMinBitrateFloor(rttMs: Double?) {
+    /// Arms after several consecutive low-RTT polls; revokes on evidence of
+    /// real overload (loss, a very high RTT, or sustained high RTT) and then
+    /// holds off re-arming — see the comments on the thresholds above.
+    private func evaluateMinBitrateFloor(rttMs: Double?, rttSamples: Double, lossFraction: Double) {
         guard let rttMs, rttMs >= 0 else { return }
-        if rttMs >= Self.wanRttThresholdMs {
+        let isNewSample = rttSamples != lastRttSampleCount
+        lastRttSampleCount = rttSamples
+        if isNewSample { highRttStreak = rttMs >= Self.wanRttThresholdMs ? highRttStreak + 1 : 0 }
+
+        var revokeReason: String?
+        if lossFraction >= Self.lossRevokeFraction { revokeReason = "loss" }
+        else if rttMs >= Self.hardRttThresholdMs { revokeReason = "rtt_hard" }
+        else if highRttStreak >= 2 { revokeReason = "rtt_sustained" }
+
+        if let revokeReason {
             lowRttStreak = 0
+            floorRevokedAt = CFAbsoluteTimeGetCurrent()
             if minBitrateFloorActive {
                 minBitrateFloorActive = false
                 setMinBitrate(nil)
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
-                    detail: "off rttMs=\(String(format: "%.1f", rttMs))")
+                    detail: "off reason=\(revokeReason) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
             }
-        } else if rttMs <= Self.lanRttThresholdMs {
+        } else if rttMs <= Self.lanRttThresholdMs,
+                  CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
             lowRttStreak += 1
             if lowRttStreak >= Self.lanRttStreakRequired, !minBitrateFloorActive {
                 minBitrateFloorActive = true
@@ -328,8 +366,9 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
                     detail: "on rttMs=\(String(format: "%.1f", rttMs))")
             }
+        } else {
+            lowRttStreak = 0
         }
-        // Between the two thresholds: ambiguous, leave current state as-is.
     }
 
     // MARK: - Private
@@ -368,6 +407,7 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
             iceConnected = false
             statsTimer?.cancel()
             statsTimer = nil
+            highRttStreak = 0
             lowRttStreak = 0
             minBitrateFloorActive = false
             onDisconnected?()

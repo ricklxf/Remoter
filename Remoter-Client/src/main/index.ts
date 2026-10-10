@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, clipboard, nativeImage, Menu } from 'electron'
 import { writeFile, readdir, stat, readFile as fsReadFile } from 'fs/promises'
 import { join } from 'path'
-import { homedir } from 'os'
+import { homedir, networkInterfaces } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 
 // Reduce Chromium startup overhead. Must be called before app.whenReady().
@@ -244,6 +244,11 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('home-dir', () => homedir())
+
+  ipcMain.handle('local-ipv4', () =>
+    Object.values(networkInterfaces()).flatMap(list => list ?? [])
+      .filter(i => i.family === 'IPv4')
+      .map(i => ({ address: i.address, netmask: i.netmask })))
 
   ipcMain.handle('list-dir', async (_, dirPath: string) => {
     const expanded = dirPath.startsWith('~') ? join(homedir(), dirPath.slice(1)) : dirPath

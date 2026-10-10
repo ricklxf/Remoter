@@ -11,6 +11,7 @@ const api = {
   saveFileDialog:   (name: string): Promise<string | null> => ipcRenderer.invoke('save-file-dialog', name),
   saveFile:         (path: string, data: Uint8Array): Promise<void> => ipcRenderer.invoke('save-file', path, data),
   homeDir:          (): Promise<string> => ipcRenderer.invoke('home-dir'),
+  localIPv4:        (): Promise<Array<{ address: string; netmask: string }>> => ipcRenderer.invoke('local-ipv4'),
   listDir:          (path: string): Promise<{ path: string; entries: Array<{ name: string; size: number; isDir: boolean; modified: number }> }> =>
     ipcRenderer.invoke('list-dir', path),
   readFile:         (path: string): Promise<Uint8Array> => ipcRenderer.invoke('read-file', path),

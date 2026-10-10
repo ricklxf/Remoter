@@ -69,6 +69,7 @@ declare global {
       saveFileDialog: (name: string) => Promise<string | null>
       saveFile: (path: string, data: Uint8Array) => Promise<void>
       homeDir: () => Promise<string>
+      localIPv4?: () => Promise<Array<{ address: string; netmask: string }>>
       listDir: (path: string) => Promise<{ path: string; entries: DirEntry[] }>
       readFile: (path: string) => Promise<Uint8Array>
       setTitleBarOverlay?: (color: string, symbolColor: string) => void

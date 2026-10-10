@@ -74,6 +74,18 @@ final class Session {
     private var usingWebRTCVideo = false  // legacy DataChannel video path active
     private var usingRtpVideo = false     // RTP media-track path active
     private var pendingTextInputSince: Date?   // TEMP DIAGNOSTIC — see .textInput case
+    // Client-reported: none of its network interfaces share a subnet with the
+    // address it dialed (i.e. it's coming in through a tunnel/router, e.g.
+    // WireGuard). RTT can't tell that apart from a real LAN — the tunnel
+    // idles at 5-16ms — and arming the 12Mbps floor on it caused real loss.
+    private var clientNotOnLan = false
+    // Scroll → 30fps capture. A scroll changes the whole screen every frame;
+    // at a fixed bitrate, half the frames means twice the bits per frame,
+    // which is the difference between legible and smeared text mid-scroll.
+    private let scrollFpsLock = NSLock()
+    private var scrollFpsGen = 0
+    private var scrollFpsLimited = false
+    private static let scrollFps = 30
     private var pendingScrollSince: Date?      // TEMP DIAGNOSTIC — see .mouseScroll case, mirrors pendingTextInputSince
 
     // Auto quality: fps and bitrate step on separate ladders — collapsing
@@ -369,6 +381,12 @@ final class Session {
             // pendingTextInputSince/frame_after_text_input below.
             pendingScrollSince = Date()
             input?.mouseScroll(dx: dx, dy: dy, px: px, py: py)
+            limitFpsWhileScrolling()
+
+        case .netHint(let lan):
+            clientNotOnLan = !lan
+            webrtc?.lanFloorAllowed = lan
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
 
         case .key(let code, let down, let mods):
             guard inputEnabled else { break }
@@ -660,6 +678,7 @@ final class Session {
         webrtc?.close()
         usingWebRTCVideo = false
         let agent = WebRTCAgent()
+        agent.lanFloorAllowed = !clientNotOnLan
 
         agent.onLocalDescription = { [weak self] type, sdp in
             self?.sendJson(["type": "webrtc_\(type)", "sdp": sdp])
@@ -1147,6 +1166,28 @@ final class Session {
     /// notify=false lets evaluateAutoQuality() batch a single combined
     /// notice when it changes fps and bitrate in the same step, instead of
     /// sending two back-to-back messages for one logical update.
+    /// Holds capture at scrollFps until 0.4s after the last scroll event,
+    /// then restores currentFps. No-op when the session is already at or
+    /// below scrollFps.
+    private func limitFpsWhileScrolling() {
+        guard currentFps > Self.scrollFps else { return }
+        scrollFpsLock.lock()
+        scrollFpsGen += 1
+        let gen = scrollFpsGen
+        let starting = !scrollFpsLimited
+        scrollFpsLimited = true
+        scrollFpsLock.unlock()
+        if starting { capturer?.updateFps(Self.scrollFps) }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            self.scrollFpsLock.lock()
+            guard gen == self.scrollFpsGen else { self.scrollFpsLock.unlock(); return }
+            self.scrollFpsLimited = false
+            self.scrollFpsLock.unlock()
+            self.capturer?.updateFps(self.currentFps)
+        }
+    }
+
     private func applyFps(_ fps: Int, notify: Bool = true) {
         currentFps = fps
         capturer?.updateFps(fps)

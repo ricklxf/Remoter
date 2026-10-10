@@ -556,6 +556,31 @@ export class Connection {
   private webrtcRestartTimer: ReturnType<typeof setTimeout> | null = null
   private webrtcRestartAttempts = 0
 
+  /** Tells the agent whether this machine shares a subnet with the address
+   * it dialed. Not on the same subnet = coming in through a tunnel/router
+   * (WireGuard etc.), which the agent can't tell from a LAN by RTT alone and
+   * must not apply its LAN bitrate floor to. Electron only (the browser
+   * can't see local interfaces) and only for a literal IPv4 target. */
+  private async sendNetHint(): Promise<void> {
+    const getIfs = window.remoterAPI?.localIPv4
+    if (!getIfs || this.params?.mode !== 'direct' || !this.params.directUrl) return
+    try {
+      const host = new URL(this.params.directUrl).hostname
+      const toInt = (ip: string): number | null => {
+        const p = ip.split('.').map(Number)
+        return p.length === 4 && p.every(n => Number.isInteger(n) && n >= 0 && n <= 255)
+          ? ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0 : null
+      }
+      const target = toInt(host)
+      if (target === null) return
+      const lan = (await getIfs()).some(i => {
+        const a = toInt(i.address), m = toInt(i.netmask)
+        return a !== null && m !== null && m !== 0 && ((a & m) >>> 0) === ((target & m) >>> 0)
+      })
+      this.sendJson({ type: 'net_hint', lan })
+    } catch { /* no hint = agent falls back to its own RTT/loss judgment */ }
+  }
+
   private async initiateWebRTC(): Promise<void> {
     const rtc = new WebRTCClient()
     this.webrtc = rtc
@@ -596,6 +621,7 @@ export class Connection {
     rtc.onICECandidate = (json) => { this.sendJson({ type: 'webrtc_ice', candidate: json }) }
 
     const offerSdp = await rtc.createOffer({ iceServers: this.turnServers })
+    await this.sendNetHint()
     this.sendJson({ type: 'webrtc_offer', sdp: offerSdp })
   }
 

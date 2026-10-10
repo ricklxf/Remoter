@@ -119,6 +119,16 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // count, just gathered faster.
     private static let lanRttStreakRequired = 4
     private var lowRttStreak = 0
+    /// false = the client told us it isn't on this LAN (see Session's
+    /// clientNotOnLan): never arm the LAN floor, and drop it if armed.
+    var lanFloorAllowed = true {
+        didSet {
+            guard !lanFloorAllowed, minBitrateFloorActive else { return }
+            minBitrateFloorActive = false
+            setMinBitrate(nil)
+            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor", detail: "off reason=client_not_lan")
+        }
+    }
     private var minBitrateFloorActive = false
 
     // MARK: - 信令处理
@@ -409,7 +419,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
                     detail: "off reason=\(revokeReason) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
             }
-        } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil,
+        } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil, lanFloorAllowed,
                   CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
             lowRttStreak += 1
             if lowRttStreak >= Self.lanRttStreakRequired, !minBitrateFloorActive {

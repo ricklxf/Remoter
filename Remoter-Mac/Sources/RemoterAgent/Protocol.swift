@@ -30,6 +30,7 @@ enum ClientMessage {
     case webrtcICE(json: String)
     case clientStats(fps: Double, rttMs: Int, rx: String)
     case setCodec(codec: String)
+    case netHint(lan: Bool)
     case cryptoHello(pubkey: String)
     case listDir(path: String)
     case requestFile(path: String)
@@ -125,6 +126,8 @@ enum ClientMessage {
                 rttMs: json["rtt_ms"] as? Int    ?? 0,
                 rx:    json["rx"]     as? String ?? ""
             )
+        case "net_hint":
+            return .netHint(lan: json["lan"] as? Bool ?? true)
         case "set_codec":
             return .setCodec(codec: json["codec"] as? String ?? "h264")
         case "crypto_hello":

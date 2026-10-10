@@ -261,7 +261,7 @@ export class Connection {
   sendMouseDoubleClick(button: string, x: number, y: number): void {
     this.sendJson({ type: 'mouse_double_click', button, x, y })
   }
-  sendMouseScroll(dx: number, dy: number): void {
+  sendMouseScroll(dx: number, dy: number, px = 0, py = 0): void {
     // TEMP DIAGNOSTIC — reported: reversing scroll direction with a plain
     // mouse (no trackpad momentum to blame) takes 1-2s to visibly take
     // effect. frame_after_scroll (server-side: receipt → next captured
@@ -272,7 +272,7 @@ export class Connection {
     // not connections.log (this is a client-side-only measurement with
     // nothing to correlate on the server). Remove once root-caused.
     this._lastScrollSentAt = performance.now()
-    this.sendJson({ type: 'mouse_scroll', dx, dy })
+    this.sendJson({ type: 'mouse_scroll', dx, dy, px, py })
   }
   sendKey(code: string, down: boolean, modifiers: string[]): void {
     this.sendJson({ type: 'key', code, down, modifiers })

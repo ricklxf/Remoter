@@ -121,10 +121,22 @@ final class InputController {
         timedPost(eu, tap: .cgSessionEventTap)
     }
 
-    func mouseScroll(dx: Int, dy: Int) {
+    /// px/py (pixels) when the client sends them, else dx/dy (wheel notches,
+    /// older clients). Line-unit events scroll in whole accelerated-line
+    /// jumps; pixel-unit events move exactly as far as the controlling
+    /// side's wheel/touchpad did, which is what makes it feel 1:1.
+    func mouseScroll(dx: Int, dy: Int, px: Int? = nil, py: Int? = nil) {
         let src = CGEventSource(stateID: .hidSystemState)
-        guard let e = CGEvent(scrollWheelEvent2Source: src, units: .line,
-                              wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0) else { return }
+        let e: CGEvent?
+        if let px, let py {
+            guard px != 0 || py != 0 else { return }
+            e = CGEvent(scrollWheelEvent2Source: src, units: .pixel,
+                        wheelCount: 2, wheel1: Int32(-py), wheel2: Int32(-px), wheel3: 0)
+        } else {
+            e = CGEvent(scrollWheelEvent2Source: src, units: .line,
+                        wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0)
+        }
+        guard let e else { return }
         timedPost(e, tap: .cgSessionEventTap)
     }
 

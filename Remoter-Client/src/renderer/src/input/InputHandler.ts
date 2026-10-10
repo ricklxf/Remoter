@@ -209,7 +209,7 @@ export class InputHandler {
       const { dx: adx, dy: ady } = this.pendingScroll
       this.pendingScroll = null
       this.lastScrollSentAt = now
-      this.conn.sendMouseScroll(adx, ady)
+      this.flushScroll(adx, ady)
       return
     }
     if (this.pendingScrollTimer) return
@@ -219,8 +219,23 @@ export class InputHandler {
       const { dx: adx, dy: ady } = this.pendingScroll
       this.pendingScroll = null
       this.lastScrollSentAt = performance.now()
-      this.conn.sendMouseScroll(adx, ady)
+      this.flushScroll(adx, ady)
     }, this.scrollThrottleMs - elapsed)
+  }
+
+  // Sub-unit remainders carried between sends so nothing is lost to rounding.
+  private scrollRem = { px: 0, py: 0, lx: 0, ly: 0 }
+
+  /** Sends both forms: whole pixels (agents that support pixel-precise
+   * scrolling) and whole wheel notches (older agents / Windows, which only
+   * read dx/dy). 100px = one notch, Chromium's per-notch delta on Windows. */
+  private flushScroll(dxPx: number, dyPx: number): void {
+    const r = this.scrollRem
+    r.px += dxPx; r.py += dyPx; r.lx += dxPx / 100; r.ly += dyPx / 100
+    const px = Math.trunc(r.px), py = Math.trunc(r.py)
+    const lx = Math.trunc(r.lx), ly = Math.trunc(r.ly)
+    r.px -= px; r.py -= py; r.lx -= lx; r.ly -= ly
+    if (px !== 0 || py !== 0 || lx !== 0 || ly !== 0) this.conn.sendMouseScroll(lx, ly, px, py)
   }
 
   private onMouseDown = (e: Event): void => {
@@ -263,8 +278,13 @@ export class InputHandler {
     if (!this.enabled) return
     const we = e as WheelEvent
     we.preventDefault()
-    const dx = Math.round(we.deltaX / 120)
-    const dy = Math.round(we.deltaY / 120)
+    // Raw pixel deltas, not pre-rounded "lines": Math.round(delta / 120)
+    // per event threw away every delta under 60px — i.e. nearly all of a
+    // precision touchpad's or smooth-scroll mouse's output — and turned the
+    // rest into whole-line jumps. deltaMode 1 = lines (Firefox), 2 = pages.
+    const unit = we.deltaMode === 1 ? 40 : we.deltaMode === 2 ? 800 : 1
+    const dx = we.deltaX * unit
+    const dy = we.deltaY * unit
     if (dx !== 0 || dy !== 0) this.sendScrollThrottled(dx, dy)
   }
 

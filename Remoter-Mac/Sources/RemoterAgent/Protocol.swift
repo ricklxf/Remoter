@@ -13,7 +13,7 @@ enum ClientMessage {
     case mouseMove(x: Double, y: Double, dragging: String?)
     case mouseButton(button: String, down: Bool, x: Double, y: Double)
     case mouseDoubleClick(button: String, x: Double, y: Double)
-    case mouseScroll(dx: Int, dy: Int)
+    case mouseScroll(dx: Int, dy: Int, px: Int?, py: Int?)
     case key(code: String, down: Bool, modifiers: [String])
     case textInput(String)   // IME-composed text, injected as a unicode string
     case clipboardSet(text: String)
@@ -73,7 +73,9 @@ enum ClientMessage {
         case "mouse_scroll":
             return .mouseScroll(
                 dx: json["dx"] as? Int ?? 0,
-                dy: json["dy"] as? Int ?? 0
+                dy: json["dy"] as? Int ?? 0,
+                px: json["px"] as? Int,
+                py: json["py"] as? Int
             )
         case "key":
             return .key(

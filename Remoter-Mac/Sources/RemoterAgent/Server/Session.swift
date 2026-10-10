@@ -360,7 +360,7 @@ final class Session {
             guard inputEnabled else { break }
             input?.mouseDoubleClick(button: btn, x: x, y: y)
 
-        case .mouseScroll(let dx, let dy):
+        case .mouseScroll(let dx, let dy, let px, let py):
             guard inputEnabled else { break }
             // TEMP DIAGNOSTIC — user reports scrolling feels laggy even
             // though sent_5s now shows ~60fps; fps alone doesn't measure
@@ -368,7 +368,7 @@ final class Session {
             // existing measurement for scroll at all. Mirrors
             // pendingTextInputSince/frame_after_text_input below.
             pendingScrollSince = Date()
-            input?.mouseScroll(dx: dx, dy: dy)
+            input?.mouseScroll(dx: dx, dy: dy, px: px, py: py)
 
         case .key(let code, let down, let mods):
             guard inputEnabled else { break }

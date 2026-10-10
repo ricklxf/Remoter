@@ -518,8 +518,16 @@ final class Session {
         case .webrtcICE(let json):
             webrtc?.handleRemoteICE(json)
 
-        case .clientStats:
-            break  // JPEG 模式下无 ABR
+        case .clientStats(_, _, let rx):
+            // TEMP DIAGNOSTIC — the sender side measures healthy during
+            // scrolling (55-58fps encoded, ~12Mbps, 7-13ms scroll→frame) while
+            // the user still sees stutter, so whatever is wrong sits after
+            // the encoder: loss, jitter buffer, decode or render. The client
+            // forwards its inbound-rtp deltas here so they land in
+            // connections.log next to gcc_stats.
+            if !rx.isEmpty {
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "client_rx", detail: String(rx.prefix(300)))
+            }
 
         case .setCodec(let codec):
             if codec == "jpeg" {

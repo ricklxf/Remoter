@@ -28,7 +28,7 @@ enum ClientMessage {
     case requestKeyframe
     case webrtcOffer(sdp: String)
     case webrtcICE(json: String)
-    case clientStats(fps: Double, rttMs: Int)
+    case clientStats(fps: Double, rttMs: Int, rx: String)
     case setCodec(codec: String)
     case cryptoHello(pubkey: String)
     case listDir(path: String)
@@ -120,7 +120,8 @@ enum ClientMessage {
         case "client_stats":
             return .clientStats(
                 fps:   json["fps"]    as? Double ?? 0,
-                rttMs: json["rtt_ms"] as? Int    ?? 0
+                rttMs: json["rtt_ms"] as? Int    ?? 0,
+                rx:    json["rx"]     as? String ?? ""
             )
         case "set_codec":
             return .setCodec(codec: json["codec"] as? String ?? "h264")

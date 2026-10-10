@@ -178,6 +178,32 @@ export class WebRTCClient {
     }
   }
 
+  // TEMP DIAGNOSTIC — receive-side deltas since the previous call, forwarded
+  // to the agent's log (see Session.swift's .clientStats). Sender stats are
+  // healthy while scrolling still stutters, so this is where to look next.
+  private lastRx: Record<string, number> = {}
+  async rxDiag(renderedFrames: number): Promise<string> {
+    const pc = this.pc
+    if (!pc) return ''
+    try {
+      const report = await pc.getStats()
+      for (const e of report.values()) {
+        if (e.type !== 'inbound-rtp' || e.kind !== 'video') continue
+        const keys = ['framesReceived', 'framesDecoded', 'framesDropped', 'packetsLost', 'nackCount', 'pliCount',
+          'freezeCount', 'totalFreezesDuration', 'jitterBufferDelay', 'jitterBufferEmittedCount', 'totalDecodeTime', 'bytesReceived']
+        const d: Record<string, number> = {}
+        for (const k of keys) { const v = Number(e[k] ?? 0); d[k] = v - (this.lastRx[k] ?? 0); this.lastRx[k] = v }
+        const jb  = d.jitterBufferEmittedCount > 0 ? Math.round(d.jitterBufferDelay * 1000 / d.jitterBufferEmittedCount) : -1
+        const dec = d.framesDecoded > 0 ? Math.round(d.totalDecodeTime * 1000 / d.framesDecoded) : -1
+        return `recv=${d.framesReceived} dec=${d.framesDecoded} drop=${d.framesDropped} rendered=${renderedFrames} ` +
+          `lost=${d.packetsLost} nack=${d.nackCount} pli=${d.pliCount} freeze=${d.freezeCount}/${Math.round(d.totalFreezesDuration * 1000)}ms ` +
+          `jbMs=${jb} decMs=${dec} kbps=${Math.round(d.bytesReceived * 8 / 1000 / 2)} jitterMs=${Math.round(Number(e.jitter ?? 0) * 1000)} ` +
+          `${e.frameWidth}x${e.frameHeight} impl=${e.decoderImplementation ?? '?'} pcState=${pc.connectionState}`
+      }
+    } catch { /* ignore */ }
+    return ''
+  }
+
   close(): void {
     this.pc?.close()
     this.pc = null

@@ -86,13 +86,17 @@ export class Connection {
   private _pingTs      = 0
   // TEMP DIAGNOSTIC — see sendMouseScroll/markFrameRendered.
   private _lastScrollSentAt = 0
+  private _renderedCount = 0
+  private _scrollToRender: number[] = []
 
   /** Call from wherever a decoded frame actually gets handed to the
    * renderer — see sendMouseScroll's doc comment for why. */
   markFrameRendered(): void {
+    this._renderedCount++
     if (this._lastScrollSentAt === 0) return
     const ms = performance.now() - this._lastScrollSentAt
     this._lastScrollSentAt = 0
+    this._scrollToRender.push(ms)
     console.log(`[Conn] scroll→rendered-frame delayMs=${ms.toFixed(1)}`)
   }
 
@@ -924,7 +928,15 @@ export class Connection {
 
       this._pingTs = Date.now()
       this.sendJson({ type: 'ping' })
-      this.sendJson({ type: 'client_stats', fps, rtt_ms: this._rttMs })
+      // TEMP DIAGNOSTIC — see WebRTCClient.rxDiag.
+      let rx = this.webrtc ? await this.webrtc.rxDiag(this._renderedCount) : ''
+      if (rx && this._scrollToRender.length) {
+        const a = [...this._scrollToRender].sort((x, y) => x - y)
+        rx += ` s2r=n${a.length}/p50:${Math.round(a[a.length >> 1])}/max:${Math.round(a[a.length - 1])}`
+      }
+      this._renderedCount = 0
+      this._scrollToRender = []
+      this.sendJson({ type: 'client_stats', fps, rtt_ms: this._rttMs, rx })
       this.emit({ type: 'stats', stats: {
         fps, rttMs: this._rttMs, bitrateKbps, transport,
         encodeMs: this._encodeMs,

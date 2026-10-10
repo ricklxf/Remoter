@@ -98,7 +98,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private static let lanRttThresholdMs = 20.0
     private static let wanRttThresholdMs = 40.0
     private static let hardRttThresholdMs = 150.0
-    private static let lossRevokeFraction = 0.05
+    private static let lossRevokeFraction = 0.02
     // After a revoke, don't re-arm for a while: the same session later showed
     // this path at ~1.5Mbps with real loss and ~1s receiver jitter, where
     // idle RTT still reads 8-15ms — without a hold-off the floor would re-arm
@@ -182,13 +182,53 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// Cap the RTP encoder's bitrate (manual quality picks). GCC still
     /// adapts *below* the cap on congestion; this only sets the ceiling.
     func setMaxBitrate(_ bps: Int) {
+        requestedMaxBps = bps
+        applyMaxBitrate()
+    }
+
+    private func applyMaxBitrate() {
         guard let sender = videoSender else { return }
+        let bps = min(requestedMaxBps, lossCapBps ?? Int.max)
         let params = sender.parameters
         for enc in params.encodings {
             enc.maxBitrateBps = NSNumber(value: bps)
             if let m = enc.minBitrateBps?.intValue, m > bps { enc.minBitrateBps = NSNumber(value: bps) }
         }
         sender.parameters = params
+    }
+
+    // Ceiling learned from loss. 10-10 WireGuard trace: the 12Mbps floor
+    // armed (idle RTT 5-14ms looks exactly like LAN), the receiver started
+    // losing 35-87 packets per 2s within seconds, and after the floor was
+    // revoked GCC itself climbed on to 25Mbps through 1-4% loss before
+    // crashing to 0.5Mbps — meanwhile the receiver's jitter buffer sat at
+    // 0.4-1.2s, which is the ">1s inertia when reversing a scroll". GCC's
+    // loss controller tolerates a few percent, so on a path like this it
+    // keeps overshooting. Each time the receiver reports real loss, cap the
+    // encoder at a fraction of the rate that produced it, for the rest of
+    // this connection (a renegotiation starts clean).
+    private static let lossCapTrigger = 0.02
+    private static let lossCapFactor = 0.6
+    private static let lossCapMinBps = 2_000_000
+    private static let lossCapHoldSec = 10.0
+    private var requestedMaxBps = Int.max
+    private var lossCapBps: Int?
+    private var lossCapSetAt: CFAbsoluteTime = 0
+
+    private func evaluateLossCap(lossFraction: Double, targetBps: Int?) {
+        guard lossFraction >= Self.lossCapTrigger, let targetBps else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        // One step per congestion episode — let the new cap take effect and
+        // the loss reports catch up before judging again.
+        guard now - lossCapSetAt >= Self.lossCapHoldSec else { return }
+        let base = min(targetBps, lossCapBps ?? Int.max, requestedMaxBps)
+        let cap = max(Self.lossCapMinBps, Int(Double(base) * Self.lossCapFactor))
+        guard cap < (lossCapBps ?? Int.max) else { return }
+        lossCapBps = cap
+        lossCapSetAt = now
+        applyMaxBitrate()
+        ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "loss_cap",
+            detail: "cap=\(cap) from=\(base) loss=\(String(format: "%.3f", lossFraction))")
     }
 
     /// Floor GCC's own bandwidth estimate — see the gcc_stats diagnostic
@@ -312,6 +352,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             var pairDetail = "n/a"
             var rttMs: Double?
             var rttSamples = -1.0
+            var targetBps: Int?
             var lossFraction = 0.0
             for stat in report.statistics.values {
                 if stat.type == "remote-inbound-rtp", (stat.values["kind"] as? String) == "video" {
@@ -322,6 +363,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                     let fps     = stat.values["framesPerSecond"] as? Double ?? -1
                     let target  = (stat.values["targetBitrate"] as? Double).map { Int($0) }
                     let encoded = stat.values["framesEncoded"] as? Double ?? -1
+                    targetBps = target
                     outboundDetail = "qlr=\(reason) fps=\(fps) target=\(target.map(String.init) ?? "?") encoded=\(Int(encoded))"
                 }
                 if stat.type == "candidate-pair",
@@ -340,6 +382,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
                 detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off") loss=\(String(format: "%.3f", lossFraction))")
             self.evaluateMinBitrateFloor(rttMs: rttMs, rttSamples: rttSamples, lossFraction: lossFraction)
+            self.evaluateLossCap(lossFraction: lossFraction, targetBps: targetBps)
         }
     }
 
@@ -366,7 +409,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
                     detail: "off reason=\(revokeReason) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
             }
-        } else if rttMs <= Self.lanRttThresholdMs,
+        } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil,
                   CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
             lowRttStreak += 1
             if lowRttStreak >= Self.lanRttStreakRequired, !minBitrateFloorActive {

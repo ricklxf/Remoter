@@ -79,13 +79,12 @@ final class Session {
     // WireGuard). RTT can't tell that apart from a real LAN — the tunnel
     // idles at 5-16ms — and arming the 12Mbps floor on it caused real loss.
     private var clientNotOnLan = false
-    // Scroll → 30fps capture. A scroll changes the whole screen every frame;
-    // at a fixed bitrate, half the frames means twice the bits per frame,
-    // which is the difference between legible and smeared text mid-scroll.
-    private let scrollFpsLock = NSLock()
-    private var scrollFpsGen = 0
-    private var scrollFpsLimited = false
-    private static let scrollFps = 30
+    // Scroll bitrate boost: instead of crippling capture to 30fps (which ruins smoothness
+    // and causes SCStream reconfiguration hitching), maintain 60fps/120fps and temporarily
+    // boost encoder bitrate by 50% during scrolling so moving text stays crisp and clear.
+    private let scrollBoostLock = NSLock()
+    private var scrollBoostGen = 0
+    private var scrollBoostActive = false
     private var pendingScrollSince: Date?      // TEMP DIAGNOSTIC — see .mouseScroll case, mirrors pendingTextInputSince
 
     // Auto quality: fps and bitrate step on separate ladders — collapsing
@@ -258,6 +257,10 @@ final class Session {
         input?.releaseAllKeys()
         stopKeepalive()
         stopClipboardMonitor()
+        Task { @MainActor in
+            PrivacyScreenManager.shared.disable()
+        }
+        VirtualDisplayManager.shared.destroyVirtualDisplay()
         cursorMonitor?.stop()
         cursorMonitor = nil
         encoder?.close()
@@ -372,16 +375,11 @@ final class Session {
             guard inputEnabled else { break }
             input?.mouseDoubleClick(button: btn, x: x, y: y)
 
-        case .mouseScroll(let dx, let dy, let px, let py):
+        case .mouseScroll(let dx, let dy, let px, let py, let isPrecise):
             guard inputEnabled else { break }
-            // TEMP DIAGNOSTIC — user reports scrolling feels laggy even
-            // though sent_5s now shows ~60fps; fps alone doesn't measure
-            // input-to-pixels latency, and unlike text input there was no
-            // existing measurement for scroll at all. Mirrors
-            // pendingTextInputSince/frame_after_text_input below.
             pendingScrollSince = Date()
-            input?.mouseScroll(dx: dx, dy: dy, px: px, py: py)
-            limitFpsWhileScrolling()
+            input?.mouseScroll(dx: dx, dy: dy, px: px, py: py, isPrecise: isPrecise)
+            boostBitrateWhileScrolling()
 
         case .netHint(let lan):
             clientNotOnLan = !lan
@@ -484,7 +482,47 @@ final class Session {
                 applyBitrate(bitrate)
             }
 
-        case .resolutionSet(let tier):
+        case .resolutionSet(let tier, let customW, let customH):
+            if tier == "native" {
+                if VirtualDisplayManager.shared.activeDisplayID != nil {
+                    VirtualDisplayManager.shared.destroyVirtualDisplay()
+                    selectedDisplayID = nil
+                }
+                resolutionMaxDimension = nil
+                Task { await rebuildPipeline() }
+                break
+            }
+
+            if tier == "match", let w = customW, let h = customH, w > 0, h > 0 {
+                let targetW = UInt(min(max(w, 640), 5120)) & ~1
+                let targetH = UInt(min(max(h, 480), 2880)) & ~1
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "match_resolution",
+                                                detail: "\(targetW)x\(targetH)")
+                if let vId = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
+                    width: targetW,
+                    height: targetH,
+                    refreshRate: Double(currentFps),
+                    hiDPI: true
+                ) {
+                    selectedDisplayID = vId
+                    resolutionMaxDimension = nil
+                    Task {
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                        await rebuildPipeline()
+                    }
+                    break
+                }
+            }
+
+            // If virtual display is currently active and user selected a standard tier, resize it
+            if let activeVId = VirtualDisplayManager.shared.activeDisplayID, selectedDisplayID == activeVId {
+                if tier == "1080" {
+                    _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(width: 1920, height: 1080, refreshRate: Double(currentFps), hiDPI: true)
+                } else if tier == "2k" {
+                    _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(width: 2560, height: 1440, refreshRate: Double(currentFps), hiDPI: true)
+                }
+            }
+
             let newMax: Int? = tier == "2k" ? 2560 : (tier == "1080" ? 1920 : nil)
             guard newMax != resolutionMaxDimension else { break }
             resolutionMaxDimension = newMax
@@ -493,6 +531,12 @@ final class Session {
         case .setAudioEnabled(let enabled):
             audioEnabled = enabled
             if enabled { startAudioStream() } else { stopAudioStream() }
+
+        case .setPrivacyScreen(let enabled):
+            Task { @MainActor in
+                if enabled { PrivacyScreenManager.shared.enable() }
+                else { PrivacyScreenManager.shared.disable() }
+            }
 
         case .displaySet(let did):
             guard did != selectedDisplayID else { break }
@@ -834,7 +878,8 @@ final class Session {
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             capturer     = c
-            input        = InputController(screenWidth: c.physWidth, screenHeight: c.physHeight,
+            input        = InputController(screenWidth: Int(c.pointWidth.rounded()),
+                                           screenHeight: Int(c.pointHeight.rounded()),
                                            originX: c.originX, originY: c.originY)
             fileReceiver = FileReceiver()
             connectTime  = Date()
@@ -1166,26 +1211,29 @@ final class Session {
     /// notify=false lets evaluateAutoQuality() batch a single combined
     /// notice when it changes fps and bitrate in the same step, instead of
     /// sending two back-to-back messages for one logical update.
-    /// Holds capture at scrollFps until 1.5s after the last scroll event
-    /// (0.4s flip-flopped the SCStream config every pause between swipes),
-    /// then restores currentFps. No-op when the session is already at or
-    /// below scrollFps.
-    private func limitFpsWhileScrolling() {
-        guard currentFps > Self.scrollFps else { return }
-        scrollFpsLock.lock()
-        scrollFpsGen += 1
-        let gen = scrollFpsGen
-        let starting = !scrollFpsLimited
-        scrollFpsLimited = true
-        scrollFpsLock.unlock()
-        if starting { capturer?.updateFps(Self.scrollFps) }
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) { [weak self] in
+    /// Holds boosted encoder bitrate until 1.2s after the last scroll event,
+    /// ensuring moving text remains crisp without pausing/reconfiguring SCStream.
+    private func boostBitrateWhileScrolling() {
+        scrollBoostLock.lock()
+        scrollBoostGen += 1
+        let gen = scrollBoostGen
+        let starting = !scrollBoostActive
+        scrollBoostActive = true
+        scrollBoostLock.unlock()
+
+        if starting {
+            let boosted = min(Int(Double(currentBitrate) * 1.5), 25_000_000)
+            encoder?.setBitrate(boosted)
+            webrtc?.setMaxBitrate(boosted)
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
-            self.scrollFpsLock.lock()
-            guard gen == self.scrollFpsGen else { self.scrollFpsLock.unlock(); return }
-            self.scrollFpsLimited = false
-            self.scrollFpsLock.unlock()
-            self.capturer?.updateFps(self.currentFps)
+            self.scrollBoostLock.lock()
+            guard gen == self.scrollBoostGen else { self.scrollBoostLock.unlock(); return }
+            self.scrollBoostActive = false
+            self.scrollBoostLock.unlock()
+            self.encoder?.setBitrate(self.currentBitrate)
+            self.webrtc?.setMaxBitrate(self.currentBitrate)
         }
     }
 

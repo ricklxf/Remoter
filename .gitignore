@@ -31,3 +31,7 @@ Remoter-Server/dist/
 # Logs
 *.log
 npm-debug.log*
+
+# Editor / IDE
+.claude/
+.gemini/

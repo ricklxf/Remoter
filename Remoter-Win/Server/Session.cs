@@ -20,6 +20,10 @@ sealed class Session
     private H264Encoder?      _encoder;       // null ⇒ JPEG fallback (init failed or unsupported)
     private int               _targetBitrateBps = 4_000_000;
 
+    private AudioCapturer?    _audioCapturer;
+    private AudioEncoder?     _audioEncoder;
+    private bool              _audioEnabled = false;
+
     private bool   _authed    = false;
     private bool   _inputEnabled = true;
     private bool   _debugInputLog = true;
@@ -125,6 +129,8 @@ sealed class Session
     public void Close()
     {
         _cts?.Cancel();
+        StopAudioStream();
+        PrivacyScreen.SetEnabled(false);
 
         // 主动断开WebSocket连接
         try
@@ -320,6 +326,15 @@ sealed class Session
 
             case ClientMsg.SetMuted m:
                 SetMasterMute(m.Muted); break;
+
+            case ClientMsg.SetAudio a:
+                if (a.Enabled) StartAudioStream();
+                else StopAudioStream();
+                break;
+
+            case ClientMsg.SetPrivacyScreen p:
+                PrivacyScreen.SetEnabled(p.Enabled);
+                break;
 
             // ── Misc ───────────────────────────────────────────────────
             case ClientMsg.Ping:
@@ -891,6 +906,53 @@ sealed class Session
     }
 
     private static void SetMasterMute(bool muted) => AudioController.SetMasterMute(muted);
+
+    private void StartAudioStream()
+    {
+        if (_audioEnabled) return;
+        _audioEnabled = true;
+
+        try
+        {
+            _audioEncoder ??= new AudioEncoder();
+            _audioEncoder.Initialize(sampleRate: 48000, channels: 2, bitrateBps: 128_000);
+            _audioEncoder.OnEncodedFrame = adtsPacket =>
+            {
+                if (!_audioEnabled) return;
+                var pkt = new byte[1 + adtsPacket.Length];
+                pkt[0] = FrameType.AudioFrame;
+                Buffer.BlockCopy(adtsPacket, 0, pkt, 1, adtsPacket.Length);
+                _bytesSent += pkt.Length;
+                _ = _conn.SendBinaryAsync(pkt);
+            };
+
+            _audioCapturer ??= new AudioCapturer();
+            _audioCapturer.OnPcmData = (pcm, len) =>
+            {
+                if (!_audioEnabled) return;
+                _audioEncoder.EncodePcm(pcm, len);
+            };
+            _audioCapturer.Start();
+            AppLog.Write("[Session] Windows audio capture & AAC streaming started");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Session] Failed to start audio stream: {ex.Message}");
+            StopAudioStream();
+        }
+    }
+
+    private void StopAudioStream()
+    {
+        _audioEnabled = false;
+        try { _audioCapturer?.Stop(); } catch { }
+        try { _audioCapturer?.Dispose(); } catch { }
+        _audioCapturer = null;
+
+        try { _audioEncoder?.Dispose(); } catch { }
+        _audioEncoder = null;
+        AppLog.Write("[Session] Windows audio streaming stopped");
+    }
 
     // ── P/Invoke for system commands ──────────────────────────────────────
 

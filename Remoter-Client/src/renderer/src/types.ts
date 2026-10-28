@@ -16,6 +16,9 @@ export interface ConnectParams {
   rememberDevice?: boolean
 }
 
+export type ScaleMode = 'fit' | 'stretch' | 'original'
+export type ResolutionTier = 'match' | 'native' | '1080' | '2k'
+
 export interface DisplayInfo {
   id: number
   name: string

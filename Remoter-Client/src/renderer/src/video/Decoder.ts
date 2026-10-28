@@ -18,7 +18,7 @@ const CODEC_STRING: Record<Exclude<VideoCodec, 'jpeg'>, string> = {
 // a network problem. Past this many queued chunks, treat it like a decode
 // error: drop frames until the next keyframe instead of letting the backlog
 // (and visible lag) grow indefinitely.
-const DECODE_QUEUE_OVERLOAD = 4
+const DECODE_QUEUE_OVERLOAD = 10
 
 export class VideoDecoder_ {
   private decoder: VideoDecoder | null = null
@@ -81,15 +81,7 @@ export class VideoDecoder_ {
       codedWidth: width,
       codedHeight: height,
       optimizeForLatency: true,
-      // Windows Electron only: one machine's GPU driver produced corrupted
-      // output (garbled blocks) from hardware H.264 decode that a regular
-      // up-to-date browser handled fine — Electron pins an older Chromium
-      // that lacks that driver's workarounds. Scoped here instead of a
-      // global --disable-accelerated-video-decode switch so page/UI
-      // compositing keeps its GPU acceleration.
-      ...(window.remoterAPI?.platform === 'win32'
-        ? { hardwareAcceleration: 'prefer-software' as HardwareAcceleration }
-        : {}),
+      hardwareAcceleration: 'prefer-hardware',
     })
 
     this.pendingKeyframe = true

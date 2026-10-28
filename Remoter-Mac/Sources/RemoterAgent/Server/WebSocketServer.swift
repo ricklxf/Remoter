@@ -334,7 +334,7 @@ private final class HTTPFileHandler: ChannelInboundHandler, RemovableChannelHand
     }
 
     private func serve(context: ChannelHandlerContext, head: HTTPRequestHead) {
-        guard let webDir, head.method == .GET else {
+        guard let webDir, head.method == .GET || head.method == .HEAD else {
             respond(context: context, version: head.version, status: .notFound, body: nil)
             return
         }
@@ -346,6 +346,11 @@ private final class HTTPFileHandler: ChannelInboundHandler, RemovableChannelHand
         }
         guard let body = try? Data(contentsOf: fileURL) else {
             respond(context: context, version: head.version, status: .notFound, body: nil)
+            return
+        }
+        if head.method == .HEAD {
+            respond(context: context, version: head.version, status: .ok,
+                    body: nil, contentType: mime(ext: fileURL.pathExtension))
             return
         }
         respond(context: context, version: head.version, status: .ok,

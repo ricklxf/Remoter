@@ -58,13 +58,17 @@ final class VideoEncoder {
         guard let session else { return }
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                               value: NSNumber(value: bitrateBps))
+        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
+        let dataRateLimits: [Any] = [burstByteLimit, 1.0]
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
     }
 
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int, codec: StreamCodec = .h264) throws {
         self.codec = codec
         var s: VTCompressionSession?
         let encoderSpec: [CFString: Any] = [
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue!
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue!,
+            kVTVideoEncoderSpecification_EnableLowLatencyRateControl: kCFBooleanTrue!
         ]
         let err = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
@@ -85,6 +89,8 @@ final class VideoEncoder {
 
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount,   value: 0 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
         if codec == .h265 {
             VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
                                  value: kVTProfileLevel_HEVC_Main_AutoLevel)
@@ -100,6 +106,9 @@ final class VideoEncoder {
         }
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
+        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
+        let dataRateLimits: [Any] = [burstByteLimit, 1.0]
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: NSNumber(value: fps))
         // A keyframe is ~10-20x the size of a delta frame; at the old 2s

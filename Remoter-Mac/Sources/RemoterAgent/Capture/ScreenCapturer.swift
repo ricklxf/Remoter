@@ -36,9 +36,11 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     // doesn't need a stream rebuild.
     var onAudioSample: ((CMSampleBuffer) -> Void)?
 
-    private(set) var physWidth:    Int = 1920  // physical display pixels (for input mapping)
+    private(set) var physWidth:    Int = 1920  // physical display pixels
     private(set) var physHeight:   Int = 1080
-    private(set) var screenWidth:  Int = 960   // encode/stream resolution (50% of physical)
+    private(set) var pointWidth:   Double = 1920 // display bounds in points (CGEvent coordinate space)
+    private(set) var pointHeight:  Double = 1080
+    private(set) var screenWidth:  Int = 960   // encode/stream resolution
     private(set) var screenHeight: Int = 540
     // Global-desktop origin of the captured display (needed to map the
     // client's display-relative coords to CGEvent's global space) and the
@@ -94,8 +96,21 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         let displayID = requestedID.flatMap { req in
             content.displays.first(where: { $0.displayID == req })?.displayID
         } ?? CGMainDisplayID()
-        guard let display = content.displays.first(where: { $0.displayID == displayID })
-            ?? content.displays.first else {
+        var display = content.displays.first(where: { $0.displayID == displayID })
+            ?? content.displays.first
+
+        // Headless / Clamshell fallback: If no display is detected, dynamically create a virtual display
+        if display == nil {
+            ConnectionLogger.shared.logStep(sessionId: "capturer", step: "headless_detected", detail: "Creating virtual display")
+            if let vId = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(width: 1920, height: 1080, refreshRate: Double(fps), hiDPI: true) {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if let freshContent = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) {
+                    display = freshContent.displays.first(where: { $0.displayID == vId }) ?? freshContent.displays.first
+                }
+            }
+        }
+
+        guard let display else {
             ConnectionLogger.shared.logStep(sessionId: "capturer", step: "no_capture_permission",
                 detail: "no SCDisplay matched displayID=\(displayID)")
             throw RemoterError.captureUnavailable
@@ -104,6 +119,8 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         physWidth  = Int(CGDisplayPixelsWide(display.displayID))
         physHeight = Int(CGDisplayPixelsHigh(display.displayID))
         let bounds = CGDisplayBounds(display.displayID)
+        pointWidth  = bounds.width > 0 ? bounds.width : Double(physWidth)
+        pointHeight = bounds.height > 0 ? bounds.height : Double(physHeight)
         originX = bounds.origin.x
         originY = bounds.origin.y
         if let maxDimension, maxDimension < max(physWidth, physHeight) {
@@ -119,12 +136,14 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         ConnectionLogger.shared.logStep(sessionId: "capturer", step: "display_found",
             detail: "id=\(display.displayID) of \(displays.count) phys=\(physWidth)x\(physHeight) stream=\(screenWidth)x\(screenHeight) origin=\(Int(originX)),\(Int(originY))")
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let overlayIDs = Set(PrivacyScreenManager.shared.getOverlayWindowIDs())
+        let excluded = content.windows.filter { overlayIDs.contains(CGWindowID($0.windowID)) }
+        let filter = SCContentFilter(display: display, excludingWindows: excluded)
 
         let config = SCStreamConfiguration()
         config.width  = screenWidth
         config.height = screenHeight
-        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
         config.queueDepth = 2
@@ -175,7 +194,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         let config = SCStreamConfiguration()
         config.width  = screenWidth
         config.height = screenHeight
-        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
         config.queueDepth = 2

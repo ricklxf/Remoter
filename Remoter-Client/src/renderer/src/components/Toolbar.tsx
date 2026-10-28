@@ -3,7 +3,7 @@ import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
 import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
 import { VideoDecoder_ } from '../video/Decoder'
-import { DisplayInfo } from '../types'
+import { DisplayInfo, ResolutionTier, ScaleMode } from '../types'
 
 interface Props {
   conn: Connection
@@ -15,12 +15,16 @@ interface Props {
   bitrate: number
   bitrateAuto: boolean
   onBitrateChange: (bitrate: number, auto: boolean) => void
-  resolution: 'native' | '1080' | '2k'
-  onResolutionChange: (tier: 'native' | '1080' | '2k') => void
+  resolution: ResolutionTier
+  onResolutionChange: (tier: ResolutionTier) => void
+  scaleMode: ScaleMode
+  onScaleModeChange: (mode: ScaleMode) => void
   codec: 'h264' | 'h265'
   onCodecChange: (codec: 'h264' | 'h265') => void
   audioOn: boolean
   onToggleAudio: () => void
+  privacyOn?: boolean
+  onTogglePrivacy?: () => void
   inputLocked: boolean
   onToggleInputLock: () => void
   displays: DisplayInfo[]
@@ -46,10 +50,17 @@ function formatBitrate(bps: number): string {
   return `${Number.isInteger(mbps) ? mbps : mbps.toFixed(1)}Mbps`
 }
 
-const RESOLUTION_OPTIONS: Array<{ label: string; tier: 'native' | '1080' | '2k' }> = [
-  { label: '原生', tier: 'native' },
-  { label: '1080p', tier: '1080' },
-  { label: '2K',    tier: '2k'   },
+const RESOLUTION_OPTIONS: Array<{ label: string; tier: ResolutionTier }> = [
+  { label: '自适应屏幕', tier: 'match' },
+  { label: '原生',     tier: 'native' },
+  { label: '1080p',    tier: '1080'   },
+  { label: '2K',       tier: '2k'     },
+]
+
+const SCALE_MODE_OPTIONS: Array<{ label: string; mode: ScaleMode }> = [
+  { label: '等比缩放', mode: 'fit' },
+  { label: '拉伸铺满', mode: 'stretch' },
+  { label: '原始1:1',  mode: 'original' },
 ]
 
 const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
@@ -61,8 +72,10 @@ export function Toolbar({
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
   resolution, onResolutionChange,
+  scaleMode, onScaleModeChange,
   codec, onCodecChange,
   audioOn, onToggleAudio,
+  privacyOn, onTogglePrivacy,
   inputLocked, onToggleInputLock,
   displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
@@ -79,10 +92,9 @@ export function Toolbar({
     <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
       <QualityMenu
         resolution={resolution}
-        onResolutionChange={tier => {
-          onResolutionChange(tier)
-          conn.sendResolution(tier)
-        }}
+        onResolutionChange={onResolutionChange}
+        scaleMode={scaleMode}
+        onScaleModeChange={onScaleModeChange}
         fps={fps}
         fpsAuto={fpsAuto}
         onFpsChange={(f, auto) => {
@@ -111,6 +123,7 @@ export function Toolbar({
       <ControlMenu
         conn={conn}
         audioOn={audioOn} onToggleAudio={onToggleAudio}
+        privacyOn={privacyOn} onTogglePrivacy={onTogglePrivacy}
         inputLocked={inputLocked} onToggleInputLock={onToggleInputLock}
       />
       <ShortcutMenu conn={conn} />
@@ -140,13 +153,16 @@ export function Toolbar({
 
 function QualityMenu({
   resolution, onResolutionChange,
+  scaleMode, onScaleModeChange,
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
   codec, onCodecChange,
   displays, activeDisplay, onDisplayChange,
 }: {
-  resolution: 'native' | '1080' | '2k'
-  onResolutionChange: (tier: 'native' | '1080' | '2k') => void
+  resolution: ResolutionTier
+  onResolutionChange: (tier: ResolutionTier) => void
+  scaleMode: ScaleMode
+  onScaleModeChange: (mode: ScaleMode) => void
   fps: number
   fpsAuto: boolean
   onFpsChange: (fps: number, auto: boolean) => void
@@ -193,6 +209,7 @@ function QualityMenu({
             <DisplaySelect displays={displays} value={activeDisplay} onChange={onDisplayChange} />
           )}
           <ResolutionSelect value={resolution} onChange={onResolutionChange} />
+          <ScaleModeSelect value={scaleMode} onChange={onScaleModeChange} />
           <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
             formatValue={v => `${v}fps`} width={82} onChange={onFpsChange} />
           <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
@@ -301,10 +318,12 @@ function CodecSelect({ value, onChange }: { value: 'h264' | 'h265'; onChange: (c
 
 // ─── Control menu ─────────────────────────────────────────────────────
 
-function ControlMenu({ conn, audioOn, onToggleAudio, inputLocked, onToggleInputLock }: {
+function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onTogglePrivacy, inputLocked, onToggleInputLock }: {
   conn: Connection
   audioOn: boolean
   onToggleAudio: () => void
+  privacyOn?: boolean
+  onTogglePrivacy?: () => void
   inputLocked: boolean
   onToggleInputLock: () => void
 }) {
@@ -379,11 +398,18 @@ function ControlMenu({ conn, audioOn, onToggleAudio, inputLocked, onToggleInputL
             <Toggle checked={inputLocked} onToggle={onToggleInputLock} />
           </div>
 
-          {/* Remote audio forwarding (Mac agent only for now) */}
+          {/* Remote audio forwarding (macOS & Windows supported) */}
           <div style={s.ctrlItem}>
             <span style={s.ctrlItemIcon}>🔊</span>
             <span style={{ flex: 1 }}>转发远端声音</span>
             <Toggle checked={audioOn} onToggle={onToggleAudio} />
+          </div>
+
+          {/* Privacy screen (Curtain Mode) */}
+          <div style={s.ctrlItem} title="开启后被控端物理屏幕全黑遮盖，防止本地窥屏">
+            <span style={s.ctrlItemIcon}>🛡️</span>
+            <span style={{ flex: 1 }}>开启防窥隐私屏</span>
+            <Toggle checked={privacyOn} onToggle={onTogglePrivacy ?? (() => {})} />
           </div>
 
           <div style={s.menuSep} />
@@ -621,7 +647,7 @@ function AutoSelect<T>({ value, auto, options, formatValue, width, onChange }: {
 // server tears down and rebuilds capture+encode at the new size (a brief
 // visible gap), so this stays a plain manual choice, never auto-adjusted.
 
-function ResolutionSelect({ value, onChange }: { value: 'native' | '1080' | '2k'; onChange: (tier: 'native' | '1080' | '2k') => void }) {
+function ResolutionSelect({ value, onChange }: { value: ResolutionTier; onChange: (tier: ResolutionTier) => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const current = RESOLUTION_OPTIONS.find(o => o.tier === value) ?? RESOLUTION_OPTIONS[0]
@@ -637,7 +663,7 @@ function ResolutionSelect({ value, onChange }: { value: 'native' | '1080' | '2k'
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button style={{ ...s.selectBtn, width: 82, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+      <button style={{ ...s.selectBtn, width: 92, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
         <span>{current.label}</span>
         <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
       </button>
@@ -650,6 +676,47 @@ function ResolutionSelect({ value, onChange }: { value: 'native' | '1080' | '2k'
                 key={o.tier}
                 style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
                 onClick={() => { onChange(o.tier); setOpen(false) }}
+              >
+                <span>{o.label}</span>
+                {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ScaleModeSelect({ value, onChange }: { value: ScaleMode; onChange: (mode: ScaleMode) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const current = SCALE_MODE_OPTIONS.find(o => o.mode === value) ?? SCALE_MODE_OPTIONS[0]
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, width: 92, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+        <span>{current.label}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={s.dropdown}>
+          {SCALE_MODE_OPTIONS.map(o => {
+            const active = o.mode === value
+            return (
+              <button
+                key={o.mode}
+                style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
+                onClick={() => { onChange(o.mode); setOpen(false) }}
               >
                 <span>{o.label}</span>
                 {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}

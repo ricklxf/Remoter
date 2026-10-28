@@ -3,7 +3,7 @@ import { Connection } from '../network/Connection'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
-import { StreamInfo } from '../types'
+import { StreamInfo, ScaleMode } from '../types'
 import { useImeOffset, setImeOffset, resolutionKey } from '../utils/imeOffset'
 
 interface Props {
@@ -14,9 +14,10 @@ interface Props {
   /** Toggled from the toolbar (see Toolbar's "🎯 校准输入法位置" button) — lifted
    * up rather than kept as local state so the toolbar can show/drive it. */
   imeCalibrating?: boolean
+  scaleMode?: ScaleMode
 }
 
-export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true, imeCalibrating = false }: Props) {
+export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true, imeCalibrating = false, scaleMode = 'fit' }: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const videoRef    = useRef<HTMLVideoElement>(null)
   const frameRef    = useRef<HTMLDivElement>(null)
@@ -90,16 +91,23 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     const update = () => {
       const cw = el.clientWidth, ch = el.clientHeight
       if (!cw || !ch) return
+
+      if (scaleMode === 'stretch') {
+        setCssSize({ w: cw, h: ch })
+        return
+      }
+
+      if (scaleMode === 'original') {
+        const dpr = window.devicePixelRatio || 1
+        setCssSize({ w: streamInfo.width / dpr, h: streamInfo.height / dpr })
+        return
+      }
+
+      // Default 'fit' mode: scale preserving aspect ratio to fill container without arbitrary clamping
       const ar = streamInfo.width / streamInfo.height
       let w: number, h: number
       if (cw / ch > ar) { w = ch * ar; h = ch }
       else              { w = cw; h = cw / ar }
-      // Never upscale past native resolution (1 CSS px × DPR = 1 stream px) —
-      // beyond that the source has no more detail to show, only blur.
-      const dpr  = window.devicePixelRatio || 1
-      const maxW = streamInfo.width  / dpr
-      const maxH = streamInfo.height / dpr
-      if (w > maxW) { w = maxW; h = maxH }
       setCssSize({ w, h })
     }
     update()
@@ -114,7 +122,7 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       ro.disconnect()
       document.removeEventListener('fullscreenchange', onFullscreenChange)
     }
-  }, [streamInfo.width, streamInfo.height])
+  }, [streamInfo.width, streamInfo.height, scaleMode])
 
   useEffect(() => {
     const canvas = canvasRef.current

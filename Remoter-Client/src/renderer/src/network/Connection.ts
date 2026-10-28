@@ -261,18 +261,9 @@ export class Connection {
   sendMouseDoubleClick(button: string, x: number, y: number): void {
     this.sendJson({ type: 'mouse_double_click', button, x, y })
   }
-  sendMouseScroll(dx: number, dy: number, px = 0, py = 0): void {
-    // TEMP DIAGNOSTIC — reported: reversing scroll direction with a plain
-    // mouse (no trackpad momentum to blame) takes 1-2s to visibly take
-    // effect. frame_after_scroll (server-side: receipt → next captured
-    // frame) already measured 1-15ms, so that half is fine — this measures
-    // the other half (send → decoded frame actually rendered on screen) to
-    // find out whether the remaining latency is decode/jitter-buffer
-    // backlog rather than the input pipeline. Logs to the browser console,
-    // not connections.log (this is a client-side-only measurement with
-    // nothing to correlate on the server). Remove once root-caused.
+  sendMouseScroll(dx: number, dy: number, px = 0, py = 0, isPrecise?: boolean): void {
     this._lastScrollSentAt = performance.now()
-    this.sendJson({ type: 'mouse_scroll', dx, dy, px, py })
+    this.sendJson({ type: 'mouse_scroll', dx, dy, px, py, isPrecise })
   }
   sendKey(code: string, down: boolean, modifiers: string[]): void {
     this.sendJson({ type: 'key', code, down, modifiers })
@@ -325,11 +316,14 @@ export class Connection {
   sendBitrate(bitrate: number, auto = false): void {
     this.sendJson({ type: 'bitrate', bitrate, auto })
   }
-  sendResolution(tier: 'native' | '1080' | '2k'): void {
-    this.sendJson({ type: 'resolution', tier })
+  sendResolution(tier: 'native' | '1080' | '2k' | 'match', width?: number, height?: number): void {
+    this.sendJson({ type: 'resolution', tier, width, height })
   }
   sendSetAudio(enabled: boolean): void {
     this.sendJson({ type: 'set_audio', enabled })
+  }
+  sendSetPrivacyScreen(enabled: boolean): void {
+    this.sendJson({ type: 'set_privacy_screen', enabled })
   }
   /** Locks/unlocks the target's own physical keyboard+mouse (machine-wide,
    * not per-session) — see input_lock_changed for how the resulting state

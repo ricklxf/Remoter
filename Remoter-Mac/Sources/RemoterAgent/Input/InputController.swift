@@ -29,6 +29,13 @@ final class InputController {
     private var postMaxMs: Double = 0
     private var postStatTick = Date()
 
+    // Continuous scroll lifecycle tracking (macOS trackpad simulation)
+    private var isScrollingContinuous = false
+    private var scrollEndWorkItem: DispatchWorkItem?
+    private let scrollLock = NSLock()
+    private var lastMousePoint: CGPoint = .zero
+    private lazy var smoothScroller = SmoothScrollEngine(controller: self)
+
     init(screenWidth: Int, screenHeight: Int, originX: Double = 0, originY: Double = 0) {
         self.screenWidth = screenWidth
         self.screenHeight = screenHeight
@@ -71,6 +78,9 @@ final class InputController {
             NSLog("[Input] accessibility trusted=%d", AXIsProcessTrusted() ? 1 : 0)
         }
         let pt = cgPoint(x: x, y: y)
+        scrollLock.lock()
+        lastMousePoint = pt
+        scrollLock.unlock()
         let src = CGEventSource(stateID: .hidSystemState)
         let (type, btn): (CGEventType, CGMouseButton) = switch dragging {
         case "right":  (.rightMouseDragged, .right)
@@ -88,6 +98,9 @@ final class InputController {
 
     func mouseButton(button: String, down: Bool, x: Double, y: Double) {
         let pt = cgPoint(x: x, y: y)
+        scrollLock.lock()
+        lastMousePoint = pt
+        scrollLock.unlock()
         let (type, btn): (CGEventType, CGMouseButton) = switch (button, down) {
         case ("right", true):   (.rightMouseDown, .right)
         case ("right", false):  (.rightMouseUp,   .right)
@@ -107,6 +120,9 @@ final class InputController {
 
     func mouseDoubleClick(button: String, x: Double, y: Double) {
         let pt  = cgPoint(x: x, y: y)
+        scrollLock.lock()
+        lastMousePoint = pt
+        scrollLock.unlock()
         let src = CGEventSource(stateID: .hidSystemState)
         let type: CGEventType = button == "right" ? .rightMouseDown : .leftMouseDown
         let btn: CGMouseButton = button == "right" ? .right : .left
@@ -121,23 +137,86 @@ final class InputController {
         timedPost(eu, tap: .cgSessionEventTap)
     }
 
-    /// px/py (pixels) when the client sends them, else dx/dy (wheel notches,
-    /// older clients). Line-unit events scroll in whole accelerated-line
-    /// jumps; pixel-unit events move exactly as far as the controlling
-    /// side's wheel/touchpad did, which is what makes it feel 1:1.
-    func mouseScroll(dx: Int, dy: Int, px: Int? = nil, py: Int? = nil) {
+    func injectScrollStep(stepX: Int32, stepY: Int32, phase: CGScrollPhase) {
         let src = CGEventSource(stateID: .hidSystemState)
-        let e: CGEvent?
-        if let px, let py {
-            guard px != 0 || py != 0 else { return }
-            e = CGEvent(scrollWheelEvent2Source: src, units: .pixel,
-                        wheelCount: 2, wheel1: Int32(-py), wheel2: Int32(-px), wheel3: 0)
-        } else {
-            e = CGEvent(scrollWheelEvent2Source: src, units: .line,
-                        wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0)
+        guard let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel,
+                              wheelCount: 2, wheel1: stepY, wheel2: stepX, wheel3: 0) else { return }
+        scrollLock.lock()
+        let loc = lastMousePoint
+        scrollLock.unlock()
+        if loc != .zero {
+            e.location = loc
         }
-        guard let e else { return }
+        e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        e.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+        e.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(stepY))
+        e.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(stepX))
         timedPost(e, tap: .cgSessionEventTap)
+    }
+
+    /// px/py (pixels) when the client sends them, else dx/dy (wheel notches,
+    /// older clients).
+    /// isPrecise indicates continuous high-frequency touchpad input vs mechanical wheel.
+    func mouseScroll(dx: Int, dy: Int, px: Int? = nil, py: Int? = nil, isPrecise: Bool? = nil) {
+        let rawPx = px ?? (dx * 100)
+        let rawPy = py ?? (dy * 100)
+        guard rawPx != 0 || rawPy != 0 else { return }
+
+        // Determine whether this is a continuous touchpad gesture or discrete mechanical notch
+        let continuous = isPrecise ?? (abs(rawPy) < 40 && rawPy != 0 && rawPy % 100 != 0 && rawPy % 120 != 0)
+
+        if continuous {
+            // High-frequency continuous touchpad gesture: 1:1 direct injection
+            smoothScroller.stop()
+            let src = CGEventSource(stateID: .hidSystemState)
+            guard let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel,
+                                  wheelCount: 2, wheel1: Int32(-rawPy), wheel2: Int32(-rawPx), wheel3: 0) else { return }
+            scrollLock.lock()
+            let loc = lastMousePoint
+            scrollLock.unlock()
+            if loc != .zero {
+                e.location = loc
+            }
+
+            scrollLock.lock()
+            scrollEndWorkItem?.cancel()
+            let phase: CGScrollPhase = isScrollingContinuous ? .changed : .began
+            isScrollingContinuous = true
+            scrollLock.unlock()
+
+            e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            e.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+            e.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(-rawPy))
+            e.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(-rawPx))
+            timedPost(e, tap: .cgSessionEventTap)
+
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.scrollLock.lock()
+                guard self.isScrollingContinuous else { self.scrollLock.unlock(); return }
+                self.isScrollingContinuous = false
+                let endLoc = self.lastMousePoint
+                self.scrollLock.unlock()
+
+                if let endEvent = CGEvent(scrollWheelEvent2Source: src, units: .pixel,
+                                          wheelCount: 2, wheel1: 0, wheel2: 0, wheel3: 0) {
+                    if endLoc != .zero {
+                        endEvent.location = endLoc
+                    }
+                    endEvent.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                    endEvent.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(CGScrollPhase.ended.rawValue))
+                    self.timedPost(endEvent, tap: .cgSessionEventTap)
+                }
+            }
+            scrollLock.lock()
+            scrollEndWorkItem = work
+            scrollLock.unlock()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        } else {
+            // Mechanical mouse wheel notch (Windows / USB mouse):
+            // Smooth 120Hz physics interpolation gives butter-smooth ProMotion feel
+            smoothScroller.addDelta(px: Double(-rawPx), py: Double(-rawPy))
+        }
     }
 
     // Software-simulated Caps Lock: on modern macOS, neither IOHIDSetModifierLockState
@@ -254,3 +333,106 @@ private let keyCodeMap: [String: CGKeyCode] = [
     "NumpadDecimal": 65, "NumpadMultiply": 67, "NumpadAdd": 69,
     "NumpadSubtract": 78, "NumpadDivide": 75, "NumpadEnter": 76, "NumpadEqual": 81,
 ]
+
+// MARK: - SmoothScrollEngine (借鉴 Mos & UU 远程 120Hz 丝滑阻尼物理引擎)
+
+final class SmoothScrollEngine: @unchecked Sendable {
+    private let lock = NSLock()
+    private var targetY: Double = 0
+    private var targetX: Double = 0
+    private var timer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "com.remoter.smoothscroll", qos: .userInteractive)
+    private var isAnimating = false
+    private weak var controller: InputController?
+
+    init(controller: InputController) {
+        self.controller = controller
+    }
+
+    func addDelta(px: Double, py: Double) {
+        lock.lock()
+        targetX += px
+        targetY += py
+        let needStart = !isAnimating
+        isAnimating = true
+        lock.unlock()
+
+        if needStart {
+            startTimer()
+        }
+    }
+
+    private func startTimer() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.timer?.cancel()
+            let t = DispatchSource.makeTimerSource(queue: self.queue)
+            // 120Hz 刷新率: 每 8.3ms 一帧
+            t.schedule(deadline: .now(), repeating: .milliseconds(8))
+            var isFirst = true
+
+            t.setEventHandler { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+
+                // 指数衰减系数 0.22：兼顾疾速跟手与丝滑渐停
+                let friction = 0.22
+                var stepY = self.targetY * friction
+                var stepX = self.targetX * friction
+
+                // 小余量快速收敛，避免无限微步拖尾
+                if abs(stepY) < 1.0 || abs(self.targetY) < 1.0 {
+                    stepY = self.targetY
+                }
+                if abs(stepX) < 1.0 || abs(self.targetX) < 1.0 {
+                    stepX = self.targetX
+                }
+
+                self.targetY -= stepY
+                self.targetX -= stepX
+
+                let remainingY = self.targetY
+                let remainingX = self.targetX
+                let isEnding = abs(remainingY) < 0.2 && abs(remainingX) < 0.2
+                if isEnding {
+                    self.targetY = 0
+                    self.targetX = 0
+                    self.isAnimating = false
+                    self.timer?.cancel()
+                    self.timer = nil
+                }
+                let first = isFirst
+                isFirst = false
+                self.lock.unlock()
+
+                let phase: CGScrollPhase = first ? .began : (isEnding ? .ended : .changed)
+                let intStepY = Int32(round(stepY))
+                let intStepX = Int32(round(stepX))
+
+                if intStepY != 0 || intStepX != 0 || isEnding {
+                    self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY, phase: phase)
+                }
+            }
+
+            self.timer = t
+            self.lock.unlock()
+            t.resume()
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        timer?.cancel()
+        timer = nil
+        targetX = 0
+        targetY = 0
+        if isAnimating {
+            isAnimating = false
+            lock.unlock()
+            controller?.injectScrollStep(stepX: 0, stepY: 0, phase: .ended)
+        } else {
+            lock.unlock()
+        }
+    }
+}

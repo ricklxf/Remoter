@@ -53,15 +53,9 @@ export class InputHandler {
   private pendingMove: { nx: number; ny: number; dragging: string | undefined } | null = null
   private pendingMoveTimer: ReturnType<typeof setTimeout> | null = null
 
-  // Same reasoning and pattern as mouse-move throttling above, for the wheel
-  // event — a scroll fling can fire well past 60Hz, and unlike mouse-move
-  // there was previously *no* source-level throttle for it at all (only a
-  // "don't double-queue a send that's still in flight" guard in Connection,
-  // which barely limits anything since a scroll message resolves in under a
-  // millisecond). Confirmed via server logs this was enough CGEvent traffic
-  // to starve ScreenCaptureKit's own frame delivery through WindowServer.
-  // Deltas accumulate across the throttle window instead of being dropped.
-  private readonly scrollThrottleMs = 16
+  // Scroll throttling for high-frequency continuous touchpads (capped at 120Hz).
+  // Mechanical wheel notches are flushed immediately to the agent's physics engine.
+  private readonly scrollThrottleMs = 8
   private lastScrollSentAt = 0
   private pendingScroll: { dx: number; dy: number } | null = null
   private pendingScrollTimer: ReturnType<typeof setTimeout> | null = null
@@ -209,7 +203,7 @@ export class InputHandler {
       const { dx: adx, dy: ady } = this.pendingScroll
       this.pendingScroll = null
       this.lastScrollSentAt = now
-      this.flushScroll(adx, ady)
+      this.flushScroll(adx, ady, true)
       return
     }
     if (this.pendingScrollTimer) return
@@ -219,24 +213,25 @@ export class InputHandler {
       const { dx: adx, dy: ady } = this.pendingScroll
       this.pendingScroll = null
       this.lastScrollSentAt = performance.now()
-      this.flushScroll(adx, ady)
+      this.flushScroll(adx, ady, true)
     }, this.scrollThrottleMs - elapsed)
   }
 
   // Sub-unit remainders carried between sends so nothing is lost to rounding.
   private scrollRem = { px: 0, py: 0, lx: 0, ly: 0 }
-  private lastScrollAxisX = false
 
   /** Sends both forms: whole pixels (agents that support pixel-precise
    * scrolling) and whole wheel notches (older agents / Windows, which only
    * read dx/dy). 100px = one notch, Chromium's per-notch delta on Windows. */
-  private flushScroll(dxPx: number, dyPx: number): void {
+  private flushScroll(dxPx: number, dyPx: number, isPrecise = false): void {
     const r = this.scrollRem
     r.px += dxPx; r.py += dyPx; r.lx += dxPx / 100; r.ly += dyPx / 100
     const px = Math.trunc(r.px), py = Math.trunc(r.py)
     const lx = Math.trunc(r.lx), ly = Math.trunc(r.ly)
     r.px -= px; r.py -= py; r.lx -= lx; r.ly -= ly
-    if (px !== 0 || py !== 0 || lx !== 0 || ly !== 0) this.conn.sendMouseScroll(lx, ly, px, py)
+    if (px !== 0 || py !== 0 || lx !== 0 || ly !== 0) {
+      this.conn.sendMouseScroll(lx, ly, px, py, isPrecise)
+    }
   }
 
   private onMouseDown = (e: Event): void => {
@@ -286,13 +281,27 @@ export class InputHandler {
     const unit = we.deltaMode === 1 ? 40 : we.deltaMode === 2 ? 800 : 1
     let dx = we.deltaX * unit
     let dy = we.deltaY * unit
-    // Axis lock: a vertical swipe always carries a little sideways drift,
-    // which showed up remotely as horizontal jitter. Keep the dominant axis;
-    // on a tie, stay with the previous one.
+
+    // Soft axis lock: eliminate accidental drift on perpendicular axis only when one axis dominates
     const ax = Math.abs(dx), ay = Math.abs(dy)
-    if (ax !== ay) this.lastScrollAxisX = ax > ay
-    if (this.lastScrollAxisX) dy = 0; else dx = 0
-    if (dx !== 0 || dy !== 0) this.sendScrollThrottled(dx, dy)
+    if (ay > ax * 3) {
+      dx = 0
+    } else if (ax > ay * 3) {
+      dy = 0
+    }
+
+    if (dx === 0 && dy === 0) return
+
+    // Precise continuous touchpad vs discrete mechanical mouse wheel
+    const isPrecise = we.deltaMode === 0 && (!Number.isInteger(dy) || (Math.abs(dy) < 40 && Math.abs(dx) < 40))
+
+    if (!isPrecise) {
+      // Discrete mechanical mouse wheel notch (e.g. 100/120 on Windows):
+      // Flush immediately to the agent's 120Hz smooth scroll engine
+      this.flushScroll(dx, dy, false)
+    } else {
+      this.sendScrollThrottled(dx, dy)
+    }
   }
 
   private onContextMenu = (e: Event): void => e.preventDefault()

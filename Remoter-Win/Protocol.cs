@@ -28,6 +28,8 @@ public abstract record ClientMsg
     public record ListDir(string Path) : ClientMsg;
     public record RequestFile(string Path) : ClientMsg;
     public record SetMuted(bool Muted) : ClientMsg;
+    public record SetAudio(bool Enabled) : ClientMsg;
+    public record SetPrivacyScreen(bool Enabled) : ClientMsg;
     public record CtrlAltDel : ClientMsg;
     public record SetInputEnabled(bool Enabled) : ClientMsg;
     public record ClipboardSetImage(string Data) : ClientMsg;
@@ -68,6 +70,8 @@ public abstract record ClientMsg
             "list_dir"          => new ListDir(e.Str("path")),
             "request_file"      => new RequestFile(e.Str("path")),
             "set_muted"         => new SetMuted(e.Bool("muted")),
+            "set_audio"         => new SetAudio(e.Bool("enabled")),
+            "set_privacy_screen"=> new SetPrivacyScreen(e.Bool("enabled")),
             "ctrl_alt_del"      => new CtrlAltDel(),
             "set_input_enabled"       => new SetInputEnabled(e.Bool("enabled")),
             "clipboard_set_image"     => new ClipboardSetImage(e.Str("data")),
@@ -107,6 +111,7 @@ static class FrameType
 {
     public const byte VideoFrame = 0x01;
     public const byte FileChunk  = 0x02;
+    public const byte AudioFrame = 0x03;
     public const byte Encrypted  = 0xE0;
 }
 

@@ -13,7 +13,7 @@ enum ClientMessage {
     case mouseMove(x: Double, y: Double, dragging: String?)
     case mouseButton(button: String, down: Bool, x: Double, y: Double)
     case mouseDoubleClick(button: String, x: Double, y: Double)
-    case mouseScroll(dx: Int, dy: Int, px: Int?, py: Int?)
+    case mouseScroll(dx: Int, dy: Int, px: Int?, py: Int?, isPrecise: Bool?)
     case key(code: String, down: Bool, modifiers: [String])
     case textInput(String)   // IME-composed text, injected as a unicode string
     case clipboardSet(text: String)
@@ -21,8 +21,9 @@ enum ClientMessage {
     case fileEnd(id: String)
     case fpsSet(fps: Int, auto: Bool)
     case bitrateSet(bitrate: Int, auto: Bool)
-    case resolutionSet(tier: String)
+    case resolutionSet(tier: String, customWidth: Int? = nil, customHeight: Int? = nil)
     case setAudioEnabled(Bool)
+    case setPrivacyScreen(Bool)
     case displaySet(id: UInt32)
     case ping
     case requestKeyframe
@@ -76,7 +77,8 @@ enum ClientMessage {
                 dx: json["dx"] as? Int ?? 0,
                 dy: json["dy"] as? Int ?? 0,
                 px: json["px"] as? Int,
-                py: json["py"] as? Int
+                py: json["py"] as? Int,
+                isPrecise: json["isPrecise"] as? Bool
             )
         case "key":
             return .key(
@@ -107,9 +109,15 @@ enum ClientMessage {
                 auto: json["auto"] as? Bool ?? false
             )
         case "resolution":
-            return .resolutionSet(tier: json["tier"] as? String ?? "1080")
+            return .resolutionSet(
+                tier: json["tier"] as? String ?? "1080",
+                customWidth: json["width"] as? Int,
+                customHeight: json["height"] as? Int
+            )
         case "set_audio":
             return .setAudioEnabled(json["enabled"] as? Bool ?? false)
+        case "set_privacy_screen":
+            return .setPrivacyScreen(json["enabled"] as? Bool ?? false)
         case "display":
             return .displaySet(id: UInt32(json["id"] as? Int ?? 0))
         case "ping":

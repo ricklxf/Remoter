@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
-import { StreamInfo, FileTransfer } from '../types'
+import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode } from '../types'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
@@ -23,10 +23,10 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   const [fpsAuto, setFpsAuto] = useState(true)
   const [bitrate, setBitrate] = useState(2_000_000)
   const [bitrateAuto, setBitrateAuto] = useState(true)
-  // Matches the server's own default (resolutionMaxDimension = nil, i.e.
-  // native/uncapped) — no need to send this on mount like the fps/bitrate
-  // auto default, since both sides already agree without a message.
-  const [resolution, setResolution] = useState<'native' | '1080' | '2k'>('native')
+  const [resolution, setResolution] = useState<ResolutionTier>('native')
+  const [scaleMode, setScaleMode] = useState<ScaleMode>(() => {
+    return (localStorage.getItem('remoter_scale_mode') as ScaleMode) || 'fit'
+  })
   // Manual pick only (both sides default to h264); jpeg fallback is chosen
   // by the connection layer itself, not from this menu.
   const [codec, setCodec] = useState<'h264' | 'h265'>('h264')
@@ -49,6 +49,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   const [toolbarVisible, setToolbarVisible] = useState(false)
   // Lifted out of RemoteCanvas so the toolbar's icon button can drive it.
   const [imeCalibrating, setImeCalibrating] = useState(false)
+  const [privacyOn, setPrivacyOn] = useState(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   // Cancel hide timer on unmount
@@ -89,6 +90,24 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     conn.sendFps(fps, true)
     conn.sendBitrate(bitrate, true)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleScaleModeChange(mode: ScaleMode) {
+    setScaleMode(mode)
+    localStorage.setItem('remoter_scale_mode', mode)
+  }
+
+  function handleResolutionChange(tier: ResolutionTier) {
+    setResolution(tier)
+    localStorage.setItem('remoter_resolution', tier)
+    if (tier === 'match') {
+      const dpr = window.devicePixelRatio || 1
+      const w = Math.round((window.screen.width || window.innerWidth) * dpr) & ~1
+      const h = Math.round((window.screen.height || window.innerHeight) * dpr) & ~1
+      conn.sendResolution(tier, w, h)
+    } else {
+      conn.sendResolution(tier)
+    }
+  }
 
   // Server pushes the values it's actually running whenever auto mode
   // steps either one up/down, so the toolbar reflects reality instead of
@@ -137,6 +156,12 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     }
   }
 
+  function handleTogglePrivacy() {
+    const next = !privacyOn
+    setPrivacyOn(next)
+    conn.sendSetPrivacyScreen(next)
+  }
+
   function handleFpsChange(f: number, auto: boolean) {
     setFps(f)
     setFpsAuto(auto)
@@ -157,6 +182,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
         initialCodec={initialCodec}
         isActive={isActive}
         imeCalibrating={imeCalibrating}
+        scaleMode={scaleMode}
       />
 
       {showTransfers && (
@@ -205,11 +231,15 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             bitrateAuto={bitrateAuto}
             onBitrateChange={handleBitrateChange}
             resolution={resolution}
-            onResolutionChange={setResolution}
+            onResolutionChange={handleResolutionChange}
+            scaleMode={scaleMode}
+            onScaleModeChange={handleScaleModeChange}
             codec={codec}
             onCodecChange={setCodec}
             audioOn={audioOn}
             onToggleAudio={handleToggleAudio}
+            privacyOn={privacyOn}
+            onTogglePrivacy={handleTogglePrivacy}
             inputLocked={inputLocked}
             onToggleInputLock={handleToggleInputLock}
             displays={streamInfo.displays ?? []}

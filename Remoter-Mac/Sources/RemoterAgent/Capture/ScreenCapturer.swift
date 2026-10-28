@@ -146,7 +146,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
-        config.queueDepth = 2
+        config.queueDepth = max(2, min(4, fps / 30))
         config.capturesAudio = true
         config.sampleRate = 48000
         config.channelCount = 2
@@ -197,7 +197,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
-        config.queueDepth = 2
+        config.queueDepth = max(2, min(4, fps / 30))
         Task {
             do {
                 try await stream.updateConfiguration(config)

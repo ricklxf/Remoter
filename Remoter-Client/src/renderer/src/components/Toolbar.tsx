@@ -42,8 +42,8 @@ interface Props {
 // fps and bitrate are independent — each has its own auto-adjusting mode
 // (server steps it based on its own feedback signal: fps on decode-overload,
 // bitrate on network backpressure) plus its own manual tiers.
-const FPS_TIERS = [30, 60]
-const BITRATE_TIERS = [2_000_000, 4_000_000, 8_000_000, 15_000_000]
+const FPS_TIERS = [30, 60, 90, 120]
+const BITRATE_TIERS = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000]
 
 function formatBitrate(bps: number): string {
   const mbps = bps / 1_000_000
@@ -211,9 +211,9 @@ function QualityMenu({
           <ResolutionSelect value={resolution} onChange={onResolutionChange} />
           <ScaleModeSelect value={scaleMode} onChange={onScaleModeChange} />
           <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
-            formatValue={v => `${v}fps`} width={82} onChange={onFpsChange} />
+            formatValue={v => `${v}fps`} width={92} onChange={onFpsChange} />
           <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
-            formatValue={formatBitrate} width={82} onChange={onBitrateChange} />
+            formatValue={formatBitrate} width={92} onChange={onBitrateChange} />
           {h265Available && (
             <CodecSelect value={codec} onChange={onCodecChange} />
           )}

@@ -198,23 +198,35 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         source.capturer(capturer, didCapture: frame)
     }
 
+    /// Cap the RTP encoder's framerate.
+    func setMaxFps(_ fps: Int) {
+        requestedMaxFps = fps
+        applyEncodingParams()
+    }
+
     /// Cap the RTP encoder's bitrate (manual quality picks). GCC still
     /// adapts *below* the cap on congestion; this only sets the ceiling.
     func setMaxBitrate(_ bps: Int) {
         requestedMaxBps = bps
-        applyMaxBitrate()
+        applyEncodingParams()
+    }
+
+    private func applyEncodingParams() {
+        guard let sender = videoSender else { return }
+        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, lanFloorAllowed ? Int.max : max(Self.tunnelCapBps, requestedMaxBps))
+        let params = sender.parameters
+        for enc in params.encodings {
+            if bps != Int.max {
+                enc.maxBitrateBps = NSNumber(value: bps)
+                if let m = enc.minBitrateBps?.intValue, m > bps { enc.minBitrateBps = NSNumber(value: bps) }
+            }
+            enc.maxFramerate = NSNumber(value: requestedMaxFps)
+        }
+        sender.parameters = params
     }
 
     private func applyMaxBitrate() {
-        guard let sender = videoSender else { return }
-        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, lanFloorAllowed ? Int.max : Self.tunnelCapBps)
-        guard bps != Int.max else { return }
-        let params = sender.parameters
-        for enc in params.encodings {
-            enc.maxBitrateBps = NSNumber(value: bps)
-            if let m = enc.minBitrateBps?.intValue, m > bps { enc.minBitrateBps = NSNumber(value: bps) }
-        }
-        sender.parameters = params
+        applyEncodingParams()
     }
 
     // Ceiling learned from loss. 10-10 WireGuard trace: the 12Mbps floor
@@ -232,6 +244,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private static let lossCapMinBps = 2_000_000
     private static let lossCapHoldSec = 10.0
     private var requestedMaxBps = Int.max
+    private var requestedMaxFps = 120
     private var lossCapBps: Int?
     private var lossCapSetAt: CFAbsoluteTime = 0
 

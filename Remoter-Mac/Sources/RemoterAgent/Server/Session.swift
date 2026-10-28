@@ -106,13 +106,11 @@ final class Session {
     // Both ordered safest-first so "自动" starts conservative and only
     // climbs after proving stable, rather than starting high and visibly
     // stuttering before settling.
-    private static let autoFpsTiers:     [Int] = [30, 60]
-    // Top tier raised 15M→30M for LAN headroom — WebRTCAgent's lanFloorBps
-    // (RTT-gated minimum) now sits at 12M, so the ceiling needs real
-    // clearance above that for GCC to still have room to climb on genuinely
-    // demanding content (e.g. full-screen video played back inside the
-    // remote session) rather than immediately pinning against the max.
-    private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 30_000_000]
+    private static let autoFpsTiers:     [Int] = [30, 60, 90, 120]
+    // Top tier raised to 25M for pristine LAN bitrate — WebRTCAgent's lanFloorBps
+    // (RTT-gated minimum) now sits at 12M, so the ceiling gives room for 25M
+    // pristine stream quality.
+    private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000]
     // Independent — the client can put either on auto while pinning the
     // other to a manual value, matching the fact they're genuinely two
     // separate knobs, not one bundled "quality" choice.
@@ -1222,7 +1220,7 @@ final class Session {
         scrollBoostLock.unlock()
 
         if starting {
-            let boosted = min(Int(Double(currentBitrate) * 1.5), 25_000_000)
+            let boosted = min(Int(Double(currentBitrate) * 1.5), 37_500_000)
             encoder?.setBitrate(boosted)
             webrtc?.setMaxBitrate(boosted)
         }
@@ -1240,6 +1238,8 @@ final class Session {
     private func applyFps(_ fps: Int, notify: Bool = true) {
         currentFps = fps
         capturer?.updateFps(fps)
+        encoder?.setFps(fps)
+        webrtc?.setMaxFps(fps)
         if notify { notifyQualityActive() }
     }
 

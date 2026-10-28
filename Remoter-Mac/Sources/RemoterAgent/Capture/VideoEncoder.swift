@@ -63,6 +63,13 @@ final class VideoEncoder {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
     }
 
+    /// Adjusts the live session's expected frame rate without tearing it down.
+    func setFps(_ fps: Int) {
+        guard let session else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
+                             value: NSNumber(value: fps))
+    }
+
     func setup(width: Int, height: Int, fps: Int, bitrateBps: Int, codec: StreamCodec = .h264) throws {
         self.codec = codec
         var s: VTCompressionSession?

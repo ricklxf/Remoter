@@ -45,6 +45,9 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     // Global-desktop origin of the captured display (needed to map the
     // client's display-relative coords to CGEvent's global space) and the
     // full display list (sent to the client so it can offer a picker).
+    /// Hardware refresh rate of the captured display (60 when the mode
+    /// doesn't report one). SCStream can't deliver faster than this.
+    private(set) var maxRefreshRate: Int = 60
     private(set) var originX: Double = 0
     private(set) var originY: Double = 0
     private(set) var displays: [(id: UInt32, name: String, width: Int, height: Int)] = []
@@ -121,6 +124,11 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         let bounds = CGDisplayBounds(display.displayID)
         pointWidth  = bounds.width > 0 ? bounds.width : Double(physWidth)
         pointHeight = bounds.height > 0 ? bounds.height : Double(physHeight)
+        if let rate = CGDisplayCopyDisplayMode(display.displayID)?.refreshRate, rate >= 1 {
+            maxRefreshRate = Int(rate.rounded())
+        } else {
+            maxRefreshRate = 60
+        }
         originX = bounds.origin.x
         originY = bounds.origin.y
         if let maxDimension, maxDimension < max(physWidth, physHeight) {

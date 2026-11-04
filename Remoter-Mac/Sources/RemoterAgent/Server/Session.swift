@@ -107,6 +107,14 @@ final class Session {
     // climbs after proving stable, rather than starting high and visibly
     // stuttering before settling.
     private static let autoFpsTiers:     [Int] = [30, 60, 90, 120]
+    /// Highest auto tier the captured display can actually deliver — on a
+    /// 60Hz panel, climbing to 90/120 only costs a deeper capture queue and a
+    /// 120fps encoder cap for frames that never exist. Manual picks are not
+    /// limited by this.
+    private var autoFpsTopIndex: Int {
+        let limit = max(60, capturer?.maxRefreshRate ?? 60)
+        return Self.autoFpsTiers.lastIndex(where: { $0 <= limit }) ?? 0
+    }
     // Top tier raised to 25M for pristine LAN bitrate — WebRTCAgent's lanFloorBps
     // (RTT-gated minimum) now sits at 12M, so the ceiling gives room for 25M
     // pristine stream quality.
@@ -477,7 +485,7 @@ final class Session {
                 // bump and get permanently stuck at the bottom — no second
                 // chance ever comes. Start at the top tier ourselves
                 // whenever RTP is already live, same as that bump does.
-                autoFpsIndex = usingRtpVideo ? Self.autoFpsTiers.count - 1 : 0
+                autoFpsIndex = usingRtpVideo ? autoFpsTopIndex : 0
                 autoFpsCleanStreak = 0
                 applyFps(Self.autoFpsTiers[autoFpsIndex])
             } else {
@@ -1077,8 +1085,8 @@ final class Session {
                         // dropping + PLI) is what backs it off if it can't
                         // actually keep up.
                         if self.autoFpsEnabled {
-                            self.autoFpsIndex = Self.autoFpsTiers.count - 1
-                            self.applyFps(Self.autoFpsTiers.last!, notify: false)
+                            self.autoFpsIndex = self.autoFpsTopIndex
+                            self.applyFps(Self.autoFpsTiers[self.autoFpsIndex], notify: false)
                             qualityBumped = true
                         }
                         // Both applies above used notify:false to batch into
@@ -1193,7 +1201,7 @@ final class Session {
                 if autoFpsIndex > 0 { autoFpsIndex -= 1; fpsChanged = true }
             } else {
                 autoFpsCleanStreak += 1
-                if autoFpsCleanStreak >= 3 && autoFpsIndex < Self.autoFpsTiers.count - 1 {
+                if autoFpsCleanStreak >= 3 && autoFpsIndex < autoFpsTopIndex {
                     autoFpsCleanStreak = 0
                     autoFpsIndex += 1
                     fpsChanged = true

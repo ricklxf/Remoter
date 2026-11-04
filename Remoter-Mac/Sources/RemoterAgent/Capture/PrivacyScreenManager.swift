@@ -36,7 +36,10 @@ public final class PrivacyScreenManager: @unchecked Sendable {
             window.isOpaque = true
             window.backgroundColor = NSColor(calibratedRed: 0.05, green: 0.06, blue: 0.08, alpha: 1.0)
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.ignoresMouseEvents = false
+            // The curtain sits above everything; if it took mouse events, the
+            // remote side's injected clicks/scrolls would land on it instead
+            // of the app underneath.
+            window.ignoresMouseEvents = true
 
             let frame = NSRect(origin: .zero, size: screen.frame.size)
             let container = NSView(frame: frame)

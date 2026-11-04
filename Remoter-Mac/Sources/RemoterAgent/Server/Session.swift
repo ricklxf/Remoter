@@ -532,8 +532,17 @@ final class Session {
 
         case .setPrivacyScreen(let enabled):
             Task { @MainActor in
-                if enabled { PrivacyScreenManager.shared.enable() }
-                else { PrivacyScreenManager.shared.disable() }
+                if enabled {
+                    guard !PrivacyScreenManager.shared.isEnabled else { return }
+                    PrivacyScreenManager.shared.enable()
+                    // The overlay windows only exist now, but ScreenCapturer
+                    // builds its SCContentFilter (which excludes them) once at
+                    // stream start — without a rebuild the remote side would
+                    // see the curtain instead of the desktop.
+                    await rebuildPipeline()
+                } else {
+                    PrivacyScreenManager.shared.disable()
+                }
             }
 
         case .displaySet(let did):

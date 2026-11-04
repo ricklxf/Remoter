@@ -351,6 +351,12 @@ final class SmoothScrollEngine: @unchecked Sendable {
 
     func addDelta(px: Double, py: Double) {
         lock.lock()
+        // Direction reversal: drop what's still queued the other way instead
+        // of netting against it — otherwise a fast spin leaves hundreds of
+        // pixels "owed" and the page keeps travelling the old way for a
+        // while after the wheel was turned back.
+        if px * targetX < 0 { targetX = 0 }
+        if py * targetY < 0 { targetY = 0 }
         targetX += px
         targetY += py
         let needStart = !isAnimating
@@ -375,6 +381,12 @@ final class SmoothScrollEngine: @unchecked Sendable {
             t.setEventHandler { [weak self] in
                 guard let self else { return }
                 self.lock.lock()
+                // stop() ran between this timer being queued and firing.
+                guard self.isAnimating else {
+                    self.timer?.cancel(); self.timer = nil
+                    self.lock.unlock()
+                    return
+                }
 
                 // 指数衰减系数 0.22：兼顾疾速跟手与丝滑渐停
                 let friction = 0.22
@@ -406,12 +418,21 @@ final class SmoothScrollEngine: @unchecked Sendable {
                 isFirst = false
                 self.lock.unlock()
 
-                let phase: CGScrollPhase = first ? .began : (isEnding ? .ended : .changed)
                 let intStepY = Int32(round(stepY))
                 let intStepX = Int32(round(stepX))
 
-                if intStepY != 0 || intStepX != 0 || isEnding {
-                    self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY, phase: phase)
+                if first && isEnding {
+                    // Whole animation fit in one tick: it still needs both a
+                    // begin and an end, or the target app is left mid-gesture.
+                    if intStepY != 0 || intStepX != 0 {
+                        self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY, phase: .began)
+                    }
+                    self.controller?.injectScrollStep(stepX: 0, stepY: 0, phase: .ended)
+                } else {
+                    let phase: CGScrollPhase = first ? .began : (isEnding ? .ended : .changed)
+                    if intStepY != 0 || intStepX != 0 || isEnding {
+                        self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY, phase: phase)
+                    }
                 }
             }
 

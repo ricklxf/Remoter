@@ -396,6 +396,7 @@ final class Session {
         case .netHint(let lan):
             clientNotOnLan = !lan
             webrtc?.lanFloorAllowed = lan
+            webrtc?.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
 
         case .key(let code, let down, let mods):
@@ -485,6 +486,7 @@ final class Session {
 
         case .bitrateSet(let bitrate, let auto):
             autoBitrateEnabled = auto
+            webrtc?.tunnelCapActive = clientNotOnLan && auto
             if auto {
                 // Same race as .fpsSet above, same fix.
                 autoBitrateIndex = usingRtpVideo ? Self.autoBitrateTiers.count - 1 : 0
@@ -744,6 +746,7 @@ final class Session {
         usingWebRTCVideo = false
         let agent = WebRTCAgent()
         agent.lanFloorAllowed = !clientNotOnLan
+        agent.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
 
         agent.onLocalDescription = { [weak self] type, sdp in
             self?.sendJson(["type": "webrtc_\(type)", "sdp": sdp])

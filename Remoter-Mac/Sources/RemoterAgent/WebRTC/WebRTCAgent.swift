@@ -137,6 +137,14 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // still revokes the floor and lowers the cap (evaluateLossCap).
     private static let tunnelFloorBps: Int = 6_000_000
     private static let tunnelCapBps: Int = 10_000_000
+    /// Set by Session: true when the client is off-LAN AND bitrate is on auto.
+    /// The auto ladder asks for its top tier (25M) as soon as RTP is up, which
+    /// is exactly the overshoot a tunnel can't carry — so in that case the
+    /// ceiling is held at tunnelCapBps. A manual bitrate pick is the user's
+    /// explicit choice and is not capped.
+    var tunnelCapActive = false {
+        didSet { if oldValue != tunnelCapActive { applyMaxBitrate() } }
+    }
     private var floorBps: Int { lanFloorAllowed ? Self.lanFloorBps : Self.tunnelFloorBps }
     private var minBitrateFloorActive = false
 
@@ -213,7 +221,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
     private func applyEncodingParams() {
         guard let sender = videoSender else { return }
-        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, lanFloorAllowed ? Int.max : max(Self.tunnelCapBps, requestedMaxBps))
+        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, tunnelCapActive ? Self.tunnelCapBps : Int.max)
         let params = sender.parameters
         for enc in params.encodings {
             if bps != Int.max {

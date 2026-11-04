@@ -1246,6 +1246,10 @@ final class Session {
     /// Holds boosted encoder bitrate until 1.2s after the last scroll event,
     /// ensuring moving text remains crisp without pausing/reconfiguring SCStream.
     private func boostBitrateWhileScrolling() {
+        // RTP: only the ceiling would move (GCC picks the real rate), and each
+        // start/end rewrites the sender's encoding parameters — churn for no
+        // effect. The boost only means something for the local VT encoder.
+        guard !usingRtpVideo else { return }
         scrollBoostLock.lock()
         scrollBoostGen += 1
         let gen = scrollBoostGen

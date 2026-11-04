@@ -296,11 +296,15 @@ sealed class H264Encoder : IDisposable
         fixed (byte* pBgra = bgra)
         fixed (byte* pNv12 = nv12)
         {
+            // A lambda can't use a fixed-statement pointer directly (CS1764);
+            // carry the addresses as nint and cast back inside.
+            nint bgraAddr = (nint)pBgra;
+            nint nv12Addr = (nint)pNv12;
             // Multi-threaded Y plane conversion
             Parallel.For(0, height, y =>
             {
-                byte* srcRow = pBgra + (long)y * width * 4;
-                byte* dstRow = pNv12 + (long)y * width;
+                byte* srcRow = (byte*)bgraAddr + (long)y * width * 4;
+                byte* dstRow = (byte*)nv12Addr + (long)y * width;
                 for (int x = 0; x < width; x++)
                 {
                     int i = x * 4;
@@ -315,8 +319,8 @@ sealed class H264Encoder : IDisposable
             Parallel.For(0, halfHeight, yHalf =>
             {
                 int y = yHalf * 2;
-                byte* srcRow = pBgra + (long)y * width * 4;
-                byte* dstUv  = pNv12 + uvOffset + (long)yHalf * width;
+                byte* srcRow = (byte*)bgraAddr + (long)y * width * 4;
+                byte* dstUv  = (byte*)nv12Addr + uvOffset + (long)yHalf * width;
                 for (int xHalf = 0; xHalf < halfWidth; xHalf++)
                 {
                     int x = xHalf * 2;

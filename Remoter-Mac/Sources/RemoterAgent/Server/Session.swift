@@ -148,10 +148,17 @@ final class Session {
     // again on every restart.
     private var clipboardBaselineCaptured = false
 
+    // Live-session count: the virtual display and the privacy curtain are
+    // process-wide singletons, so one client disconnecting must not tear them
+    // down while another client is still using them.
+    private static let liveLock = NSLock()
+    private static var liveCount = 0
+
     init(id: UUID, connection: WSClient, pin: String) {
         self.id = id
         self.connection = connection
         self.pin = pin
+        Self.liveLock.lock(); Self.liveCount += 1; Self.liveLock.unlock()
     }
 
     func start() {
@@ -240,6 +247,7 @@ final class Session {
     }
 
     func close() {
+        let alreadyClosed = isClosed
         isClosed = true
         // Log disconnection if we were streaming
         if let t = connectTime {
@@ -255,10 +263,16 @@ final class Session {
         input?.releaseAllKeys()
         stopKeepalive()
         stopClipboardMonitor()
-        Task { @MainActor in
-            PrivacyScreenManager.shared.disable()
+        var lastOne = false
+        if !alreadyClosed {   // close() can run more than once per session
+            Self.liveLock.lock(); Self.liveCount -= 1; lastOne = Self.liveCount <= 0; Self.liveLock.unlock()
         }
-        VirtualDisplayManager.shared.destroyVirtualDisplay()
+        if lastOne {
+            Task { @MainActor in
+                PrivacyScreenManager.shared.disable()
+            }
+            VirtualDisplayManager.shared.destroyVirtualDisplay()
+        }
         cursorMonitor?.stop()
         cursorMonitor = nil
         encoder?.close()

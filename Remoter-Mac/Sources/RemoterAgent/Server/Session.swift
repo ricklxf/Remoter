@@ -85,6 +85,41 @@ final class Session {
     private let scrollBoostLock = NSLock()
     private var scrollBoostGen = 0
     private var scrollBoostActive = false
+    // TEMP DIAGNOSTIC — "scrolling keeps coasting ~1s after reversing". Whether
+    // that tail is already in the wheel stream the client sends (e.g. a
+    // Windows precision touchpad's own inertia) or is added on this side can't
+    // be told from the frame logs. Summarises each scroll gesture: how long
+    // events kept arriving after the peak delta, direction flips, last deltas.
+    private let scrollDiagLock = NSLock()
+    private var sgStart = Date.distantPast, sgLast = Date.distantPast, sgPeakAt = Date.distantPast
+    private var sgCount = 0, sgSum = 0, sgPeak = 0, sgFlips = 0, sgLastSign = 0
+    private var sgRecent: [Int] = []
+    private var sgPrecise: Bool?
+    private func recordScrollForDiag(py: Int, isPrecise: Bool?) {
+        let now = Date()
+        scrollDiagLock.lock()
+        if now.timeIntervalSince(sgLast) > 0.35 {
+            sgStart = now; sgPeakAt = now; sgCount = 0; sgSum = 0; sgPeak = 0; sgFlips = 0; sgLastSign = 0; sgRecent = []
+        }
+        sgLast = now; sgCount += 1; sgSum += py; sgPrecise = isPrecise
+        if abs(py) >= sgPeak { sgPeak = abs(py); sgPeakAt = now }
+        let sign = py > 0 ? 1 : (py < 0 ? -1 : 0)
+        if sign != 0 { if sgLastSign != 0 && sign != sgLastSign { sgFlips += 1 }; sgLastSign = sign }
+        sgRecent.append(py); if sgRecent.count > 4 { sgRecent.removeFirst() }
+        let stamp = now
+        scrollDiagLock.unlock()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.scrollDiagLock.lock()
+            guard self.sgLast == stamp else { self.scrollDiagLock.unlock(); return }
+            let d = "events=\(self.sgCount) durMs=\(Int(self.sgLast.timeIntervalSince(self.sgStart) * 1000)) " +
+                "peakPx=\(self.sgPeak) peakToEndMs=\(Int(self.sgLast.timeIntervalSince(self.sgPeakAt) * 1000)) " +
+                "netPx=\(self.sgSum) flips=\(self.sgFlips) precise=\(self.sgPrecise.map { String($0) } ?? "nil") last=\(self.sgRecent)"
+            self.scrollDiagLock.unlock()
+            ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "scroll_gesture", detail: d)
+        }
+    }
+
     private var pendingScrollSince: Date?      // TEMP DIAGNOSTIC — see .mouseScroll case, mirrors pendingTextInputSince
 
     // Auto quality: fps and bitrate step on separate ladders — collapsing
@@ -398,6 +433,7 @@ final class Session {
         case .mouseScroll(let dx, let dy, let px, let py, let isPrecise):
             guard inputEnabled else { break }
             pendingScrollSince = Date()
+            recordScrollForDiag(py: py ?? dy * 100, isPrecise: isPrecise)
             input?.mouseScroll(dx: dx, dy: dy, px: px, py: py, isPrecise: isPrecise)
             boostBitrateWhileScrolling()
 

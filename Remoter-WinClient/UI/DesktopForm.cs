@@ -522,30 +522,30 @@ public sealed class DesktopForm : Form
     protected override void OnMove(EventArgs e)
     {
         base.OnMove(e);
-        _toolbar.UpdatePosition();
-        _inputManager.UpdateClipCursor();
+        _toolbar?.UpdatePosition();
+        _inputManager?.UpdateClipCursor();
     }
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        _toolbar.UpdatePosition();
-        _inputManager.UpdateClipCursor();
+        _toolbar?.UpdatePosition();
+        _inputManager?.UpdateClipCursor();
     }
 
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
-        _inputManager.SetWindowActive(true);
-        _conn.SetReverseClipboardActive(true);
+        _inputManager?.SetWindowActive(true);
+        _conn?.SetReverseClipboardActive(true);
     }
 
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
         // Ignore transient deactivation caused by clicking our own FloatingToolbar
-        if (Form.ActiveForm == _toolbar) return;
-        _inputManager.SetWindowActive(false);
+        if (_toolbar != null && Form.ActiveForm == _toolbar) return;
+        _inputManager?.SetWindowActive(false);
     }
 
     private void ToggleFullscreen()

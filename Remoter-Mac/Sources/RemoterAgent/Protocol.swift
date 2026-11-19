@@ -24,6 +24,7 @@ enum ClientMessage {
     case resolutionSet(tier: String, customWidth: Int? = nil, customHeight: Int? = nil, scale: Double? = nil)
     case chromaSet(mode: String)
     case hdrSet(enabled: Bool)
+    case lowLatencySet(enabled: Bool)
     case setAudioEnabled(Bool)
     case setPrivacyScreen(Bool)
     case displaySet(id: UInt32)
@@ -121,6 +122,8 @@ enum ClientMessage {
             return .chromaSet(mode: json["mode"] as? String ?? "420")
         case "hdr":
             return .hdrSet(enabled: json["enabled"] as? Bool ?? false)
+        case "low_latency":
+            return .lowLatencySet(enabled: json["enabled"] as? Bool ?? false)
         case "set_audio":
             return .setAudioEnabled(json["enabled"] as? Bool ?? false)
         case "set_privacy_screen":

@@ -59,12 +59,14 @@ final class Session {
     private var currentCodec: StreamCodec = .h264
     private var currentChroma: ChromaMode = .yuv420
     private var currentHdr = false
+    private var lowLatencyZeroBuffer = false
     private var usingJpeg = false  // re-applied after a resolution switch's beginCapture() rebuild, which defaults back to h264
 
-    /// Standard WebRTC RTP only carries 8-bit 4:2:0; when 4:4:4 or 10-bit HDR is
-    /// active, temporarily route frames through VideoEncoder -> WebCodecs.
+    /// Standard WebRTC RTP only carries 8-bit 4:2:0 and adds browser jitter
+    /// buffering; when 4:4:4, 10-bit HDR, or 0-buffer low-latency mode is active,
+    /// route frames through VideoEncoder -> WebCodecs.
     private var forceCanvasMode: Bool {
-        currentChroma == .yuv444 || currentHdr
+        currentChroma == .yuv444 || currentHdr || lowLatencyZeroBuffer
     }
 
     // Video send semaphore: allow several small H.264 frames in flight so a
@@ -628,6 +630,26 @@ final class Session {
             } else {
                 sendJson(["type": "hdr_active", "enabled": currentHdr])
                 sendJson(["type": "force_canvas", "enabled": forceCanvasMode])
+            }
+
+        case .lowLatencySet(let enabled):
+            let wasForceCanvas = forceCanvasMode
+            lowLatencyZeroBuffer = enabled
+            let nowForceCanvas = forceCanvasMode
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "low_latency_set",
+                                            detail: "enabled=\(enabled) forceCanvas=\(nowForceCanvas)")
+            if nowForceCanvas && usingRtpVideo {
+                usingRtpVideo = false
+                ConnectionLogger.shared.logStep(sessionId: id.uuidString,
+                                                step: "video_transport",
+                                                detail: "force_canvas(low_latency=\(enabled))")
+            }
+            if nowForceCanvas && !wasForceCanvas && !usingJpeg {
+                encoder?.forceKeyframe()
+            }
+            sendJson(["type": "force_canvas", "enabled": nowForceCanvas])
+            if nowForceCanvas && !wasForceCanvas && !usingJpeg, let last = lastFrame {
+                encoder?.encode(last)
             }
 
         case .setAudioEnabled(let enabled):

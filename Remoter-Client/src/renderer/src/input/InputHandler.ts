@@ -53,13 +53,6 @@ export class InputHandler {
   private pendingMove: { nx: number; ny: number; dragging: string | undefined } | null = null
   private pendingMoveTimer: ReturnType<typeof setTimeout> | null = null
 
-  // Scroll throttling for high-frequency continuous touchpads (capped at 120Hz).
-  // Mechanical wheel notches are flushed immediately to the agent's physics engine.
-  private readonly scrollThrottleMs = 8
-  private lastScrollSentAt = 0
-  private pendingScroll: { dx: number; dy: number } | null = null
-  private pendingScrollTimer: ReturnType<typeof setTimeout> | null = null
-
   private boundHandlers: Array<[EventTarget, string, EventListenerOrEventListenerObject]> = []
 
   constructor(conn: Connection) {
@@ -87,8 +80,6 @@ export class InputHandler {
     if (this.locked) document.exitPointerLock?.()
     if (this.pendingMoveTimer) { clearTimeout(this.pendingMoveTimer); this.pendingMoveTimer = null }
     this.pendingMove = null
-    if (this.pendingScrollTimer) { clearTimeout(this.pendingScrollTimer); this.pendingScrollTimer = null }
-    this.pendingScroll = null
   }
 
   // Like detach() but keeps listeners attached — for a tab that's hidden
@@ -189,34 +180,6 @@ export class InputHandler {
     }, this.moveThrottleMs - elapsed)
   }
 
-  private sendScrollThrottled(dx: number, dy: number): void {
-    if (this.pendingScroll) {
-      this.pendingScroll.dx += dx
-      this.pendingScroll.dy += dy
-    } else {
-      this.pendingScroll = { dx, dy }
-    }
-    const now = performance.now()
-    const elapsed = now - this.lastScrollSentAt
-    if (elapsed >= this.scrollThrottleMs) {
-      if (this.pendingScrollTimer) { clearTimeout(this.pendingScrollTimer); this.pendingScrollTimer = null }
-      const { dx: adx, dy: ady } = this.pendingScroll
-      this.pendingScroll = null
-      this.lastScrollSentAt = now
-      this.flushScroll(adx, ady, true)
-      return
-    }
-    if (this.pendingScrollTimer) return
-    this.pendingScrollTimer = setTimeout(() => {
-      this.pendingScrollTimer = null
-      if (!this.pendingScroll) return
-      const { dx: adx, dy: ady } = this.pendingScroll
-      this.pendingScroll = null
-      this.lastScrollSentAt = performance.now()
-      this.flushScroll(adx, ady, true)
-    }, this.scrollThrottleMs - elapsed)
-  }
-
   // Sub-unit remainders carried between sends so nothing is lost to rounding.
   private scrollRem = { px: 0, py: 0, lx: 0, ly: 0 }
 
@@ -292,16 +255,10 @@ export class InputHandler {
 
     if (dx === 0 && dy === 0) return
 
-    // Precise continuous touchpad vs discrete mechanical mouse wheel
+    // Precise continuous touchpad vs discrete mechanical mouse wheel:
+    // Flush both immediately with 0ms client-side batching latency
     const isPrecise = we.deltaMode === 0 && (!Number.isInteger(dy) || (Math.abs(dy) < 40 && Math.abs(dx) < 40))
-
-    if (!isPrecise) {
-      // Discrete mechanical mouse wheel notch (e.g. 100/120 on Windows):
-      // Flush immediately to the agent's 120Hz smooth scroll engine
-      this.flushScroll(dx, dy, false)
-    } else {
-      this.sendScrollThrottled(dx, dy)
-    }
+    this.flushScroll(dx, dy, isPrecise)
   }
 
   private onContextMenu = (e: Event): void => e.preventDefault()

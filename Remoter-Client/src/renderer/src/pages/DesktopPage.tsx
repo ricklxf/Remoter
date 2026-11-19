@@ -38,6 +38,9 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   const [chromaMode, setChromaMode] = useState<ChromaMode>('420')
   const [hdrOn, setHdrOn] = useState(false)
   const [toneMap, setToneMap] = useState(false)
+  const [lowLatency, setLowLatency] = useState<boolean>(() => {
+    return localStorage.getItem('remoter_low_latency') === 'true'
+  })
   const [forceCanvas, setForceCanvas] = useState(false)
   const [zoom, setZoom] = useState(1)
   // Remote system-audio forwarding — off by default (bandwidth + privacy:
@@ -99,6 +102,9 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   useEffect(() => {
     conn.sendFps(fps, true)
     conn.sendBitrate(bitrate, true)
+    if (lowLatency) {
+      conn.sendLowLatency(true)
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleScaleModeChange(mode: ScaleMode) {
@@ -122,6 +128,13 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     setHdrOn(next)
     setToneMap(next)
     conn.sendHdr(next)
+  }
+
+  function handleToggleLowLatency() {
+    const next = !lowLatency
+    setLowLatency(next)
+    localStorage.setItem('remoter_low_latency', String(next))
+    conn.sendLowLatency(next)
   }
 
   function handleResolutionChange(tier: ResolutionTier) {
@@ -289,6 +302,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             onToggleHdr={handleToggleHdr}
             toneMap={toneMap}
             onToggleToneMap={() => setToneMap(v => !v)}
+            lowLatency={lowLatency}
+            onToggleLowLatency={handleToggleLowLatency}
             zoom={zoom}
             onZoomChange={setZoom}
             audioOn={audioOn}

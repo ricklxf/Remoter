@@ -207,6 +207,7 @@ export class VideoDecoder_ {
         codec: codecStr,
         codedWidth: 1920,
         codedHeight: 1080,
+        optimizeForLatency: true,
         // Must mirror the flags configure() actually uses: Chromium has no
         // software HEVC decoder, so on win32 (where we force prefer-software)
         // HEVC is genuinely unavailable and this check correctly reports so.

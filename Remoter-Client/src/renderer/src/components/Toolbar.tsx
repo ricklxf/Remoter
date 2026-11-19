@@ -29,6 +29,8 @@ interface Props {
   onToggleHdr: () => void
   toneMap: boolean
   onToggleToneMap: () => void
+  lowLatency: boolean
+  onToggleLowLatency: () => void
   zoom: number
   onZoomChange: (z: number) => void
   audioOn: boolean
@@ -97,6 +99,7 @@ export function Toolbar({
   chromaMode, onToggleChroma,
   hdrOn, onToggleHdr,
   toneMap, onToggleToneMap,
+  lowLatency, onToggleLowLatency,
   zoom, onZoomChange,
   audioOn, onToggleAudio,
   privacyOn, onTogglePrivacy,
@@ -144,6 +147,8 @@ export function Toolbar({
         onToggleHdr={onToggleHdr}
         toneMap={toneMap}
         onToggleToneMap={onToggleToneMap}
+        lowLatency={lowLatency}
+        onToggleLowLatency={onToggleLowLatency}
         displays={displays}
         activeDisplay={activeDisplay}
         onDisplayChange={id => {
@@ -209,6 +214,7 @@ function QualityMenu({
   chromaMode, onToggleChroma,
   hdrOn, onToggleHdr,
   toneMap, onToggleToneMap,
+  lowLatency, onToggleLowLatency,
   displays, activeDisplay, onDisplayChange,
 }: {
   resolution: ResolutionTier
@@ -231,6 +237,8 @@ function QualityMenu({
   onToggleHdr: () => void
   toneMap: boolean
   onToggleToneMap: () => void
+  lowLatency: boolean
+  onToggleLowLatency: () => void
   displays: DisplayInfo[]
   activeDisplay: number
   onDisplayChange: (id: number) => void
@@ -293,6 +301,10 @@ function QualityMenu({
               <Toggle checked={toneMap} onToggle={onToggleToneMap} />
             </div>
           )}
+          <div style={s.qualityToggleRow} title="局域网绕过 WebRTC 抖动缓冲，采用 WebCodecs + WebGL2 零缓冲极速渲染">
+            <span>零缓冲极速</span>
+            <Toggle checked={lowLatency} onToggle={onToggleLowLatency} />
+          </div>
         </div>
       )}
     </div>

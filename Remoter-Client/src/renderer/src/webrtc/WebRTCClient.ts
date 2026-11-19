@@ -20,10 +20,24 @@ export interface InboundVideoStats {
   decodeMs: number
 }
 
+const PLAYOUT_DELAY_EXT_URI = 'http://www.webrtc.org/experiments/rtp-hdrext/playout-delay'
+
+type LowLatencyRtpReceiver = RTCRtpReceiver & {
+  playoutDelayHint?: number
+  jitterBufferTarget?: number | null
+}
+
+type HeaderExtTransceiver = RTCRtpTransceiver & {
+  getHeaderExtensionsToNegotiate?: () => Array<{ uri: string; direction: RTCRtpTransceiverDirection }>
+  setHeaderExtensionsToNegotiate?: (exts: Array<{ uri: string; direction: RTCRtpTransceiverDirection }>) => void
+}
+
 export class WebRTCClient {
   private pc: RTCPeerConnection | null = null
   private controlChannel: RTCDataChannel | null = null
   private videoTrack: MediaStreamTrack | null = null
+  private videoReceiver: LowLatencyRtpReceiver | null = null
+  private firstFrameJitterReset = false
 
   // RTP 视频轨道到达（浏览器自行解码渲染，喂给 <video> 元素即可）
   onTrack:        ((stream: MediaStream) => void) | null = null
@@ -45,10 +59,13 @@ export class WebRTCClient {
     // 声明只收不发的视频 m-line，被控端 answer 时把它的屏幕轨道挂上来
     const transceiver = pc.addTransceiver('video', { direction: 'recvonly' })
     this.applyCodecPreferences(transceiver, config.preferredCodec)
+    this.ensurePlayoutDelayNegotiated(transceiver)
 
     pc.ontrack = (ev) => {
       if (ev.track.kind !== 'video') return
       this.videoTrack = ev.track
+      this.videoReceiver = ev.receiver as LowLatencyRtpReceiver
+      this.firstFrameJitterReset = false
       // Measured via a TEMP DIAGNOSTIC (scroll→rendered-frame): most frames
       // render in well under 100ms, but occasional ones spike to 1000ms+ —
       // classic jitter-buffer behavior (Chrome grows the WebRTC playout
@@ -59,12 +76,15 @@ export class WebRTCClient {
       // latency matters far more for a remote-control session than for a
       // typical video call. Chrome-specific API; unsupported browsers just
       // ignore the assignment.
-      const receiver = ev.receiver as RTCRtpReceiver & { playoutDelayHint?: number; jitterBufferTarget?: number | null }
-      if (receiver && 'playoutDelayHint' in receiver) receiver.playoutDelayHint = 0
       // The hint alone wasn't enough: client_rx still showed the jitter
       // buffer holding 200-400ms with network jitter down at 6-15ms.
       // jitterBufferTarget is the standard knob for the same thing.
-      if (receiver && 'jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0
+      this.applyZeroJitterBuffer(ev.receiver)
+      // Chromium can reset jitterBufferTarget on track unmute / SSRC switch —
+      // re-apply both hints whenever the track unmutes as well.
+      ev.track.addEventListener('unmute', () => {
+        this.applyZeroJitterBuffer(ev.receiver)
+      })
       const stream = ev.streams[0] ?? new MediaStream([ev.track])
       this.onTrack?.(stream)
     }
@@ -92,8 +112,87 @@ export class WebRTCClient {
     }
 
     const offer = await pc.createOffer()
+    if (offer.sdp) {
+      const patchedSdp = this.ensurePlayoutDelayHeaderExtension(offer.sdp)
+      if (patchedSdp !== offer.sdp) {
+        try {
+          await pc.setLocalDescription({ type: offer.type, sdp: patchedSdp })
+          return pc.localDescription?.sdp ?? patchedSdp
+        } catch (e) {
+          console.warn('[WebRTC] playout-delay SDP patch rejected, using default offer:', e)
+        }
+      }
+    }
     await pc.setLocalDescription(offer)
-    return offer.sdp!
+    return pc.localDescription?.sdp ?? offer.sdp!
+  }
+
+  private applyZeroJitterBuffer(receiver?: RTCRtpReceiver | null): void {
+    const r = (receiver ?? this.videoReceiver) as LowLatencyRtpReceiver | null
+    if (!r) return
+    if ('playoutDelayHint' in r) r.playoutDelayHint = 0
+    if ('jitterBufferTarget' in r) r.jitterBufferTarget = 0
+  }
+
+  private ensurePlayoutDelayNegotiated(transceiver: RTCRtpTransceiver): void {
+    try {
+      const extTransceiver = transceiver as HeaderExtTransceiver
+      if (
+        typeof extTransceiver.getHeaderExtensionsToNegotiate !== 'function' ||
+        typeof extTransceiver.setHeaderExtensionsToNegotiate !== 'function'
+      ) {
+        return
+      }
+      const exts = extTransceiver.getHeaderExtensionsToNegotiate()
+      let changed = false
+      const updated = exts.map((ext) => {
+        if (ext.uri === PLAYOUT_DELAY_EXT_URI && ext.direction === 'stopped') {
+          changed = true
+          return { ...ext, direction: 'recvonly' as RTCRtpTransceiverDirection }
+        }
+        return ext
+      })
+      if (changed) {
+        extTransceiver.setHeaderExtensionsToNegotiate(updated)
+      }
+    } catch (e) {
+      console.warn('[WebRTC] ensurePlayoutDelayNegotiated failed:', e)
+    }
+  }
+
+  /** Ensure the video m-line advertises the playout-delay RTP header extension
+   *  so the sender can signal min=0/max=0 playout delay per frame. */
+  private ensurePlayoutDelayHeaderExtension(sdp: string): string {
+    if (sdp.includes(PLAYOUT_DELAY_EXT_URI)) return sdp
+    const lines = sdp.split('\r\n')
+    const videoStart = lines.findIndex((l) => l.startsWith('m=video '))
+    if (videoStart < 0) return sdp
+
+    let videoEnd = lines.length
+    for (let i = videoStart + 1; i < lines.length; i++) {
+      if (lines[i].startsWith('m=')) {
+        videoEnd = i
+        break
+      }
+    }
+
+    const usedIds = new Set<number>()
+    let lastExtmapIdx = -1
+    for (let i = videoStart + 1; i < videoEnd; i++) {
+      const m = lines[i].match(/^a=extmap:(\d+)(?:\/\S+)?\s+/)
+      if (m) {
+        usedIds.add(Number(m[1]))
+        lastExtmapIdx = i
+      }
+    }
+
+    let nextId = 1
+    while (usedIds.has(nextId) && nextId < 15) nextId++
+    if (nextId >= 15) return sdp
+
+    const insertIdx = lastExtmapIdx >= 0 ? lastExtmapIdx + 1 : videoStart + 1
+    lines.splice(insertIdx, 0, `a=extmap:${nextId} ${PLAYOUT_DELAY_EXT_URI}`)
+    return lines.join('\r\n')
   }
 
   private applyCodecPreferences(
@@ -216,6 +315,11 @@ export class WebRTCClient {
     } catch { return null }
     if (!s) return null
 
+    if (!this.firstFrameJitterReset && (s.framesDecoded ?? 0) > 0) {
+      this.firstFrameJitterReset = true
+      this.applyZeroJitterBuffer()
+    }
+
     const now = performance.now()
     const prev = this.lastStats
     const frames = (s.framesDecoded ?? 0) - prev.framesDecoded
@@ -267,5 +371,7 @@ export class WebRTCClient {
     this.pc = null
     this.controlChannel = null
     this.videoTrack = null
+    this.videoReceiver = null
+    this.firstFrameJitterReset = false
   }
 }

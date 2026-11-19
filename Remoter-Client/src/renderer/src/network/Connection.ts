@@ -328,6 +328,9 @@ export class Connection {
   sendHdr(enabled: boolean): void {
     this.sendJson({ type: 'hdr', enabled })
   }
+  sendLowLatency(enabled: boolean): void {
+    this.sendJson({ type: 'low_latency', enabled })
+  }
   sendSetAudio(enabled: boolean): void {
     this.sendJson({ type: 'set_audio', enabled })
   }

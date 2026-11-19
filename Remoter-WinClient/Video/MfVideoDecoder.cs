@@ -394,10 +394,16 @@ public sealed class MfVideoDecoder : IDisposable
         }
     }
 
-    private static Guid TryGetGuid(IMFAttributes attrs, Guid key)
+    private static unsafe Guid TryGetGuid(IMFAttributes attrs, Guid key)
     {
-        try { return attrs.GetGUID(key); }
-        catch { return Guid.Empty; }
+        nint pAttr = attrs.NativePointer;
+        if (pAttr == nint.Zero) return Guid.Empty;
+        // IMFAttributes vtable slot 10 = GetGUID(REFGUID guidKey, GUID* pguidValue)
+        nint* vtbl = *(nint**)pAttr;
+        var getGuid = (delegate* unmanaged[Stdcall]<nint, Guid*, Guid*, int>)vtbl[10];
+        Guid result = Guid.Empty;
+        int hr = getGuid(pAttr, &key, &result);
+        return hr >= 0 ? result : Guid.Empty;
     }
 
     // ── Decode ──────────────────────────────────────────────────────────────

@@ -387,7 +387,7 @@ public sealed class D3D11Renderer : IDisposable
             AddressW = TextureAddressMode.Clamp,
             MipLODBias = 0f,
             MaxAnisotropy = 1,
-            ComparisonFunction = ComparisonFunction.Never,
+            ComparisonFunc = ComparisonFunction.Never,
             MinLOD = 0f,
             MaxLOD = float.MaxValue,
         };
@@ -784,15 +784,15 @@ public sealed class D3D11Renderer : IDisposable
             _context.PSSetShaderResource(0, _nv12YSrv);
             _context.PSSetShaderResource(1, _nv12UvSrv);
             _context.Draw(3, 0);
-            _context.PSSetShaderResource(0, null);
-            _context.PSSetShaderResource(1, null);
+            _context.PSSetShaderResource(0, null!);
+            _context.PSSetShaderResource(1, null!);
         }
         else if (_activeSurface == ActiveSurface.Bgra && _bgraSrv != null)
         {
             _context.PSSetShader(_bgraPixelShader);
             _context.PSSetShaderResource(0, _bgraSrv);
             _context.Draw(3, 0);
-            _context.PSSetShaderResource(0, null);
+            _context.PSSetShaderResource(0, null!);
         }
 
         PresentFrame();

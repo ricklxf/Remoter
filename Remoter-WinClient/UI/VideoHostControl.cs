@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -27,9 +28,11 @@ public sealed class VideoHostControl : Control
     private const int WM_DPICHANGED     = 0x02E0;
 
     /// <summary>True once D3D11 swapchain is actively presenting frames; suppresses GDI fallback clear.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool D3D11Active { get; set; }
 
     /// <summary>When true, WM_SETCURSOR is suppressed so the OS cursor stays hidden during Pointer Lock.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool SuppressSystemCursor { get; set; }
 
     /// <summary>Fired on WM_INPUT with raw HRAWINPUT (lParam).</summary>

@@ -396,7 +396,7 @@ public sealed class MfVideoDecoder : IDisposable
 
     private static Guid TryGetGuid(IMFAttributes attrs, Guid key)
     {
-        try { return attrs.GetGuid(key); }
+        try { return attrs.GetGUID(key); }
         catch { return Guid.Empty; }
     }
 
@@ -562,7 +562,7 @@ public sealed class MfVideoDecoder : IDisposable
         if (IsGpuZeroCopy && OnGpuNv12Frame != null)
         {
             Guid iidDxgiBuf = IID_IMFDXGIBuffer;
-            int hrQi = Marshal.QueryInterface(mediaBuf.NativePointer, ref iidDxgiBuf, out nint pDxgiBuf);
+            int hrQi = Marshal.QueryInterface(mediaBuf.NativePointer, in iidDxgiBuf, out nint pDxgiBuf);
             if (hrQi >= 0 && pDxgiBuf != nint.Zero)
             {
                 try

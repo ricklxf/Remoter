@@ -108,7 +108,9 @@ public sealed class RawInputManager : IDisposable
     public event Action<string, bool, string[]>? KeyEvent;
 
     /// <summary>(committedText) for local IME characters if needed</summary>
+#pragma warning disable CS0067
     public event Action<string>? TextInput;
+#pragma warning restore CS0067
 
     /// <summary>Fired when Pointer Lock state changes.</summary>
     public event Action<bool>? PointerLockChanged;

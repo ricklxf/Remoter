@@ -20,6 +20,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
     // UI components
     private let canvasContainer = RemoteCanvasContainerView()
+    private let statsHudView = StatsHudOverlayView()
     private var toolbarPanel: FloatingToolbarPanel?
     private var fileTransferSheet: FileTransferSheetController?
 
@@ -36,14 +37,23 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private var toastTimer: Timer?
 
     // Session state
+    private static let qualityPresetDefaultsKey = "remoter_quality_preset"
     private var isTornDown = false
     private var closeErrorMessage: String?
     private var privacyEnabled = false
     private var isFullscreen = false
+    private var statsHudVisible = true
+    private var displays: [DisplayInfo] = []
+    private var activeDisplayId: UInt32 = 0
 
     public init(params: ConnectParams) {
         self.connectParams = params
-        self.settings = DeviceStore.shared.getSettings()
+        var loadedSettings = DeviceStore.shared.getSettings()
+        if let rawPreset = UserDefaults.standard.string(forKey: Self.qualityPresetDefaultsKey),
+           let savedPreset = QualityPreset(rawValue: rawPreset) {
+            loadedSettings.qualityPreset = savedPreset
+        }
+        self.settings = loadedSettings
 
         let downloadDir: URL? = settings.downloadDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
         self.connection = RemoterConnection(downloadDirectory: downloadDir)
@@ -127,11 +137,16 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         rendererView.translatesAutoresizingMaskIntoConstraints = false
         rendererView.inputManager = inputManager
         rendererView.scaleMode = settings.scaleMode
+        rendererView.sharpness = settings.sharpness
+        rendererView.toneMap = settings.toneMapEnabled
         rendererView.targetFPS = settings.fps
         rendererView.vsyncEnabled = settings.vsyncEnabled
 
         canvasContainer.addSubview(rendererView)
         contentView.addSubview(canvasContainer)
+
+        statsHudView.isHidden = !statsHudVisible
+        contentView.addSubview(statsHudView)
 
         NSLayoutConstraint.activate([
             canvasContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -143,6 +158,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             rendererView.trailingAnchor.constraint(equalTo: canvasContainer.trailingAnchor),
             rendererView.topAnchor.constraint(equalTo: canvasContainer.topAnchor),
             rendererView.bottomAnchor.constraint(equalTo: canvasContainer.bottomAnchor),
+
+            statsHudView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            statsHudView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
         ])
 
         setupOverlayBanner(in: contentView)
@@ -291,9 +309,22 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.hideOverlay()
+                self.displays = info.displays
+                self.activeDisplayId = info.activeDisplayId
                 self.toolbarPanel?.updateDisplays(info.displays, activeId: info.activeDisplayId)
                 self.toolbarPanel?.updateState(fps: info.fps, codec: info.codec)
                 self.rendererView.targetFPS = max(30, info.fps)
+
+                self.applyQualityPreset(self.settings.qualityPreset, sendToServer: true, showToastMessage: false)
+                if self.settings.chromaMode == .yuv444 {
+                    self.connection.sendChroma(.yuv444)
+                }
+                if self.settings.hdrEnabled {
+                    self.connection.sendHdr(enabled: true)
+                }
+                if self.settings.lowLatencyEnabled {
+                    self.connection.sendLowLatency(true)
+                }
 
                 if self.settings.audioEnabled {
                     self.audioPlayer.start()
@@ -318,6 +349,34 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             }
         }
 
+        connection.onChromaActiveChanged = { [weak self] mode in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.settings.chromaMode = mode
+                DeviceStore.shared.saveSettings(self.settings)
+                self.toolbarPanel?.updateState(chromaMode: mode)
+                self.showToast(mode == .yuv444 ? "真彩 4:4:4 已启用" : "已切换为 4:2:0")
+            }
+        }
+
+        connection.onHdrActiveChanged = { [weak self] enabled in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.settings.hdrEnabled = enabled
+                if !enabled {
+                    self.settings.toneMapEnabled = false
+                    self.rendererView.toneMap = false
+                }
+                DeviceStore.shared.saveSettings(self.settings)
+                self.toolbarPanel?.updateState(hdrEnabled: enabled, toneMapEnabled: self.settings.toneMapEnabled)
+                self.showToast(enabled ? "HDR 10-bit 已启用" : "HDR 10-bit 已关闭")
+            }
+        }
+
+        connection.onForceCanvasChanged = { _ in
+            // Native Metal renderer always draws via Metal; acknowledged cleanly.
+        }
+
         connection.onCursorShape = { [weak self] info in
             DispatchQueue.main.async {
                 self?.inputManager.applyRemoteCursor(info)
@@ -330,7 +389,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         connection.onStatsUpdated = { [weak self] stats in
             DispatchQueue.main.async {
-                self?.toolbarPanel?.updateHUD(stats: stats)
+                self?.statsHudView.update(stats: stats)
             }
         }
 
@@ -374,20 +433,129 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         }
     }
 
+    private func applyQualityPreset(_ preset: QualityPreset, sendToServer: Bool, showToastMessage: Bool) {
+        settings.qualityPreset = preset
+        UserDefaults.standard.set(preset.rawValue, forKey: Self.qualityPresetDefaultsKey)
+
+        switch preset {
+        case .auto:
+            settings.autoFps = true
+            settings.autoBitrate = true
+            settings.sharpness = .low
+        case .smooth:
+            settings.fps = 30
+            settings.autoFps = false
+            settings.bitrateBps = 4_000_000
+            settings.autoBitrate = false
+            settings.sharpness = .off
+        case .hd:
+            settings.fps = 60
+            settings.autoFps = false
+            settings.bitrateBps = 8_000_000
+            settings.autoBitrate = false
+            settings.sharpness = .low
+        case .original:
+            settings.fps = 120
+            settings.autoFps = false
+            settings.bitrateBps = 25_000_000
+            settings.autoBitrate = false
+            settings.sharpness = .medium
+        }
+
+        DeviceStore.shared.saveSettings(settings)
+        rendererView.sharpness = settings.sharpness
+        rendererView.targetFPS = settings.fps
+        if sendToServer {
+            connection.sendFps(settings.fps, auto: settings.autoFps)
+            connection.sendBitrate(settings.bitrateBps, auto: settings.autoBitrate)
+        }
+        toolbarPanel?.updateState(
+            qualityPreset: preset,
+            sharpness: settings.sharpness,
+            fps: settings.fps,
+            fpsAuto: settings.autoFps,
+            bitrateBps: settings.bitrateBps,
+            bitrateAuto: settings.autoBitrate
+        )
+        if showToastMessage {
+            showToast("画质预设: \(preset.displayName)")
+        }
+    }
+
     private func wireToolbar(_ toolbar: FloatingToolbarPanel) {
+        toolbar.onQualityPresetChanged = { [weak self] preset in
+            self?.applyQualityPreset(preset, sendToServer: true, showToastMessage: true)
+        }
+
+        toolbar.onSharpnessChanged = { [weak self] level in
+            guard let self else { return }
+            self.settings.sharpness = level
+            DeviceStore.shared.saveSettings(self.settings)
+            self.rendererView.sharpness = level
+            self.toolbarPanel?.updateState(sharpness: level)
+            self.showToast("锐化强度: \(level.displayName)")
+        }
+
+        toolbar.onChromaToggled = { [weak self] mode in
+            guard let self else { return }
+            self.settings.chromaMode = mode
+            DeviceStore.shared.saveSettings(self.settings)
+            self.connection.sendChroma(mode)
+            self.toolbarPanel?.updateState(chromaMode: mode)
+        }
+
+        toolbar.onHdrToggled = { [weak self] enabled in
+            guard let self else { return }
+            self.settings.hdrEnabled = enabled
+            if !enabled {
+                self.settings.toneMapEnabled = false
+                self.rendererView.toneMap = false
+            }
+            DeviceStore.shared.saveSettings(self.settings)
+            self.connection.sendHdr(enabled: enabled)
+            self.toolbarPanel?.updateState(hdrEnabled: enabled, toneMapEnabled: self.settings.toneMapEnabled)
+        }
+
+        toolbar.onToneMapToggled = { [weak self] enabled in
+            guard let self else { return }
+            self.settings.toneMapEnabled = enabled
+            DeviceStore.shared.saveSettings(self.settings)
+            self.rendererView.toneMap = enabled
+            self.toolbarPanel?.updateState(toneMapEnabled: enabled)
+            self.showToast(enabled ? "已开启 SDR 色调映射" : "已关闭 SDR 色调映射")
+        }
+
+        toolbar.onLowLatencyToggled = { [weak self] enabled in
+            guard let self else { return }
+            self.settings.lowLatencyEnabled = enabled
+            DeviceStore.shared.saveSettings(self.settings)
+            self.connection.sendLowLatency(enabled)
+            self.toolbarPanel?.updateState(lowLatencyEnabled: enabled)
+            self.showToast(enabled ? "已开启零缓冲极速模式" : "已关闭零缓冲极速模式")
+        }
+
+        toolbar.onToggleStatsHud = { [weak self] visible in
+            guard let self else { return }
+            self.statsHudVisible = visible
+            self.statsHudView.isHidden = !visible
+            self.toolbarPanel?.updateState(statsHudVisible: visible)
+            self.showToast(visible ? "已显示性能浮窗" : "已隐藏性能浮窗")
+        }
+
         toolbar.onResolutionChanged = { [weak self] tier in
             guard let self else { return }
             self.settings.resolutionTier = tier
             DeviceStore.shared.saveSettings(self.settings)
             self.toolbarPanel?.updateState(resolution: tier)
-            if tier == .match, let win = self.window {
-                let scale = win.backingScaleFactor
-                let size = self.rendererView.bounds.size
+            if tier == .match {
+                let screen = self.window?.screen ?? NSScreen.main
+                let logicalSize = screen?.frame.size ?? self.window?.frame.size ?? self.rendererView.bounds.size
+                let scale = Double(screen?.backingScaleFactor ?? self.window?.backingScaleFactor ?? 1.0)
                 self.connection.sendResolution(
                     tier: .match,
-                    width: Int(size.width * scale),
-                    height: Int(size.height * scale),
-                    scale: Double(scale)
+                    width: Int(logicalSize.width.rounded()),
+                    height: Int(logicalSize.height.rounded()),
+                    scale: scale
                 )
             } else {
                 self.connection.sendResolution(tier: tier)
@@ -446,8 +614,22 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         }
 
         toolbar.onDisplaySelected = { [weak self] displayId in
-            self?.connection.sendSetDisplay(displayId)
-            self?.showToast("切换显示器 #\(displayId)")
+            guard let self else { return }
+            self.activeDisplayId = displayId
+            self.toolbarPanel?.updateDisplays(self.displays, activeId: displayId)
+            self.connection.sendSetDisplay(displayId)
+            let name = self.displays.first(where: { $0.id == displayId })?.name ?? "#\(displayId)"
+            self.showToast("切换显示器: \(name)")
+        }
+
+        toolbar.onCycleDisplay = { [weak self] in
+            guard let self, self.displays.count > 1 else { return }
+            let idx = self.displays.firstIndex(where: { $0.id == self.activeDisplayId }) ?? 0
+            let next = self.displays[(idx + 1) % self.displays.count]
+            self.activeDisplayId = next.id
+            self.toolbarPanel?.updateDisplays(self.displays, activeId: next.id)
+            self.connection.sendSetDisplay(next.id)
+            self.showToast("切换显示器: \(next.name)")
         }
 
         toolbar.onAudioToggled = { [weak self] enabled in
@@ -520,7 +702,15 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         audioPlayer.isEnabled = settings.audioEnabled
         audioPlayer.volume = settings.audioVolume
         clipboardSync.isEnabled = settings.clipboardSyncEnabled
+        rendererView.sharpness = settings.sharpness
+        rendererView.toneMap = settings.toneMapEnabled
         toolbarPanel?.updateState(
+            qualityPreset: settings.qualityPreset,
+            sharpness: settings.sharpness,
+            chromaMode: settings.chromaMode,
+            hdrEnabled: settings.hdrEnabled,
+            toneMapEnabled: settings.toneMapEnabled,
+            lowLatencyEnabled: settings.lowLatencyEnabled,
             resolution: settings.resolutionTier,
             scaleMode: settings.scaleMode,
             fps: settings.fps,
@@ -534,7 +724,8 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             pointerLocked: false,
             macWinSwapOn: settings.macWinKeySwap,
             clipboardSyncOn: settings.clipboardSyncEnabled,
-            isFullscreen: false
+            isFullscreen: false,
+            statsHudVisible: statsHudVisible
         )
     }
 

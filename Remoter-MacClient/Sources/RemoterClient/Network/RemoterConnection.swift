@@ -516,6 +516,7 @@ public final class RemoterConnection: @unchecked Sendable {
     public var onQualityActiveChanged: ((_ fps: Int, _ bitrate: Int) -> Void)?
     public var onChromaActiveChanged: ((ChromaMode) -> Void)?
     public var onHdrActiveChanged: ((Bool) -> Void)?
+    public var onForceCanvasChanged: ((Bool) -> Void)?
     public var onCursorShape: ((CursorShapeInfo) -> Void)?
     public var onClipboardReceived: ((ClipboardData) -> Void)?
     public var onInputLockChanged: ((Bool) -> Void)?
@@ -1120,7 +1121,10 @@ public final class RemoterConnection: @unchecked Sendable {
                 setState(.error)
             }
 
-        case .keepalive, .forceCanvas, .unknown:
+        case .forceCanvas(let enabled):
+            onForceCanvasChanged?(enabled)
+
+        case .keepalive, .unknown:
             break
         }
     }
@@ -1332,8 +1336,20 @@ public final class RemoterConnection: @unchecked Sendable {
         enqueueControlJson(ClientMessages.chroma(mode))
     }
 
+    public func sendChroma(_ mode: String) {
+        enqueueControlJson(ClientMessages.chroma(ChromaMode(wireString: mode)))
+    }
+
     public func sendHdr(enabled: Bool) {
         enqueueControlJson(ClientMessages.hdr(enabled: enabled))
+    }
+
+    public func sendHdr(_ enabled: Bool) {
+        enqueueControlJson(ClientMessages.hdr(enabled: enabled))
+    }
+
+    public func sendLowLatency(_ enabled: Bool) {
+        enqueueControlJson(ClientMessages.lowLatency(enabled: enabled))
     }
 
     public func sendSetCodec(_ codec: VideoCodec) {

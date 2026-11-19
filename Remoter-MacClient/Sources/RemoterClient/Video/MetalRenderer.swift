@@ -19,6 +19,22 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
         }
     }
 
+    public var sharpness: SharpnessLevel = .low {
+        didSet {
+            if sharpness != oldValue {
+                needsDisplay = true
+            }
+        }
+    }
+
+    public var toneMap: Bool = false {
+        didSet {
+            if toneMap != oldValue {
+                needsDisplay = true
+            }
+        }
+    }
+
     public var videoSize: CGSize {
         bufferLock.lock()
         defer { bufferLock.unlock() }
@@ -59,8 +75,17 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
 
     private struct YUVFragmentUniforms {
         var colorMatrix: simd_float3x3
+        var texelSize: SIMD2<Float>
         var yOffset: Float
+        var sharpness: Float
         var isFullRange: UInt32
+        var toneMap: UInt32
+    }
+
+    private struct BGRAFragmentUniforms {
+        var texelSize: SIMD2<Float>
+        var sharpness: Float
+        var toneMap: UInt32
     }
 
     private var commandQueue: MTLCommandQueue?
@@ -82,14 +107,62 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
 
     struct YUVUniforms {
         float3x3 colorMatrix;
+        float2 texelSize;
         float yOffset;
+        float sharpness;
         uint isFullRange;
+        uint toneMap;
+    };
+
+    struct BGRAUniforms {
+        float2 texelSize;
+        float sharpness;
+        uint toneMap;
     };
 
     struct VertexOut {
         float4 position [[position]];
         float2 texCoords;
     };
+
+    inline float3 acesFilmic(float3 x) {
+        const float a = 2.51;
+        const float b = 0.03;
+        const float c = 2.43;
+        const float d = 0.59;
+        const float e = 0.14;
+        return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+    }
+
+    inline float3 applyCAS(float3 e, float3 b, float3 d, float3 f, float3 h, float sharpness) {
+        float3 mnRGB = min(min(min(d, e), min(f, b)), h);
+        float3 mxRGB = max(max(max(d, e), max(f, b)), h);
+        float3 rcpMxRGB = 1.0 / max(mxRGB, float3(1e-5));
+        float3 ampRGB = clamp(min(mnRGB, 1.0 - mxRGB) * rcpMxRGB, 0.0, 1.0);
+        ampRGB = sqrt(ampRGB);
+        float peak = -1.0 / mix(8.0, 5.0, clamp(sharpness, 0.0, 1.0));
+        float3 wRGB = ampRGB * peak;
+        float3 rcpWeightRGB = 1.0 / (1.0 + 4.0 * wRGB);
+        return clamp(((b + d + f + h) * wRGB + e) * rcpWeightRGB, 0.0, 1.0);
+    }
+
+    inline float3 applyToneMap(float3 color) {
+        float3 linear = pow(max(color, float3(0.0)), float3(2.2));
+        float3 mapped = acesFilmic(linear * 1.15);
+        return pow(mapped, float3(1.0 / 2.2));
+    }
+
+    inline float3 sampleNV12RGB(
+        texture2d<float, access::sample> yTex,
+        texture2d<float, access::sample> uvTex,
+        sampler s,
+        float2 uvCoord,
+        constant YUVUniforms &uniforms
+    ) {
+        float y = yTex.sample(s, uvCoord).r - uniforms.yOffset;
+        float2 uv = uvTex.sample(s, uvCoord).rg - float2(0.5, 0.5);
+        return clamp(uniforms.colorMatrix * float3(y, uv.x, uv.y), 0.0, 1.0);
+    }
 
     vertex VertexOut remoterVertexShader(
         uint vertexID [[vertex_id]],
@@ -120,19 +193,48 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
         constant YUVUniforms &uniforms [[buffer(0)]]
     ) {
         constexpr sampler s(address::clamp_to_edge, filter::linear);
-        float y = yTex.sample(s, in.texCoords).r - uniforms.yOffset;
-        float2 uv = uvTex.sample(s, in.texCoords).rg - float2(0.5, 0.5);
-        float3 rgb = uniforms.colorMatrix * float3(y, uv.x, uv.y);
-        return float4(clamp(rgb, 0.0, 1.0), 1.0);
+        float3 e = sampleNV12RGB(yTex, uvTex, s, in.texCoords, uniforms);
+        float3 color = e;
+
+        if (uniforms.sharpness > 0.001) {
+            float2 ts = uniforms.texelSize;
+            float3 b = sampleNV12RGB(yTex, uvTex, s, in.texCoords + float2(0.0, -ts.y), uniforms);
+            float3 d = sampleNV12RGB(yTex, uvTex, s, in.texCoords + float2(-ts.x, 0.0), uniforms);
+            float3 f = sampleNV12RGB(yTex, uvTex, s, in.texCoords + float2(ts.x, 0.0), uniforms);
+            float3 h = sampleNV12RGB(yTex, uvTex, s, in.texCoords + float2(0.0, ts.y), uniforms);
+            color = applyCAS(e, b, d, f, h, uniforms.sharpness);
+        }
+
+        if (uniforms.toneMap != 0) {
+            color = applyToneMap(color);
+        }
+
+        return float4(color, 1.0);
     }
 
     fragment float4 remoterBGRAFragmentShader(
         VertexOut in [[stage_in]],
-        texture2d<float, access::sample> bgraTex [[texture(0)]]
+        texture2d<float, access::sample> bgraTex [[texture(0)]],
+        constant BGRAUniforms &uniforms [[buffer(0)]]
     ) {
         constexpr sampler s(address::clamp_to_edge, filter::linear);
-        float4 color = bgraTex.sample(s, in.texCoords);
-        return float4(color.rgb, 1.0);
+        float3 e = bgraTex.sample(s, in.texCoords).rgb;
+        float3 color = e;
+
+        if (uniforms.sharpness > 0.001) {
+            float2 ts = uniforms.texelSize;
+            float3 b = bgraTex.sample(s, in.texCoords + float2(0.0, -ts.y)).rgb;
+            float3 d = bgraTex.sample(s, in.texCoords + float2(-ts.x, 0.0)).rgb;
+            float3 f = bgraTex.sample(s, in.texCoords + float2(ts.x, 0.0)).rgb;
+            float3 h = bgraTex.sample(s, in.texCoords + float2(0.0, ts.y)).rgb;
+            color = applyCAS(e, b, d, f, h, uniforms.sharpness);
+        }
+
+        if (uniforms.toneMap != 0) {
+            color = applyToneMap(color);
+        }
+
+        return float4(color, 1.0);
     }
     """
 
@@ -186,6 +288,9 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
     private func configureMetal(device: MTLDevice) {
         self.delegate = self
         self.colorPixelFormat = .bgra8Unorm
+        if let metalLayer = self.layer as? CAMetalLayer {
+            metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
+        }
         self.clearColor = MTLClearColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1.0)
         self.isPaused = false
         self.enableSetNeedsDisplay = false
@@ -377,32 +482,46 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
         let uvH = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
         guard yW > 0, yH > 0, uvW > 0, uvH > 0 else { return }
 
+        let is10Bit = (
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+            pixelFormat == kCVPixelFormatType_444YpCbCr10BiPlanarFullRange ||
+            pixelFormat == kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange
+        )
+        let yPixelFormat: MTLPixelFormat = is10Bit ? .r16Unorm : .r8Unorm
+        let uvPixelFormat: MTLPixelFormat = is10Bit ? .rg16Unorm : .rg8Unorm
+
         if let surfaceRef = CVPixelBufferGetIOSurface(pixelBuffer) {
             let surface = surfaceRef.takeUnretainedValue()
-            let yDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: yW, height: yH, mipmapped: false)
+            let yDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: yPixelFormat, width: yW, height: yH, mipmapped: false)
             yDesc.usage = [.shaderRead]
             yTexture = device.makeTexture(descriptor: yDesc, iosurface: surface, plane: 0)
 
-            let uvDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: uvW, height: uvH, mipmapped: false)
+            let uvDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: uvPixelFormat, width: uvW, height: uvH, mipmapped: false)
             uvDesc.usage = [.shaderRead]
             uvTexture = device.makeTexture(descriptor: uvDesc, iosurface: surface, plane: 1)
         }
 
         if (yTexture == nil || uvTexture == nil), let cache = textureCache {
             CVMetalTextureCacheCreateTextureFromImage(
-                kCFAllocatorDefault, cache, pixelBuffer, nil, .r8Unorm, yW, yH, 0, &cvYRef
+                kCFAllocatorDefault, cache, pixelBuffer, nil, yPixelFormat, yW, yH, 0, &cvYRef
             )
             if let cvYRef { yTexture = CVMetalTextureGetTexture(cvYRef) }
 
             CVMetalTextureCacheCreateTextureFromImage(
-                kCFAllocatorDefault, cache, pixelBuffer, nil, .rg8Unorm, uvW, uvH, 1, &cvUVRef
+                kCFAllocatorDefault, cache, pixelBuffer, nil, uvPixelFormat, uvW, uvH, 1, &cvUVRef
             )
             if let cvUVRef { uvTexture = CVMetalTextureGetTexture(cvUVRef) }
         }
 
         guard let yTex = yTexture, let uvTex = uvTexture else { return }
 
-        let isFullRange = (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+        let isFullRange = (
+            pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
+            pixelFormat == kCVPixelFormatType_444YpCbCr8BiPlanarFullRange ||
+            pixelFormat == kCVPixelFormatType_444YpCbCr10BiPlanarFullRange
+        )
         let isBT601 = isBT601ColorMatrix(pixelBuffer)
         let matrix: simd_float3x3
         if isBT601 {
@@ -413,15 +532,18 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
 
         var yuvUniforms = YUVFragmentUniforms(
             colorMatrix: matrix,
+            texelSize: SIMD2<Float>(1.0 / Float(yW), 1.0 / Float(yH)),
             yOffset: isFullRange ? 0.0 : (16.0 / 255.0),
-            isFullRange: isFullRange ? 1 : 0
+            sharpness: sharpness.strength,
+            isFullRange: isFullRange ? 1 : 0,
+            toneMap: toneMap ? 1 : 0
         )
 
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&vertexUniforms, length: MemoryLayout<VertexUniforms>.size, index: 0)
         encoder.setFragmentTexture(yTex, index: 0)
         encoder.setFragmentTexture(uvTex, index: 1)
-        encoder.setFragmentBytes(&yuvUniforms, length: MemoryLayout<YUVFragmentUniforms>.size, index: 0)
+        encoder.setFragmentBytes(&yuvUniforms, length: MemoryLayout<YUVFragmentUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 
@@ -456,9 +578,16 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
 
         guard let tex = bgraTexture else { return }
 
+        var bgraUniforms = BGRAFragmentUniforms(
+            texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
+            sharpness: sharpness.strength,
+            toneMap: toneMap ? 1 : 0
+        )
+
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&vertexUniforms, length: MemoryLayout<VertexUniforms>.size, index: 0)
         encoder.setFragmentTexture(tex, index: 0)
+        encoder.setFragmentBytes(&bgraUniforms, length: MemoryLayout<BGRAFragmentUniforms>.size, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 

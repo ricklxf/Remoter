@@ -27,11 +27,60 @@ public enum ScaleMode: String, Codable, CaseIterable, Sendable {
     case fit
     case stretch
     case original
+
+    public var displayName: String {
+        switch self {
+        case .fit:      return "等比缩放"
+        case .stretch:  return "拉伸全屏"
+        case .original: return "原始1:1"
+        }
+    }
+}
+
+public enum QualityPreset: String, Codable, CaseIterable, Sendable {
+    case auto
+    case smooth
+    case hd
+    case original
+
+    public var displayName: String {
+        switch self {
+        case .auto:     return "自动"
+        case .smooth:   return "流畅"
+        case .hd:       return "高清"
+        case .original: return "原画"
+        }
+    }
+}
+
+public enum SharpnessLevel: String, Codable, CaseIterable, Sendable {
+    case off
+    case low
+    case medium
+    case high
+
+    public var strength: Float {
+        switch self {
+        case .off:    return 0.0
+        case .low:    return 0.35
+        case .medium: return 0.65
+        case .high:   return 1.0
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .off:    return "关"
+        case .low:    return "柔和"
+        case .medium: return "清晰"
+        case .high:   return "极致"
+        }
+    }
 }
 
 public enum ResolutionTier: String, Codable, CaseIterable, Sendable {
-    case match
     case native
+    case match
     case res1080
     case res2k
 
@@ -46,8 +95,8 @@ public enum ResolutionTier: String, Codable, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .match:   return "Match Window"
-        case .native:  return "Native"
+        case .match:   return "自适应屏幕"
+        case .native:  return "原生"
         case .res1080: return "1080p"
         case .res2k:   return "2K"
         }
@@ -357,6 +406,12 @@ public struct SavedDevice: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct ClientSettings: Codable, Equatable, Sendable {
+    public var qualityPreset: QualityPreset
+    public var sharpness: SharpnessLevel
+    public var chromaMode: ChromaMode
+    public var hdrEnabled: Bool
+    public var toneMapEnabled: Bool
+    public var lowLatencyEnabled: Bool
     public var scaleMode: ScaleMode
     public var resolutionTier: ResolutionTier
     public var preferredCodec: VideoCodec
@@ -372,6 +427,12 @@ public struct ClientSettings: Codable, Equatable, Sendable {
     public var downloadDirectory: String?
 
     public init(
+        qualityPreset: QualityPreset = .auto,
+        sharpness: SharpnessLevel = .low,
+        chromaMode: ChromaMode = .yuv420,
+        hdrEnabled: Bool = false,
+        toneMapEnabled: Bool = false,
+        lowLatencyEnabled: Bool = false,
         scaleMode: ScaleMode = .fit,
         resolutionTier: ResolutionTier = .native,
         preferredCodec: VideoCodec = .h264,
@@ -386,6 +447,12 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         vsyncEnabled: Bool = false,
         downloadDirectory: String? = nil
     ) {
+        self.qualityPreset = qualityPreset
+        self.sharpness = sharpness
+        self.chromaMode = chromaMode
+        self.hdrEnabled = hdrEnabled
+        self.toneMapEnabled = toneMapEnabled
+        self.lowLatencyEnabled = lowLatencyEnabled
         self.scaleMode = scaleMode
         self.resolutionTier = resolutionTier
         self.preferredCodec = preferredCodec
@@ -399,6 +466,29 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         self.macWinKeySwap = macWinKeySwap
         self.vsyncEnabled = vsyncEnabled
         self.downloadDirectory = downloadDirectory
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.qualityPreset = try c.decodeIfPresent(QualityPreset.self, forKey: .qualityPreset) ?? .auto
+        self.sharpness = try c.decodeIfPresent(SharpnessLevel.self, forKey: .sharpness) ?? .low
+        self.chromaMode = try c.decodeIfPresent(ChromaMode.self, forKey: .chromaMode) ?? .yuv420
+        self.hdrEnabled = try c.decodeIfPresent(Bool.self, forKey: .hdrEnabled) ?? false
+        self.toneMapEnabled = try c.decodeIfPresent(Bool.self, forKey: .toneMapEnabled) ?? false
+        self.lowLatencyEnabled = try c.decodeIfPresent(Bool.self, forKey: .lowLatencyEnabled) ?? false
+        self.scaleMode = try c.decodeIfPresent(ScaleMode.self, forKey: .scaleMode) ?? .fit
+        self.resolutionTier = try c.decodeIfPresent(ResolutionTier.self, forKey: .resolutionTier) ?? .native
+        self.preferredCodec = try c.decodeIfPresent(VideoCodec.self, forKey: .preferredCodec) ?? .h264
+        self.fps = try c.decodeIfPresent(Int.self, forKey: .fps) ?? 60
+        self.autoFps = try c.decodeIfPresent(Bool.self, forKey: .autoFps) ?? true
+        self.bitrateBps = try c.decodeIfPresent(Int.self, forKey: .bitrateBps) ?? 8_000_000
+        self.autoBitrate = try c.decodeIfPresent(Bool.self, forKey: .autoBitrate) ?? true
+        self.audioEnabled = try c.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? true
+        self.audioVolume = try c.decodeIfPresent(Float.self, forKey: .audioVolume) ?? 1.0
+        self.clipboardSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .clipboardSyncEnabled) ?? true
+        self.macWinKeySwap = try c.decodeIfPresent(Bool.self, forKey: .macWinKeySwap) ?? true
+        self.vsyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .vsyncEnabled) ?? false
+        self.downloadDirectory = try c.decodeIfPresent(String.self, forKey: .downloadDirectory)
     }
 }
 

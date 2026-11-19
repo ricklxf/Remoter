@@ -1,7 +1,7 @@
 import AppKit
 
 /// Borderless child `NSPanel` pinned to the top-center of `DesktopWindowController`.
-/// Collapses to a compact translucent pill (`▼  FPS · Mbps · RTT ms`), expands on click/hover,
+/// Collapses to a compact translucent dark handle (`▼  控制栏`), expands on click/hover,
 /// and auto-collapses after 3 seconds of mouse-exit inactivity.
 public final class FloatingToolbarPanel: NSPanel {
     private static let pillHeight: CGFloat = 24
@@ -9,6 +9,13 @@ public final class FloatingToolbarPanel: NSPanel {
     private static let autoCollapseDelay: TimeInterval = 3.0
 
     // MARK: - Callbacks
+    public var onQualityPresetChanged: ((QualityPreset) -> Void)?
+    public var onSharpnessChanged: ((SharpnessLevel) -> Void)?
+    public var onChromaToggled: ((ChromaMode) -> Void)?
+    public var onHdrToggled: ((Bool) -> Void)?
+    public var onToneMapToggled: ((Bool) -> Void)?
+    public var onLowLatencyToggled: ((Bool) -> Void)?
+    public var onToggleStatsHud: ((Bool) -> Void)?
     public var onResolutionChanged: ((ResolutionTier) -> Void)?
     public var onScaleModeChanged: ((ScaleMode) -> Void)?
     public var onFpsChanged: ((Int, Bool) -> Void)?
@@ -18,6 +25,7 @@ public final class FloatingToolbarPanel: NSPanel {
     public var onCtrlAltDel: (() -> Void)?
     public var onLockScreen: (() -> Void)?
     public var onDisplaySelected: ((UInt32) -> Void)?
+    public var onCycleDisplay: (() -> Void)?
     public var onAudioToggled: ((Bool) -> Void)?
     public var onVolumeChanged: ((Float) -> Void)?
     public var onPrivacyToggled: ((Bool) -> Void)?
@@ -34,6 +42,12 @@ public final class FloatingToolbarPanel: NSPanel {
     private var isMenuOpen = false
     private var autoHideTimer: Timer?
 
+    private var qualityPreset: QualityPreset = .auto
+    private var sharpness: SharpnessLevel = .low
+    private var chromaMode: ChromaMode = .yuv420
+    private var hdrEnabled: Bool = false
+    private var toneMapEnabled: Bool = false
+    private var lowLatencyEnabled: Bool = false
     private var resolution: ResolutionTier = .native
     private var scaleMode: ScaleMode = .fit
     private var fps: Int = 60
@@ -48,24 +62,22 @@ public final class FloatingToolbarPanel: NSPanel {
     private var macWinSwapOn: Bool = true
     private var clipboardSyncOn: Bool = true
     private var isFullscreen: Bool = false
+    private var statsHudVisible: Bool = true
     private var isWindowsHost: Bool = false
     private var displays: [DisplayInfo] = []
     private var activeDisplayId: UInt32 = 0
 
     // MARK: - Views
     private let rootContainer = HoverTrackingView()
-    private let visualEffect = NSVisualEffectView()
 
     // Collapsed pill
-    private let pillButton = Theme.makeButton(title: "▼  0 fps · 0.0 Mbps · -- ms", style: .toolbar, fontSize: 11, weight: .medium)
+    private let pillButton = Theme.makeButton(title: "▼  控制栏", style: .ghost, fontSize: 11, weight: .medium)
 
     // Expanded bar
     private let barStack = NSStackView()
-    private let hudLabel = Theme.makeLabel("0 fps · 0.0 Mbps · -- ms", size: 11.5, weight: .medium, color: Theme.textPrimary, monospaced: true)
-    private let codecBadge = Theme.makeBadge(text: "H.264", background: Theme.infoDim, foreground: Theme.info)
-    private let hwBadge = Theme.makeBadge(text: "HW", background: Theme.accentDim, foreground: Theme.accent)
 
     private let displayButton = Theme.makeButton(title: "显示器 ▾", style: .toolbar, fontSize: 11.5)
+    private let cycleDisplayButton = Theme.makeButton(title: "一键切屏", style: .toolbar, fontSize: 11.5)
     private let qualityButton = Theme.makeButton(title: "画质 ▾", style: .toolbar, fontSize: 11.5)
     private let audioButton = Theme.makeButton(title: "声音: 开", style: .toolbarActive, fontSize: 11.5)
     private let volumeSlider = NSSlider(value: 1.0, minValue: 0.0, maxValue: 1.0, target: nil, action: nil)
@@ -109,11 +121,6 @@ public final class FloatingToolbarPanel: NSPanel {
     // MARK: - UI Setup
 
     private func buildUI() {
-        rootContainer.wantsLayer = true
-        rootContainer.layer?.cornerRadius = 10
-        rootContainer.layer?.borderColor = Theme.border.cgColor
-        rootContainer.layer?.borderWidth = 1
-        rootContainer.layer?.masksToBounds = true
         rootContainer.onMouseEntered = { [weak self] in
             guard let self else { return }
             self.cancelAutoHide()
@@ -128,20 +135,6 @@ public final class FloatingToolbarPanel: NSPanel {
             }
         }
         contentView = rootContainer
-
-        visualEffect.material = .hudWindow
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.appearance = Theme.darkAppearance
-        visualEffect.translatesAutoresizingMaskIntoConstraints = false
-
-        let tintOverlay = NSView()
-        tintOverlay.wantsLayer = true
-        tintOverlay.layer?.backgroundColor = Theme.hudBackground.cgColor
-        tintOverlay.translatesAutoresizingMaskIntoConstraints = false
-
-        rootContainer.addSubview(visualEffect)
-        rootContainer.addSubview(tintOverlay)
 
         // Pill button
         pillButton.target = self
@@ -159,6 +152,11 @@ public final class FloatingToolbarPanel: NSPanel {
         displayButton.target = self
         displayButton.action = #selector(showDisplayMenu)
         displayButton.isHidden = true
+
+        cycleDisplayButton.target = self
+        cycleDisplayButton.action = #selector(cycleDisplayTapped)
+        cycleDisplayButton.toolTip = "一键切换至下一显示器"
+        cycleDisplayButton.isHidden = true
 
         qualityButton.target = self
         qualityButton.action = #selector(showQualityMenu)
@@ -194,14 +192,11 @@ public final class FloatingToolbarPanel: NSPanel {
         collapseButton.action = #selector(collapseTapped)
 
         // Bar stack
-        let sep1 = Theme.makeSeparator(vertical: true)
         let sep2 = Theme.makeSeparator(vertical: true)
-        sep1.heightAnchor.constraint(equalToConstant: 18).isActive = true
         sep2.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let controls: [NSView] = [
-            hudLabel, codecBadge, hwBadge, sep1,
-            displayButton, qualityButton,
+            displayButton, cycleDisplayButton, qualityButton,
             audioButton, volumeSlider,
             privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton,
             sep2, fullscreenButton, disconnectButton, collapseButton
@@ -216,10 +211,11 @@ public final class FloatingToolbarPanel: NSPanel {
         barStack.translatesAutoresizingMaskIntoConstraints = false
         rootContainer.addSubview(barStack)
 
-        for btn in [displayButton, qualityButton, audioButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, fullscreenButton, disconnectButton, collapseButton] {
+        for btn in [displayButton, cycleDisplayButton, qualityButton, audioButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, fullscreenButton, disconnectButton, collapseButton] {
             btn.heightAnchor.constraint(equalToConstant: 26).isActive = true
         }
         displayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
+        cycleDisplayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
         qualityButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
         audioButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
         privacyButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
@@ -232,16 +228,6 @@ public final class FloatingToolbarPanel: NSPanel {
         collapseButton.widthAnchor.constraint(equalToConstant: 26).isActive = true
 
         NSLayoutConstraint.activate([
-            visualEffect.leadingAnchor.constraint(equalTo: rootContainer.leadingAnchor),
-            visualEffect.trailingAnchor.constraint(equalTo: rootContainer.trailingAnchor),
-            visualEffect.topAnchor.constraint(equalTo: rootContainer.topAnchor),
-            visualEffect.bottomAnchor.constraint(equalTo: rootContainer.bottomAnchor),
-
-            tintOverlay.leadingAnchor.constraint(equalTo: rootContainer.leadingAnchor),
-            tintOverlay.trailingAnchor.constraint(equalTo: rootContainer.trailingAnchor),
-            tintOverlay.topAnchor.constraint(equalTo: rootContainer.topAnchor),
-            tintOverlay.bottomAnchor.constraint(equalTo: rootContainer.bottomAnchor),
-
             pillButton.leadingAnchor.constraint(equalTo: rootContainer.leadingAnchor),
             pillButton.trailingAnchor.constraint(equalTo: rootContainer.trailingAnchor),
             pillButton.topAnchor.constraint(equalTo: rootContainer.topAnchor),
@@ -272,11 +258,11 @@ public final class FloatingToolbarPanel: NSPanel {
         let targetSize: NSSize
         if isExpanded {
             barStack.layoutSubtreeIfNeeded()
-            let fittingW = max(680, barStack.fittingSize.width + 6)
+            let fittingW = max(540, barStack.fittingSize.width + 6)
             let clampedW = min(contentScreenRect.width - 24, fittingW)
             targetSize = NSSize(width: clampedW, height: Self.barHeight)
         } else {
-            let pillW = max(195, min(260, pillButton.attributedTitle.size().width + 24))
+            let pillW = max(92, min(140, pillButton.attributedTitle.size().width + 26))
             targetSize = NSSize(width: pillW, height: Self.pillHeight)
         }
 
@@ -289,7 +275,7 @@ public final class FloatingToolbarPanel: NSPanel {
         isExpanded = expanded
         pillButton.isHidden = expanded
         barStack.isHidden = !expanded
-        rootContainer.layer?.cornerRadius = expanded ? 10 : 12
+        rootContainer.cornerRadius = expanded ? 10 : 12
         updatePosition()
 
         if expanded {
@@ -314,29 +300,16 @@ public final class FloatingToolbarPanel: NSPanel {
         autoHideTimer = nil
     }
 
-    // MARK: - Telemetry & State Updates
-
-    public func updateHUD(stats: ClientStats) {
-        let mbps = Double(stats.bitrateKbps) / 1000.0
-        let rttText = stats.rttMs >= 0 ? "\(stats.rttMs) ms" : "-- ms"
-        let summary = String(format: "%.0f fps · %.1f Mbps · %@", stats.fps, mbps, rttText)
-        hudLabel.stringValue = summary
-        pillButton.title = "▼  \(summary)"
-
-        codecBadge.text = stats.codec.badgeText
-        hwBadge.text = stats.isHardwareDecoded ? "HW" : "SW"
-        hwBadge.updateColors(
-            background: stats.isHardwareDecoded ? Theme.accentDim : Theme.warningDim,
-            foreground: stats.isHardwareDecoded ? Theme.accent : Theme.warning
-        )
-        updatePosition()
-    }
+    // MARK: - State Updates
 
     public func updateDisplays(_ displays: [DisplayInfo], activeId: UInt32) {
         self.displays = displays
         self.activeDisplayId = activeId
-        displayButton.isHidden = displays.count <= 1
+        let hasMultiple = displays.count > 1
+        displayButton.isHidden = !hasMultiple
+        cycleDisplayButton.isHidden = !hasMultiple
         rebuildDisplayMenu()
+        rebuildQualityMenu()
         if isExpanded { updatePosition() }
     }
 
@@ -347,6 +320,12 @@ public final class FloatingToolbarPanel: NSPanel {
     }
 
     public func updateState(
+        qualityPreset: QualityPreset? = nil,
+        sharpness: SharpnessLevel? = nil,
+        chromaMode: ChromaMode? = nil,
+        hdrEnabled: Bool? = nil,
+        toneMapEnabled: Bool? = nil,
+        lowLatencyEnabled: Bool? = nil,
         resolution: ResolutionTier? = nil,
         scaleMode: ScaleMode? = nil,
         fps: Int? = nil,
@@ -360,16 +339,24 @@ public final class FloatingToolbarPanel: NSPanel {
         pointerLocked: Bool? = nil,
         macWinSwapOn: Bool? = nil,
         clipboardSyncOn: Bool? = nil,
-        isFullscreen: Bool? = nil
+        isFullscreen: Bool? = nil,
+        statsHudVisible: Bool? = nil
     ) {
         var needsMenuRebuild = false
+        if let qualityPreset { self.qualityPreset = qualityPreset; needsMenuRebuild = true }
+        if let sharpness { self.sharpness = sharpness; needsMenuRebuild = true }
+        if let chromaMode { self.chromaMode = chromaMode; needsMenuRebuild = true }
+        if let hdrEnabled { self.hdrEnabled = hdrEnabled; needsMenuRebuild = true }
+        if let toneMapEnabled { self.toneMapEnabled = toneMapEnabled; needsMenuRebuild = true }
+        if let lowLatencyEnabled { self.lowLatencyEnabled = lowLatencyEnabled; needsMenuRebuild = true }
         if let resolution { self.resolution = resolution; needsMenuRebuild = true }
         if let scaleMode { self.scaleMode = scaleMode; needsMenuRebuild = true }
         if let fps { self.fps = fps; needsMenuRebuild = true }
         if let fpsAuto { self.fpsAuto = fpsAuto; needsMenuRebuild = true }
         if let bitrateBps { self.bitrateBps = bitrateBps; needsMenuRebuild = true }
         if let bitrateAuto { self.bitrateAuto = bitrateAuto; needsMenuRebuild = true }
-        if let codec { self.codec = codec; codecBadge.text = codec.badgeText; needsMenuRebuild = true }
+        if let codec { self.codec = codec; needsMenuRebuild = true }
+        if let statsHudVisible { self.statsHudVisible = statsHudVisible; needsMenuRebuild = true }
 
         if let audioOn {
             self.audioOn = audioOn
@@ -411,12 +398,88 @@ public final class FloatingToolbarPanel: NSPanel {
 
     // MARK: - Menus
 
+    private func formatBitrate(_ bps: Int) -> String {
+        let mbps = Double(bps) / 1_000_000.0
+        if mbps.rounded() == mbps {
+            return "\(Int(mbps))Mbps"
+        }
+        return String(format: "%.1fMbps", mbps)
+    }
+
     private func rebuildQualityMenu() {
         qualityMenu.removeAllItems()
 
-        // Resolution
+        // 1. Multi-display picker + 一键切屏 (only when >1 display)
+        if displays.count > 1 {
+            let dispSub = NSMenu()
+            for d in displays {
+                let item = NSMenuItem(title: "\(d.name) (\(d.width)×\(d.height))", action: #selector(selectDisplay(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = Int(d.id)
+                item.state = (d.id == activeDisplayId) ? .on : .off
+                dispSub.addItem(item)
+            }
+            let activeName = displays.first(where: { $0.id == activeDisplayId })?.name ?? "显示器"
+            let dispRoot = NSMenuItem(title: "显示器 (\(activeName))", action: nil, keyEquivalent: "")
+            dispRoot.submenu = dispSub
+            qualityMenu.addItem(dispRoot)
+
+            let cycleItem = NSMenuItem(title: "一键切屏", action: #selector(cycleDisplayTapped), keyEquivalent: "")
+            cycleItem.target = self
+            qualityMenu.addItem(cycleItem)
+
+            qualityMenu.addItem(.separator())
+        }
+
+        // 2. 画质预设: 自动 / 流畅 / 高清 / 原画
+        let presetHeaderTitle = qualityPreset == .auto
+            ? "画质预设 · 自动 (\(fps)fps · \(formatBitrate(bitrateBps)))"
+            : "画质预设"
+        let presetHeader = NSMenuItem(title: presetHeaderTitle, action: nil, keyEquivalent: "")
+        presetHeader.isEnabled = false
+        qualityMenu.addItem(presetHeader)
+
+        let presetItems: [(QualityPreset, String)] = [
+            (.auto,     "自动"),
+            (.smooth,   "流畅 (30fps · 4Mbps)"),
+            (.hd,       "高清 (60fps · 8Mbps)"),
+            (.original, "原画 (120fps · 25Mbps)")
+        ]
+        for (preset, title) in presetItems {
+            let item = NSMenuItem(title: title, action: #selector(selectQualityPreset(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = preset.rawValue
+            item.state = (preset == qualityPreset) ? .on : .off
+            qualityMenu.addItem(item)
+        }
+
+        qualityMenu.addItem(.separator())
+
+        // 3. 真彩 4:4:4 & HDR 10-bit toggles
+        let chromaItem = NSMenuItem(title: "真彩 4:4:4", action: #selector(toggleChromaTapped), keyEquivalent: "")
+        chromaItem.target = self
+        chromaItem.state = (chromaMode == .yuv444) ? .on : .off
+        qualityMenu.addItem(chromaItem)
+
+        let hdrItem = NSMenuItem(title: "HDR 10-bit", action: #selector(toggleHdrTapped), keyEquivalent: "")
+        hdrItem.target = self
+        hdrItem.state = hdrEnabled ? .on : .off
+        qualityMenu.addItem(hdrItem)
+
+        let statsHudItem = NSMenuItem(title: "性能浮窗", action: #selector(toggleStatsHudTapped), keyEquivalent: "")
+        statsHudItem.target = self
+        statsHudItem.state = statsHudVisible ? .on : .off
+        qualityMenu.addItem(statsHudItem)
+
+        qualityMenu.addItem(.separator())
+
+        // 4. Collapsible 高级设置 submenu (collapsed by default)
+        let advMenu = NSMenu()
+
+        // 分辨率
         let resSub = NSMenu()
-        for tier in ResolutionTier.allCases {
+        let resOrder: [ResolutionTier] = [.native, .match, .res1080, .res2k]
+        for tier in resOrder {
             let item = NSMenuItem(title: tier.displayName, action: #selector(selectResolution(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = tier.rawValue
@@ -425,14 +488,14 @@ public final class FloatingToolbarPanel: NSPanel {
         }
         let resRoot = NSMenuItem(title: "分辨率 (\(resolution.displayName))", action: nil, keyEquivalent: "")
         resRoot.submenu = resSub
-        qualityMenu.addItem(resRoot)
+        advMenu.addItem(resRoot)
 
-        // Scale Mode
+        // 缩放模式
         let scaleSub = NSMenu()
         let scaleLabels: [(ScaleMode, String)] = [
-            (.fit, "等比缩放 (Fit)"),
-            (.stretch, "拉伸铺满 (Stretch)"),
-            (.original, "原始 1:1 (Original)")
+            (.fit, "等比缩放"),
+            (.stretch, "拉伸全屏"),
+            (.original, "原始1:1")
         ]
         for (mode, label) in scaleLabels {
             let item = NSMenuItem(title: label, action: #selector(selectScaleMode(_:)), keyEquivalent: "")
@@ -441,11 +504,11 @@ public final class FloatingToolbarPanel: NSPanel {
             item.state = (mode == scaleMode) ? .on : .off
             scaleSub.addItem(item)
         }
-        let scaleRoot = NSMenuItem(title: "缩放模式", action: nil, keyEquivalent: "")
+        let scaleRoot = NSMenuItem(title: "缩放模式 (\(scaleMode.displayName))", action: nil, keyEquivalent: "")
         scaleRoot.submenu = scaleSub
-        qualityMenu.addItem(scaleRoot)
+        advMenu.addItem(scaleRoot)
 
-        // FPS
+        // 手动帧率
         let fpsSub = NSMenu()
         let autoFpsItem = NSMenuItem(title: "自动 (\(fps) fps)", action: #selector(selectAutoFps), keyEquivalent: "")
         autoFpsItem.target = self
@@ -458,13 +521,13 @@ public final class FloatingToolbarPanel: NSPanel {
             item.state = (!fpsAuto && fps == val) ? .on : .off
             fpsSub.addItem(item)
         }
-        let fpsRoot = NSMenuItem(title: "帧率 (\(fpsAuto ? "自动" : "\(fps)fps"))", action: nil, keyEquivalent: "")
+        let fpsRoot = NSMenuItem(title: "手动帧率 (\(fpsAuto ? "自动" : "\(fps) fps"))", action: nil, keyEquivalent: "")
         fpsRoot.submenu = fpsSub
-        qualityMenu.addItem(fpsRoot)
+        advMenu.addItem(fpsRoot)
 
-        // Bitrate
+        // 手动码率
         let brSub = NSMenu()
-        let autoBrItem = NSMenuItem(title: "自动 (\(bitrateBps / 1_000_000) Mbps)", action: #selector(selectAutoBitrate), keyEquivalent: "")
+        let autoBrItem = NSMenuItem(title: "自动 (\(formatBitrate(bitrateBps)))", action: #selector(selectAutoBitrate), keyEquivalent: "")
         autoBrItem.target = self
         autoBrItem.state = bitrateAuto ? .on : .off
         brSub.addItem(autoBrItem)
@@ -475,22 +538,55 @@ public final class FloatingToolbarPanel: NSPanel {
             item.state = (!bitrateAuto && bitrateBps == val) ? .on : .off
             brSub.addItem(item)
         }
-        let brRoot = NSMenuItem(title: "码率 (\(bitrateAuto ? "自动" : "\(bitrateBps / 1_000_000)Mbps"))", action: nil, keyEquivalent: "")
+        let brRoot = NSMenuItem(title: "手动码率 (\(bitrateAuto ? "自动" : formatBitrate(bitrateBps)))", action: nil, keyEquivalent: "")
         brRoot.submenu = brSub
-        qualityMenu.addItem(brRoot)
+        advMenu.addItem(brRoot)
 
-        // Codec
+        // 锐化强度
+        let sharpSub = NSMenu()
+        for level in SharpnessLevel.allCases {
+            let item = NSMenuItem(title: level.displayName, action: #selector(selectSharpness(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = level.rawValue
+            item.state = (level == sharpness) ? .on : .off
+            sharpSub.addItem(item)
+        }
+        let sharpRoot = NSMenuItem(title: "锐化强度 (\(sharpness.displayName))", action: nil, keyEquivalent: "")
+        sharpRoot.submenu = sharpSub
+        advMenu.addItem(sharpRoot)
+
+        // 编解码器
         let codecSub = NSMenu()
         for c in [VideoCodec.h264, VideoCodec.h265] {
-            let item = NSMenuItem(title: c == .h264 ? "H.264 (AVC)" : "H.265 (HEVC)", action: #selector(selectCodec(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: c == .h264 ? "H.264" : "H.265", action: #selector(selectCodec(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = c.rawValue
             item.state = (c == codec) ? .on : .off
             codecSub.addItem(item)
         }
-        let codecRoot = NSMenuItem(title: "视频编码 (\(codec.badgeText))", action: nil, keyEquivalent: "")
+        let codecRoot = NSMenuItem(title: "编解码器 (\(codec.badgeText))", action: nil, keyEquivalent: "")
         codecRoot.submenu = codecSub
-        qualityMenu.addItem(codecRoot)
+        advMenu.addItem(codecRoot)
+
+        advMenu.addItem(.separator())
+
+        // 零缓冲极速
+        let lowLatItem = NSMenuItem(title: "零缓冲极速", action: #selector(toggleLowLatencyTapped), keyEquivalent: "")
+        lowLatItem.target = self
+        lowLatItem.state = lowLatencyEnabled ? .on : .off
+        advMenu.addItem(lowLatItem)
+
+        // SDR 色调映射 (when HDR on)
+        if hdrEnabled {
+            let toneMapItem = NSMenuItem(title: "SDR 色调映射", action: #selector(toggleToneMapTapped), keyEquivalent: "")
+            toneMapItem.target = self
+            toneMapItem.state = toneMapEnabled ? .on : .off
+            advMenu.addItem(toneMapItem)
+        }
+
+        let advRoot = NSMenuItem(title: "高级设置", action: nil, keyEquivalent: "")
+        advRoot.submenu = advMenu
+        qualityMenu.addItem(advRoot)
 
         qualityMenu.addItem(.separator())
 
@@ -544,6 +640,43 @@ public final class FloatingToolbarPanel: NSPanel {
     @objc private func fullscreenTapped() { onFullscreenToggled?() }
     @objc private func disconnectTapped() { onDisconnectRequested?() }
 
+    @objc private func selectQualityPreset(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let preset = QualityPreset(rawValue: raw) {
+            onQualityPresetChanged?(preset)
+        }
+    }
+
+    @objc private func selectSharpness(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let level = SharpnessLevel(rawValue: raw) {
+            onSharpnessChanged?(level)
+        }
+    }
+
+    @objc private func toggleChromaTapped() {
+        let next: ChromaMode = (chromaMode == .yuv444) ? .yuv420 : .yuv444
+        onChromaToggled?(next)
+    }
+
+    @objc private func toggleHdrTapped() {
+        onHdrToggled?(!hdrEnabled)
+    }
+
+    @objc private func toggleToneMapTapped() {
+        onToneMapToggled?(!toneMapEnabled)
+    }
+
+    @objc private func toggleLowLatencyTapped() {
+        onLowLatencyToggled?(!lowLatencyEnabled)
+    }
+
+    @objc private func toggleStatsHudTapped() {
+        onToggleStatsHud?(!statsHudVisible)
+    }
+
+    @objc private func cycleDisplayTapped() {
+        onCycleDisplay?()
+    }
+
     @objc private func selectResolution(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let tier = ResolutionTier(rawValue: raw) {
             onResolutionChanged?(tier)
@@ -576,9 +709,43 @@ public final class FloatingToolbarPanel: NSPanel {
 // MARK: - HoverTrackingView
 
 private final class HoverTrackingView: NSView {
+    private static let backdropColor = NSColor(calibratedRed: 0.08, green: 0.09, blue: 0.12, alpha: 0.88)
+    private static let borderStrokeColor = NSColor.white.withAlphaComponent(0.12)
+
     var onMouseEntered: (() -> Void)?
     var onMouseExited: (() -> Void)?
+    var cornerRadius: CGFloat = 12 {
+        didSet {
+            if cornerRadius != oldValue {
+                needsDisplay = true
+            }
+        }
+    }
     private var trackingArea: NSTrackingArea?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        appearance = Theme.darkAppearance
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        needsDisplay = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        layer.backgroundColor = Self.backdropColor.cgColor
+        layer.cornerRadius = cornerRadius
+        layer.borderColor = Self.borderStrokeColor.cgColor
+        layer.borderWidth = 1
+        layer.masksToBounds = true
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

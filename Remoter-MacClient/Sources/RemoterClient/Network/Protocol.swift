@@ -238,6 +238,10 @@ public enum ClientMessages {
         serialize(["type": "hdr", "enabled": enabled])
     }
 
+    public static func lowLatency(enabled: Bool) -> Data {
+        serialize(["type": "low_latency", "enabled": enabled])
+    }
+
     public static func setCodec(_ codec: VideoCodec) -> Data {
         serialize(["type": "set_codec", "codec": codec.wireString])
     }

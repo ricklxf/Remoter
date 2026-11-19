@@ -11,6 +11,10 @@ export interface ConnStats {
   transport: 'UDP' | 'TCP'
   encodeMs: number   // server-side per-frame encode latency (rides on pong)
   decodeMs: number   // client-side per-frame decode latency
+  codec: VideoCodec
+  isHardwareDecoded: boolean
+  hasRtt?: boolean   // true once first pong arrives
+  hasStats?: boolean // true once first stats sample arrives
 }
 
 export type ConnEvent =
@@ -82,6 +86,8 @@ export class Connection {
   private _frameCount  = 0
   private _bytesCount  = 0
   private _rttMs       = 0
+  private _hasPong     = false
+  private _codec: VideoCodec = 'h264'
   private _encodeMs    = 0
   // RemoteCanvas owns the decoder; it plugs a getter in here so the stats
   // loop can report decode latency without Connection knowing the decoder.
@@ -802,9 +808,11 @@ export class Connection {
       case 'stream_started': {
         this.wasStreaming = true
         this.reconnectCount = 0
+        this._hasPong = false
         this.streamWidth  = msg.width  as number
         this.streamHeight = msg.height as number
         const codec = (msg.codec as VideoCodec | undefined) ?? 'h264'
+        this._codec = codec
         this.emit({ type: 'state', state: 'streaming' })
         this.emit({ type: 'stream_started', info: {
           width: this.streamWidth,
@@ -818,6 +826,7 @@ export class Connection {
 
       case 'codec_changed': {
         const codec = msg.codec as VideoCodec
+        this._codec = codec
         this.emit({ type: 'codec_changed', codec })
         break
       }
@@ -881,6 +890,7 @@ export class Connection {
         if (this._pingTs > 0) {
           this._rttMs  = Date.now() - this._pingTs
           this._pingTs = 0
+          this._hasPong = true
         }
         this._encodeMs = (msg.encode_ms as number) ?? 0
         break
@@ -973,6 +983,8 @@ export class Connection {
       const bitrateKbps = rtp ? rtp.bitrateKbps : Math.round(this._bytesCount * 8 / INTERVAL)
       const decodeMs    = rtp ? rtp.decodeMs    : Math.round(this.decodeMsProvider?.() ?? 0)
       const transport   = this.webrtc?.mediaActive ? 'UDP' : 'TCP' as 'UDP' | 'TCP'
+      const codec: VideoCodec = rtp?.codec ?? this._codec
+      const isHardwareDecoded = rtp?.isHardwareDecoded ?? (codec !== 'jpeg')
 
       this._pingTs = Date.now()
       this.sendJson({ type: 'ping' })
@@ -989,6 +1001,10 @@ export class Connection {
         fps, rttMs: this._rttMs, bitrateKbps, transport,
         encodeMs: this._encodeMs,
         decodeMs,
+        codec,
+        isHardwareDecoded,
+        hasRtt: this._hasPong,
+        hasStats: true,
       } })
 
       this._frameCount = 0

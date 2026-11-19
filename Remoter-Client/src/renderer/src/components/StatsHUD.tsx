@@ -1,61 +1,136 @@
 import React from 'react'
+import type { ConnStats } from '../network/Connection'
+import type { VideoCodec } from '../video/Decoder'
 
-export interface ConnStats {
-  fps: number
-  rttMs: number
-  bitrateKbps: number
-  transport: 'UDP' | 'TCP'
-}
+export type { ConnStats }
 
 interface Props {
   stats: ConnStats
   visible: boolean
 }
 
+const COLOR_NORMAL = 'rgba(255, 255, 255, 0.90)'
+const COLOR_MUTED  = 'rgba(255, 255, 255, 0.55)'
+const COLOR_SEP    = 'rgba(255, 255, 255, 0.40)'
+const COLOR_GOOD   = '#34D399'
+const COLOR_WARN   = '#F59E0B'
+const COLOR_DANGER = '#EF4444'
+
+function codecBadgeText(codec: VideoCodec): string {
+  if (codec === 'h265') return 'H.265'
+  if (codec === 'jpeg') return 'JPEG'
+  return 'H.264'
+}
+
+/**
+ * UU-style translucent black bottom-right performance HUD overlay (matching
+ * Remoter-MacClient's StatsHudOverlayView / UURemote's NetDetailView).
+ * 100% click-through via pointer-events: none; no backdrop-filter so bright
+ * remote desktops never bleed through.
+ */
 export function StatsHUD({ stats, visible }: Props) {
   if (!visible) return null
 
-  const udp      = stats.transport === 'UDP'
-  const mbps     = (stats.bitrateKbps / 1000).toFixed(1)
-  const rttColor = stats.rttMs < 50  ? '#15803d' : stats.rttMs < 120 ? '#d97706' : '#dc2626'
-  const fpsColor = stats.fps  > 50   ? '#15803d' : stats.fps  > 25   ? '#d97706' : '#dc2626'
+  if (!stats.hasStats) {
+    return (
+      <div style={s.hud} aria-hidden="true">
+        <span style={{ color: COLOR_MUTED }}>-- fps</span>
+        <Sep />
+        <span style={{ color: COLOR_MUTED }}>0.0 Mbps</span>
+        <Sep />
+        <span style={{ color: COLOR_MUTED }}>-- ms</span>
+      </div>
+    )
+  }
+
+  // 1. FPS
+  const fpsRounded = Math.round(stats.fps)
+  let fpsColor: string
+  if (stats.fps <= 0) {
+    fpsColor = COLOR_MUTED
+  } else if (stats.fps < 15) {
+    fpsColor = COLOR_DANGER
+  } else if (stats.fps < 25) {
+    fpsColor = COLOR_WARN
+  } else {
+    fpsColor = COLOR_NORMAL
+  }
+
+  // 2. Bitrate
+  const mbps = (stats.bitrateKbps / 1000).toFixed(1)
+
+  // 3. RTT (UU thresholds: <50 teal/green, 50-99 white, 100-150 amber, >150 red)
+  const hasRtt = stats.hasRtt !== false && stats.rttMs >= 0
+  let rttText = '-- ms'
+  let rttColor = COLOR_MUTED
+  if (hasRtt) {
+    const rttRounded = Math.round(stats.rttMs)
+    rttText = `${rttRounded} ms`
+    if (rttRounded < 50) {
+      rttColor = COLOR_GOOD
+    } else if (rttRounded < 100) {
+      rttColor = COLOR_NORMAL
+    } else if (rttRounded <= 150) {
+      rttColor = COLOR_WARN
+    } else {
+      rttColor = COLOR_DANGER
+    }
+  }
+
+  // 4. Codec
+  const codecText = codecBadgeText(stats.codec)
+
+  // 5. HW / SW decode tag
+  const decodeTag = stats.isHardwareDecoded ? 'HW' : 'SW'
+  const decodeTagColor = stats.isHardwareDecoded ? COLOR_GOOD : COLOR_WARN
+
+  // 6. Optional decode time
+  const decodeMs = Math.round(stats.decodeMs)
 
   return (
-    <div style={s.hud}>
-      <span style={{ color: udp ? '#15803d' : '#d97706', fontWeight: 600 }}>
-        {stats.transport}
-      </span>
-      <Dot />
-      <span style={{ color: fpsColor }}>{stats.fps}<small style={{ color: '#6c757d' }}> fps</small></span>
-      <Dot />
-      <span style={{ color: rttColor }}>{stats.rttMs}<small style={{ color: '#6c757d' }}> ms</small></span>
-      <Dot />
-      <span style={{ color: '#4a5568' }}>{mbps}<small style={{ color: '#6c757d' }}> Mbps</small></span>
+    <div style={s.hud} aria-hidden="true">
+      <span style={{ color: fpsColor }}>{fpsRounded} fps</span>
+      <Sep />
+      <span style={{ color: COLOR_NORMAL }}>{mbps} Mbps</span>
+      <Sep />
+      <span style={{ color: rttColor }}>{rttText}</span>
+      <Sep />
+      <span style={{ color: COLOR_NORMAL }}>{codecText}</span>
+      <Sep />
+      <span style={{ color: decodeTagColor }}>{decodeTag}</span>
+      {decodeMs > 0 && (
+        <>
+          <Sep />
+          <span style={{ color: COLOR_NORMAL }}>dec {decodeMs}ms</span>
+        </>
+      )}
     </div>
   )
 }
 
-function Dot() {
-  return <span style={{ color: '#c8d0da', margin: '0 5px' }}>·</span>
+function Sep() {
+  return <span style={{ color: COLOR_SEP }}>{' · '}</span>
 }
 
 const s: Record<string, React.CSSProperties> = {
   hud: {
     position: 'absolute',
-    bottom: 14,
-    left: 14,
-    background: 'rgba(255,255,255,0.88)',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
-    borderRadius: 10,
-    padding: '5px 12px',
-    fontSize: 13,
+    right: 12,
+    bottom: 12,
+    background: 'rgba(0, 0, 0, 0.62)',
+    borderRadius: 6,
+    border: '1px solid rgba(255, 255, 255, 0.12)',
+    padding: '5px 10px',
+    fontSize: 11.5,
+    fontWeight: 500,
+    lineHeight: 1.2,
     fontVariantNumeric: 'tabular-nums',
-    color: '#1a1a2e',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+    color: COLOR_NORMAL,
+    whiteSpace: 'nowrap',
     pointerEvents: 'none',
     userSelect: 'none',
-    border: '1px solid rgba(0,0,0,0.08)',
-    boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
+    WebkitUserSelect: 'none',
     zIndex: 99,
-  }
+  },
 }

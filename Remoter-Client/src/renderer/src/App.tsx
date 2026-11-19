@@ -11,7 +11,10 @@ import { TabBar } from './components/TabBar'
 
 // ─── Tab display state ──────────────────────────────────────────────
 
-const DEFAULT_STATS: ConnStats = { fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP', encodeMs: 0, decodeMs: 0 }
+const DEFAULT_STATS: ConnStats = {
+  fps: 0, rttMs: 0, bitrateKbps: 0, transport: 'TCP', encodeMs: 0, decodeMs: 0,
+  codec: 'h264', isHardwareDecoded: true, hasRtt: false, hasStats: false,
+}
 
 interface TabDisplay {
   id: string
@@ -235,6 +238,7 @@ export default function App() {
               <DesktopPage
                 conn={conn!}
                 streamInfo={tab.streamInfo!}
+                stats={tab.stats}
                 initialCodec={tab.codec}
                 transfers={tab.transfers}
                 isReconnecting={tab.state === 'reconnecting'}

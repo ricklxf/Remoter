@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { Connection } from '../network/Connection'
+import { Connection, ConnStats } from '../network/Connection'
 import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode, QualityPreset } from '../types'
 import { RemoteCanvas } from '../components/RemoteCanvas'
+import { StatsHUD } from '../components/StatsHUD'
 import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
 import { VideoCodec } from '../video/Decoder'
@@ -10,6 +11,7 @@ import { AudioPlayer } from '../audio/AudioPlayer'
 interface Props {
   conn: Connection
   streamInfo: StreamInfo
+  stats: ConnStats
   initialCodec?: VideoCodec | 'jpeg'
   transfers: FileTransfer[]
   isReconnecting?: boolean
@@ -17,7 +19,7 @@ interface Props {
   onDisconnect: () => void
 }
 
-export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, isActive = true, onDisconnect }: Props) {
+export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', transfers, isReconnecting = false, isActive = true, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>(() => {
     const saved = localStorage.getItem('remoter_quality_preset')
@@ -68,6 +70,9 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // Lifted out of RemoteCanvas so the toolbar's icon button can drive it.
   const [imeCalibrating, setImeCalibrating] = useState(false)
   const [privacyOn, setPrivacyOn] = useState(false)
+  const [showStatsHud, setShowStatsHud] = useState<boolean>(() => {
+    return localStorage.getItem('remoter_show_stats_hud') !== 'false'
+  })
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   // Cancel hide timer on unmount
@@ -272,6 +277,14 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     setBitrateAuto(auto)
   }
 
+  function handleToggleStatsHud() {
+    setShowStatsHud(prev => {
+      const next = !prev
+      localStorage.setItem('remoter_show_stats_hud', String(next))
+      return next
+    })
+  }
+
   const toggleToolbar = useCallback(() => setToolbarVisible(v => !v), [])
 
   return (
@@ -291,6 +304,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
         chroma444={chromaMode === '444'}
         hdr={hdrOn}
       />
+
+      <StatsHUD stats={stats} visible={showStatsHud} />
 
       {showTransfers && (
         <FileTransferWindow
@@ -371,6 +386,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             showTransfers={showTransfers}
             imeCalibrating={imeCalibrating}
             onToggleImeCalibration={() => setImeCalibrating(v => !v)}
+            showStatsHud={showStatsHud}
+            onToggleStatsHud={handleToggleStatsHud}
             onMouseEnter={cancelHideTimer}
             onMouseLeave={startHideTimer}
           />

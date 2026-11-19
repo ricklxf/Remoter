@@ -14,10 +14,14 @@ export interface WebRTCConfig {
   preferredCodec?: 'h264' | 'h265'
 }
 
+import type { VideoCodec } from '../video/Decoder'
+
 export interface InboundVideoStats {
   fps: number
   bitrateKbps: number
   decodeMs: number
+  codec?: VideoCodec
+  isHardwareDecoded?: boolean
 }
 
 const PLAYOUT_DELAY_EXT_URI = 'http://www.webrtc.org/experiments/rtp-hdrext/playout-delay'
@@ -309,11 +313,27 @@ export class WebRTCClient {
   async getInboundVideoStats(): Promise<InboundVideoStats | null> {
     const pc = this.pc
     if (!pc) return null
-    let s: { framesDecoded?: number; bytesReceived?: number; totalDecodeTime?: number; framesPerSecond?: number } | null = null
+    let s: {
+      framesDecoded?: number
+      bytesReceived?: number
+      totalDecodeTime?: number
+      framesPerSecond?: number
+      codecId?: string
+      decoderImplementation?: string
+      powerEfficientDecoder?: boolean
+    } | null = null
+    let codecMime: string | undefined
     try {
       const report = await pc.getStats()
       for (const entry of report.values()) {
-        if (entry.type === 'inbound-rtp' && entry.kind === 'video') { s = entry; break }
+        if (entry.type === 'inbound-rtp' && entry.kind === 'video') {
+          s = entry
+          if (typeof entry.codecId === 'string') {
+            const codecEntry = report.get(entry.codecId) as { mimeType?: string } | undefined
+            codecMime = codecEntry?.mimeType
+          }
+          break
+        }
       }
     } catch { return null }
     if (!s) return null
@@ -336,10 +356,29 @@ export class WebRTCClient {
       at: now,
     }
     if (dtSec <= 0) return null
+
+    let codec: VideoCodec | undefined
+    if (codecMime) {
+      const mime = codecMime.toLowerCase()
+      if (mime.includes('h265') || mime.includes('hevc')) codec = 'h265'
+      else if (mime.includes('h264') || mime.includes('avc')) codec = 'h264'
+    }
+
+    let isHardwareDecoded: boolean | undefined
+    if (typeof s.powerEfficientDecoder === 'boolean') {
+      isHardwareDecoded = s.powerEfficientDecoder
+    } else if (typeof s.decoderImplementation === 'string' && s.decoderImplementation.length > 0) {
+      const impl = s.decoderImplementation.toLowerCase()
+      const isSoft = impl.includes('openh264') || impl.includes('ffmpeg') || impl.includes('libvpx') || impl.includes('dav1d') || impl.includes('software')
+      isHardwareDecoded = !isSoft
+    }
+
     return {
       fps: s.framesPerSecond ?? Math.round(frames / dtSec),
       bitrateKbps: Math.round(bytes * 8 / 1000 / dtSec),
       decodeMs: frames > 0 ? Math.round(decode * 1000 / frames) : 0,
+      codec,
+      isHardwareDecoded,
     }
   }
 

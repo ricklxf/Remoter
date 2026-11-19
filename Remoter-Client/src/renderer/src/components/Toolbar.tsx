@@ -49,6 +49,8 @@ interface Props {
   showTransfers: boolean
   imeCalibrating: boolean
   onToggleImeCalibration: () => void
+  showStatsHud: boolean
+  onToggleStatsHud: () => void
   onMouseEnter?: () => void
   onMouseLeave?: () => void
 }
@@ -117,6 +119,7 @@ export function Toolbar({
   displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
   imeCalibrating, onToggleImeCalibration,
+  showStatsHud, onToggleStatsHud,
   onMouseEnter, onMouseLeave,
 }: Props) {
   const theme = useTheme()
@@ -161,6 +164,8 @@ export function Toolbar({
         onToggleToneMap={onToggleToneMap}
         lowLatency={lowLatency}
         onToggleLowLatency={onToggleLowLatency}
+        showStatsHud={showStatsHud}
+        onToggleStatsHud={onToggleStatsHud}
         displays={displays}
         activeDisplay={activeDisplay}
         onDisplayChange={id => {
@@ -228,6 +233,7 @@ function QualityMenu({
   hdrOn, onToggleHdr,
   toneMap, onToggleToneMap,
   lowLatency, onToggleLowLatency,
+  showStatsHud, onToggleStatsHud,
   displays, activeDisplay, onDisplayChange,
 }: {
   qualityPreset: QualityPreset
@@ -254,6 +260,8 @@ function QualityMenu({
   onToggleToneMap: () => void
   lowLatency: boolean
   onToggleLowLatency: () => void
+  showStatsHud: boolean
+  onToggleStatsHud: () => void
   displays: DisplayInfo[]
   activeDisplay: number
   onDisplayChange: (id: number) => void
@@ -347,6 +355,10 @@ function QualityMenu({
           <div style={s.qualityToggleRow} title="开启 10-bit HDR 捕获与编码">
             <span>HDR 10-bit</span>
             <Toggle checked={hdrOn} onToggle={onToggleHdr} />
+          </div>
+          <div style={s.qualityToggleRow} title="在画面右下角显示实时帧率、码率与延迟信息">
+            <span>性能浮窗</span>
+            <Toggle checked={showStatsHud} onToggle={onToggleStatsHud} />
           </div>
 
           <div style={s.menuSep} />

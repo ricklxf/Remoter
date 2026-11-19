@@ -16,7 +16,7 @@ using System.Threading.Tasks;
 namespace RemoterWinClient;
 
 /// <summary>
-/// Pure native .NET 8 WebSocket connection to Remoter-Mac and Remoter-Win agents.
+/// Pure native .NET 10 WebSocket connection to Remoter-Mac and Remoter-Win agents.
 /// Implements P-256 ECDH + AES-256-GCM E2E encryption, self-signed CN=Remoter TLS validation,
 /// LAN subnet net_hint detection, high-frequency coalesced send queue, heartbeat/RTT stats,
 /// automatic reconnect, and chunked file transfer.

@@ -2,7 +2,7 @@
 chcp 65001 > nul
 ::build_start
 REM Remoter-WinClient Build Script
-REM Usage: Compile pure native Windows client (C# .NET 8 + D3D11 + Media Foundation + RawInput)
+REM Usage: Compile pure native Windows client (C# .NET 10 + D3D11 + Media Foundation + RawInput)
 echo ===== Remoter-WinClient Build Script =====
 echo.
 
@@ -23,8 +23,8 @@ REM Check .NET SDK
 echo [2/5] Checking .NET SDK...
 dotnet --version > nul 2>&1
 if errorlevel 1 (
-    echo       ERROR: .NET SDK not found, please install .NET 8 SDK
-    echo       Download: https://dotnet.microsoft.com/download/dotnet/8.0
+    echo       ERROR: .NET SDK not found, please install .NET 10 SDK
+    echo       Download: https://dotnet.microsoft.com/download/dotnet/10.0
     pause
     exit /b 1
 )
@@ -65,7 +65,7 @@ if errorlevel 1 (
 )
 echo.
 
-set "outputDir=%~dp0bin\Release\net8.0-windows"
+set "outputDir=%~dp0bin\Release\net10.0-windows"
 set "exePath=%outputDir%\RemoterWinClient.exe"
 
 echo Starting new build...

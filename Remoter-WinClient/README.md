@@ -1,6 +1,6 @@
 # Remoter-WinClient
 
-Pure native Windows remote desktop client for **Remoter**, built with **C# .NET 8 (`net8.0-windows`)**, **Direct3D 11 + DXGI 1.2 Flip-Model**, **Media Foundation Hardware Video/Audio Decoding**, **WASAPI**, and **Win32 RawInput**.
+Pure native Windows remote desktop client for **Remoter**, built with **C# .NET 10 (`net10.0-windows`)**, **Direct3D 11 + DXGI 1.2 Flip-Model**, **Media Foundation Hardware Video/Audio Decoding**, **WASAPI**, and **Win32 RawInput**.
 
 ## Architecture
 
@@ -25,7 +25,7 @@ Pure native Windows remote desktop client for **Remoter**, built with **C# .NET 
 
 ## Build & Run (Windows)
 
-Requires **.NET 8 SDK** (`net8.0-windows`).
+Requires **.NET 10 SDK** (`net10.0-windows`).
 
 - Double-click **`build.bat`** to kill any running instance, restore NuGet packages, build Release, publish a self-contained `win-x64` package to `publish\`, and launch `RemoterWinClient.exe`.
 - Double-click **`update.bat`** to `git pull` and run `build.bat` in one step.

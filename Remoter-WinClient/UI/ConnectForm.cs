@@ -151,7 +151,7 @@ public sealed class ConnectForm : Form
 
         var versionLabel = new Label
         {
-            Text = $"v{AppVersion.Current} · .NET 8 Native",
+            Text = $"v{AppVersion.Current} · .NET 10 Native",
             Location = new Point(20, 392),
             AutoSize = true,
             ForeColor = Color.FromArgb(100, 110, 126),

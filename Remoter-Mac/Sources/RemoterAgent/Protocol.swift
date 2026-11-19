@@ -21,7 +21,9 @@ enum ClientMessage {
     case fileEnd(id: String)
     case fpsSet(fps: Int, auto: Bool)
     case bitrateSet(bitrate: Int, auto: Bool)
-    case resolutionSet(tier: String, customWidth: Int? = nil, customHeight: Int? = nil)
+    case resolutionSet(tier: String, customWidth: Int? = nil, customHeight: Int? = nil, scale: Double? = nil)
+    case chromaSet(mode: String)
+    case hdrSet(enabled: Bool)
     case setAudioEnabled(Bool)
     case setPrivacyScreen(Bool)
     case displaySet(id: UInt32)
@@ -112,8 +114,13 @@ enum ClientMessage {
             return .resolutionSet(
                 tier: json["tier"] as? String ?? "1080",
                 customWidth: json["width"] as? Int,
-                customHeight: json["height"] as? Int
+                customHeight: json["height"] as? Int,
+                scale: json["scale"] as? Double
             )
+        case "chroma":
+            return .chromaSet(mode: json["mode"] as? String ?? "420")
+        case "hdr":
+            return .hdrSet(enabled: json["enabled"] as? Bool ?? false)
         case "set_audio":
             return .setAudioEnabled(json["enabled"] as? Bool ?? false)
         case "set_privacy_screen":

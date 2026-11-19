@@ -11,6 +11,7 @@ const STUN_SERVERS: RTCIceServer[] = [
 
 export interface WebRTCConfig {
   iceServers?: RTCIceServer[]   // 可追加 TURN 服务器
+  preferredCodec?: 'h264' | 'h265'
 }
 
 export interface InboundVideoStats {
@@ -42,7 +43,8 @@ export class WebRTCClient {
     this.pc = pc
 
     // 声明只收不发的视频 m-line，被控端 answer 时把它的屏幕轨道挂上来
-    pc.addTransceiver('video', { direction: 'recvonly' })
+    const transceiver = pc.addTransceiver('video', { direction: 'recvonly' })
+    this.applyCodecPreferences(transceiver, config.preferredCodec)
 
     pc.ontrack = (ev) => {
       if (ev.track.kind !== 'video') return
@@ -92,6 +94,58 @@ export class WebRTCClient {
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
     return offer.sdp!
+  }
+
+  private applyCodecPreferences(
+    transceiver: RTCRtpTransceiver,
+    preferredCodec?: 'h264' | 'h265'
+  ): void {
+    try {
+      const codecs = RTCRtpReceiver.getCapabilities?.('video')?.codecs
+      if (!codecs || codecs.length === 0) return
+      if (typeof transceiver.setCodecPreferences !== 'function') return
+
+      const preferH265 = preferredCodec === 'h265'
+      const rank = (codec: RTCRtpCodec): number => {
+        const mime = codec.mimeType.toLowerCase()
+        const fmtp = (codec.sdpFmtpLine ?? '').toLowerCase()
+
+        if (mime === 'video/h265' || mime === 'video/hevc') {
+          return preferH265 ? 0 : 1
+        }
+        if (mime === 'video/h264') {
+          if (fmtp.includes('profile-level-id=640')) {
+            return preferH265 ? 1 : 0
+          }
+          return 4
+        }
+        if (mime === 'video/av1') return 2
+        if (mime === 'video/vp9') return 3
+        if (mime === 'video/vp8') return 6
+        if (
+          mime === 'video/rtx' ||
+          mime === 'video/red' ||
+          mime === 'video/ulpfec' ||
+          mime.startsWith('video/flexfec')
+        ) {
+          return 7
+        }
+        return 5
+      }
+
+      const sorted = [...codecs].sort((a, b) => rank(a) - rank(b))
+      transceiver.setCodecPreferences(sorted)
+      console.log(
+        '[WebRTC] codec preferences applied:',
+        sorted
+          .filter((c) => rank(c) < 7)
+          .slice(0, 5)
+          .map((c) => `${c.mimeType}${c.sdpFmtpLine ? `(${c.sdpFmtpLine})` : ''}`)
+          .join(', ')
+      )
+    } catch (e) {
+      console.warn('[WebRTC] setCodecPreferences failed:', e)
+    }
   }
 
   async handleAnswer(sdp: string): Promise<void> {

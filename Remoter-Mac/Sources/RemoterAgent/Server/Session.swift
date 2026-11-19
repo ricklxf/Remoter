@@ -57,7 +57,15 @@ final class Session {
     private var currentFps = 30
     private var currentBitrate = 2_000_000
     private var currentCodec: StreamCodec = .h264
+    private var currentChroma: ChromaMode = .yuv420
+    private var currentHdr = false
     private var usingJpeg = false  // re-applied after a resolution switch's beginCapture() rebuild, which defaults back to h264
+
+    /// Standard WebRTC RTP only carries 8-bit 4:2:0; when 4:4:4 or 10-bit HDR is
+    /// active, temporarily route frames through VideoEncoder -> WebCodecs.
+    private var forceCanvasMode: Bool {
+        currentChroma == .yuv444 || currentHdr
+    }
 
     // Video send semaphore: allow several small H.264 frames in flight so a
     // single high-RTT contentProcessed round-trip doesn't throttle throughput.
@@ -540,7 +548,8 @@ final class Session {
                 applyBitrate(bitrate)
             }
 
-        case .resolutionSet(let tier, let customW, let customH):
+        case .resolutionSet(let tier, let customW, let customH, let scale):
+            let effectiveScale = max(1.0, scale ?? 1.0)
             if tier == "native" {
                 if VirtualDisplayManager.shared.activeDisplayID != nil {
                     VirtualDisplayManager.shared.destroyVirtualDisplay()
@@ -555,12 +564,12 @@ final class Session {
                 let targetW = UInt(min(max(w, 640), 5120)) & ~1
                 let targetH = UInt(min(max(h, 480), 2880)) & ~1
                 ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "match_resolution",
-                                                detail: "\(targetW)x\(targetH)")
+                                                detail: "\(targetW)x\(targetH)@\(effectiveScale)x")
                 if let vId = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
-                    width: targetW,
-                    height: targetH,
+                    logicalWidth: targetW,
+                    logicalHeight: targetH,
                     refreshRate: Double(currentFps),
-                    hiDPI: true
+                    scaleFactor: effectiveScale
                 ) {
                     selectedDisplayID = vId
                     resolutionMaxDimension = nil
@@ -575,9 +584,19 @@ final class Session {
             // If virtual display is currently active and user selected a standard tier, resize it
             if let activeVId = VirtualDisplayManager.shared.activeDisplayID, selectedDisplayID == activeVId {
                 if tier == "1080" {
-                    _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(width: 1920, height: 1080, refreshRate: Double(currentFps), hiDPI: true)
+                    _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
+                        logicalWidth: 1920,
+                        logicalHeight: 1080,
+                        refreshRate: Double(currentFps),
+                        scaleFactor: effectiveScale
+                    )
                 } else if tier == "2k" {
-                    _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(width: 2560, height: 1440, refreshRate: Double(currentFps), hiDPI: true)
+                    _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
+                        logicalWidth: 2560,
+                        logicalHeight: 1440,
+                        refreshRate: Double(currentFps),
+                        scaleFactor: effectiveScale
+                    )
                 }
             }
 
@@ -585,6 +604,31 @@ final class Session {
             guard newMax != resolutionMaxDimension else { break }
             resolutionMaxDimension = newMax
             Task { await rebuildPipeline() }
+
+        case .chromaSet(let mode):
+            let next = ChromaMode(rawValue: mode) ?? .yuv420
+            let changed = next != currentChroma
+            currentChroma = next
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "chroma_set",
+                                            detail: "mode=\(next.rawValue) changed=\(changed)")
+            if changed {
+                applyColorConfig()
+            } else {
+                sendJson(["type": "chroma_active", "mode": currentChroma.rawValue])
+                sendJson(["type": "force_canvas", "enabled": forceCanvasMode])
+            }
+
+        case .hdrSet(let enabled):
+            let changed = enabled != currentHdr
+            currentHdr = enabled
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "hdr_set",
+                                            detail: "enabled=\(enabled) changed=\(changed)")
+            if changed {
+                applyColorConfig()
+            } else {
+                sendJson(["type": "hdr_active", "enabled": currentHdr])
+                sendJson(["type": "force_canvas", "enabled": forceCanvasMode])
+            }
 
         case .setAudioEnabled(let enabled):
             audioEnabled = enabled
@@ -664,16 +708,12 @@ final class Session {
             } else if let c = StreamCodec(rawValue: codec), c != currentCodec || usingJpeg {
                 currentCodec = c
                 usingJpeg = false
-                // On RTP, codec is negotiated by libwebrtc via SDP
-                // (RTCDefaultVideoEncoderFactory) — currentCodec here only
-                // drives the VT encoder used by the WS/DataChannel fallback
-                // path, so it does nothing to the video actually on the
-                // wire. Rebuilding the pipeline anyway just cost a black-
-                // screen/keyframe-reset glitch for a codec switch that never
-                // took effect, and beginCapture()'s stream_started message
-                // told the client it had. Just remember the preference for
-                // whenever the session actually falls back to WS.
-                guard !usingRtpVideo else { break }
+                webrtc?.preferredCodec = c.rawValue
+                // On RTP, codec is negotiated by libwebrtc via SDP — remembering
+                // preferredCodec ensures any subsequent renegotiation honors H.264/H.265.
+                // Skip full pipeline rebuild while RTP is actively streaming (unless
+                // forceCanvasMode is routing frames through VideoEncoder).
+                guard !usingRtpVideo || forceCanvasMode else { break }
                 // Codec is baked into the VTCompressionSession at creation, so
                 // like a resolution change this needs the full pipeline rebuild.
                 Task { await rebuildPipeline() }
@@ -789,6 +829,7 @@ final class Session {
         webrtc?.close()
         usingWebRTCVideo = false
         let agent = WebRTCAgent()
+        agent.preferredCodec = currentCodec.rawValue
         agent.lanFloorAllowed = !clientNotOnLan
         agent.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
 
@@ -932,6 +973,107 @@ final class Session {
         cursorMonitor = m
     }
 
+    private func setupVideoEncoder(width: Int, height: Int) throws {
+        encoder?.close()
+        let enc = VideoEncoder()
+        try enc.setup(
+            width: width,
+            height: height,
+            fps: currentFps,
+            bitrateBps: currentBitrate,
+            codec: currentCodec,
+            chroma444: currentChroma == .yuv444,
+            hdr: currentHdr
+        )
+        enc.onEncodedFrame = { [weak self] data, isKeyframe in
+            guard let self else { return }
+            guard self.connection.isActive else { return }
+
+            let fid = self.frameId
+            self.frameId &+= 1
+            self.bytesSent += Int64(data.count)
+
+            // Prefer WebRTC's unreliable-ish DataChannel (frame-level drop on
+            // congestion, no TCP head-of-line blocking) whenever it's actually
+            // open; re-checked per frame so a mid-session ICE failure falls
+            // back to the always-available WebSocket path transparently.
+            if let webrtc = self.webrtc, webrtc.isVideoChannelOpen {
+                if !self.usingWebRTCVideo {
+                    self.usingWebRTCVideo = true
+                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                        step: "video_transport", detail: "webrtc")
+                }
+                if webrtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid) {
+                    self.recordSentFrame()
+                } else {
+                    self.backpressureDrops += 1
+                    let now = Date()
+                    if now.timeIntervalSince(self.lastForcedKeyframeAt) > 1.0 {
+                        self.lastForcedKeyframeAt = now
+                        self.keyframesForced += 1
+                        self.encoder?.forceKeyframe()
+                    }
+                }
+            } else {
+                if self.usingWebRTCVideo {
+                    self.usingWebRTCVideo = false
+                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                        step: "video_transport", detail: "websocket")
+                }
+                guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
+                let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
+                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
+                self.connection.sendBinaryVideo(pkt) {
+                    self.wsSendSem.signal()
+                    self.recordSentFrame()
+                }
+            }
+
+            if fid == 0 {
+                ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
+                    step: "first_frame_h264", detail: "\(data.count)B keyframe=\(isKeyframe)")
+            }
+        }
+        encoder = enc
+    }
+
+    private func applyColorConfig() {
+        let forceCanvas = forceCanvasMode
+        capturer?.updateColorConfig(chroma: currentChroma, hdr: currentHdr)
+
+        if !usingJpeg, let c = capturer {
+            do {
+                try setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
+                encoder?.forceKeyframe()
+            } catch {
+                ConnectionLogger.shared.logStep(
+                    sessionId: id.uuidString,
+                    step: "color_encoder_rebuild_failed",
+                    detail: "\(error)"
+                )
+            }
+        }
+
+        if forceCanvas && usingRtpVideo {
+            usingRtpVideo = false
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "video_transport",
+                detail: "force_canvas(chroma=\(currentChroma.rawValue),hdr=\(currentHdr))"
+            )
+        }
+
+        sendJson(["type": "chroma_active", "mode": currentChroma.rawValue])
+        sendJson(["type": "hdr_active", "enabled": currentHdr])
+        sendJson(["type": "force_canvas", "enabled": forceCanvas])
+
+        // If switching into forceCanvas on a static screen, push the last frame
+        // so the WebCodecs decoder immediately receives a fresh keyframe.
+        if forceCanvas, !usingJpeg, let last = lastFrame {
+            encoder?.encode(last)
+        }
+    }
+
     private func beginCapture() async {
         let c   = ScreenCapturer()
         let sid = id.uuidString
@@ -942,7 +1084,8 @@ final class Session {
             // preset) on a fresh session, or carries over whatever was
             // already active when this is a resolution-switch re-run.
             try await c.start(fps: currentFps, maxDimension: resolutionMaxDimension,
-                              displayID: selectedDisplayID)
+                              displayID: selectedDisplayID,
+                              chroma: currentChroma, hdr: currentHdr)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
                                             detail: "\(c.screenWidth)x\(c.screenHeight)")
             capturer     = c
@@ -953,12 +1096,8 @@ final class Session {
             connectTime  = Date()
 
             // Set up the video encoder (H.264 default, HEVC if the client
-            // opted in) — same currentFps/currentBitrate carry-over as above.
-            encoder?.close()
-            let enc = VideoEncoder()
-            try enc.setup(width: c.screenWidth, height: c.screenHeight,
-                          fps: currentFps, bitrateBps: currentBitrate, codec: currentCodec)
-            encoder = enc
+            // opted in) — same currentFps/currentBitrate/chroma/hdr carry-over as above.
+            try setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: currentCodec.rawValue, encrypted: crypto.isReady)
             startKeepalive()
@@ -972,70 +1111,6 @@ final class Session {
                                               "width": $0.width, "height": $0.height] },
                 "display": Int(selectedDisplayID ?? CGMainDisplayID())
             ])
-
-            enc.onEncodedFrame = { [weak self] data, isKeyframe in
-                guard let self else { return }
-                guard self.connection.isActive else { return }
-
-                let fid = self.frameId
-                self.frameId &+= 1
-                self.bytesSent += Int64(data.count)
-
-                // Prefer WebRTC's unreliable-ish DataChannel (frame-level drop on
-                // congestion, no TCP head-of-line blocking) whenever it's actually
-                // open; re-checked per frame so a mid-session ICE failure falls
-                // back to the always-available WebSocket path transparently.
-                if let webrtc = self.webrtc, webrtc.isVideoChannelOpen {
-                    if !self.usingWebRTCVideo {
-                        self.usingWebRTCVideo = true
-                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "video_transport", detail: "webrtc")
-                    }
-                    if webrtc.sendVideoFrame(data, isKeyframe: isKeyframe, frameId: fid) {
-                        self.recordSentFrame()
-                    } else {
-                        // Dropped due to send-buffer backpressure — the client
-                        // never saw this frame, so any later delta frame that
-                        // references it will decode into garbage. Force the
-                        // next frame to be a fresh keyframe so corruption is
-                        // brief instead of lasting up to 2s.
-                        //
-                        // But a keyframe is much bigger than a delta frame —
-                        // if the link is *sustained*-congested (not just a
-                        // brief blip), forcing one on every single drop just
-                        // pours more data into an already-overloaded pipe,
-                        // causing more drops, more forced keyframes, and so
-                        // on. Cool down to at most once/second so we recover
-                        // fast from a blip without feeding a runaway loop
-                        // under real, sustained bandwidth shortage.
-                        self.backpressureDrops += 1
-                        let now = Date()
-                        if now.timeIntervalSince(self.lastForcedKeyframeAt) > 1.0 {
-                            self.lastForcedKeyframeAt = now
-                            self.keyframesForced += 1
-                            self.encoder?.forceKeyframe()
-                        }
-                    }
-                } else {
-                    if self.usingWebRTCVideo {
-                        self.usingWebRTCVideo = false
-                        ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "video_transport", detail: "websocket")
-                    }
-                    guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
-                    let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
-                    let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
-                    self.connection.sendBinaryVideo(pkt) {
-                        self.wsSendSem.signal()
-                        self.recordSentFrame()
-                    }
-                }
-
-                if fid == 0 {
-                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                        step: "first_frame_h264", detail: "\(data.count)B keyframe=\(isKeyframe)")
-                }
-            }
 
             c.onFrame = { [weak self] pixelBuffer, _, _ in
                 guard let self else { return }
@@ -1070,70 +1145,26 @@ final class Session {
                 // RTP media track first: raw buffer straight into libwebrtc
                 // (it encodes + paces + congestion-controls internally). Our
                 // own VT encoder + WS/DataChannel path stays as the fallback
-                // whenever the media track isn't up — checked per frame so a
-                // mid-session ICE failure degrades transparently, same as
-                // the old DataChannel→WS fallback did.
-                if let webrtc = self.webrtc, webrtc.isMediaReady {
+                // whenever the media track isn't up OR when 4:4:4 / 10-bit HDR
+                // requires forceCanvasMode (standard WebRTC RTP only carries
+                // 8-bit 4:2:0).
+                if !self.forceCanvasMode, let webrtc = self.webrtc, webrtc.isMediaReady {
                     if !self.usingRtpVideo {
                         self.usingRtpVideo = true
                         ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
                             step: "video_transport", detail: "rtp")
-                        // evaluateAutoQuality() (which climbs autoBitrateTiers
-                        // over time) deliberately never runs on the RTP path —
-                        // libwebrtc's own GCC owns bandwidth adaptation there.
-                        // But setMaxBitrate is a hard ceiling GCC can never
-                        // exceed regardless of what it estimates is actually
-                        // available, and applyBitrate had only ever been
-                        // called with the ladder's conservative bottom tier
-                        // (2Mbps, from .bitrateSet's auto-mode starting
-                        // point) — with nothing left to ever raise it, every
-                        // RTP session was silently bitrate-capped at 2Mbps
-                        // for its entire lifetime, even on a fast direct LAN
-                        // connection with room to spare. Give GCC the ladder's
-                        // full ceiling to actually work with the moment RTP
-                        // is confirmed active; it already backs off on its
-                        // own when real conditions can't sustain that.
                         var qualityBumped = false
                         if self.autoBitrateEnabled {
                             self.applyBitrate(Self.autoBitrateTiers.last!, notify: false)
                             qualityBumped = true
                         } else {
-                            // Manual bitrate cap: applyBitrate() only runs
-                            // when the client actually moves the slider, and
-                            // setMaxBitrate() targets whichever RTCRtpSender
-                            // exists *at that moment* — but setupWebRTC()
-                            // replaces the whole WebRTCAgent (and its sender)
-                            // on every renegotiation (ICE failure/network
-                            // roam), so a fresh sender starts uncapped until
-                            // the user touches the slider again. Reapply the
-                            // still-current manual choice to whichever
-                            // sender is live now.
                             webrtc.setMaxBitrate(self.currentBitrate)
                         }
-                        // Same fix, fps side: evaluateAutoQuality() (which
-                        // climbs autoFpsTiers) never runs on RTP either, and
-                        // .fpsSet's auto-mode start point is the ladder's
-                        // bottom tier (30) — with nothing left to ever raise
-                        // it, RTP sessions stayed capped at 30fps for their
-                        // whole lifetime even with room to spare. Give it
-                        // the top tier the moment RTP is confirmed active;
-                        // the browser's own decode-overload handling (frame
-                        // dropping + PLI) is what backs it off if it can't
-                        // actually keep up.
                         if self.autoFpsEnabled {
                             self.autoFpsIndex = self.autoFpsTopIndex
                             self.applyFps(Self.autoFpsTiers[self.autoFpsIndex], notify: false)
                             qualityBumped = true
                         }
-                        // Both applies above used notify:false to batch into
-                        // one message — but unlike evaluateAutoQuality(),
-                        // which always ends with notifyQualityActive(),
-                        // nothing here ever told the client the ladder had
-                        // moved. The quality picker reads its "current tier"
-                        // display purely from quality_active messages (see
-                        // client Toolbar), so it kept showing the original
-                        // 30fps/2Mbps selection while the server was
-                        // actually already running at the top tier.
                         if qualityBumped { self.notifyQualityActive() }
                     }
                     webrtc.sendVideoBuffer(pixelBuffer)
@@ -1142,9 +1173,18 @@ final class Session {
                     if self.usingRtpVideo {
                         self.usingRtpVideo = false
                         ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                            step: "video_transport", detail: "fallback")
+                            step: "video_transport", detail: self.forceCanvasMode ? "force_canvas" : "fallback")
                     }
                     self.encoder?.encode(pixelBuffer)
+                }
+            }
+
+            c.onStaticFrameReady = { [weak self] pixelBuffer in
+                guard let self, !self.isClosed, !self.usingJpeg else { return }
+                if !self.forceCanvasMode, let webrtc = self.webrtc, webrtc.isMediaReady {
+                    webrtc.sendRefinementFrame(pixelBuffer)
+                } else {
+                    self.encoder?.encodeRefinementFrame(pixelBuffer)
                 }
             }
 

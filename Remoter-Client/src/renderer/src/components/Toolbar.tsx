@@ -3,7 +3,7 @@ import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
 import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
 import { VideoDecoder_ } from '../video/Decoder'
-import { DisplayInfo, ResolutionTier, ScaleMode } from '../types'
+import { DisplayInfo, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode } from '../types'
 
 interface Props {
   conn: Connection
@@ -21,6 +21,16 @@ interface Props {
   onScaleModeChange: (mode: ScaleMode) => void
   codec: 'h264' | 'h265'
   onCodecChange: (codec: 'h264' | 'h265') => void
+  sharpness: SharpnessLevel
+  onSharpnessChange: (level: SharpnessLevel) => void
+  chromaMode: ChromaMode
+  onToggleChroma: () => void
+  hdrOn: boolean
+  onToggleHdr: () => void
+  toneMap: boolean
+  onToggleToneMap: () => void
+  zoom: number
+  onZoomChange: (z: number) => void
   audioOn: boolean
   onToggleAudio: () => void
   privacyOn?: boolean
@@ -63,6 +73,15 @@ const SCALE_MODE_OPTIONS: Array<{ label: string; mode: ScaleMode }> = [
   { label: '原始1:1',  mode: 'original' },
 ]
 
+const SHARPNESS_OPTIONS: Array<{ label: string; level: SharpnessLevel }> = [
+  { label: '关',   level: 'off'    },
+  { label: '柔和', level: 'low'    },
+  { label: '清晰', level: 'medium' },
+  { label: '极致', level: 'high'   },
+]
+
+const ZOOM_TIERS = [1, 1.25, 1.5, 2]
+
 const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
 const THEME_ICON: Record<Theme, string> = { system: '💻', light: '☀️', dark: '🌙' }
 const THEME_LABEL: Record<Theme, string> = { system: '跟随系统', light: '浅色', dark: '深色' }
@@ -74,6 +93,11 @@ export function Toolbar({
   resolution, onResolutionChange,
   scaleMode, onScaleModeChange,
   codec, onCodecChange,
+  sharpness, onSharpnessChange,
+  chromaMode, onToggleChroma,
+  hdrOn, onToggleHdr,
+  toneMap, onToggleToneMap,
+  zoom, onZoomChange,
   audioOn, onToggleAudio,
   privacyOn, onTogglePrivacy,
   inputLocked, onToggleInputLock,
@@ -112,6 +136,14 @@ export function Toolbar({
           onCodecChange(c)
           conn.sendSetCodec(c)
         }}
+        sharpness={sharpness}
+        onSharpnessChange={onSharpnessChange}
+        chromaMode={chromaMode}
+        onToggleChroma={onToggleChroma}
+        hdrOn={hdrOn}
+        onToggleHdr={onToggleHdr}
+        toneMap={toneMap}
+        onToggleToneMap={onToggleToneMap}
         displays={displays}
         activeDisplay={activeDisplay}
         onDisplayChange={id => {
@@ -119,6 +151,8 @@ export function Toolbar({
           conn.sendSetDisplay(id)
         }}
       />
+
+      <ZoomMenu zoom={zoom} onZoomChange={onZoomChange} />
 
       <ControlMenu
         conn={conn}
@@ -131,6 +165,20 @@ export function Toolbar({
 
       <div style={s.sep} />
 
+      {displays.length > 1 && (
+        <ToolBtn
+          icon="🖥️"
+          title={`一键切屏 (当前: ${displays.find(d => d.id === activeDisplay)?.name ?? activeDisplay})`}
+          onClick={() => {
+            const idx = displays.findIndex(d => d.id === activeDisplay)
+            const next = displays[(idx + 1) % displays.length]
+            if (next) {
+              onDisplayChange(next.id)
+              conn.sendSetDisplay(next.id)
+            }
+          }}
+        />
+      )}
       <ToolBtn icon="📁" title={showTransfers ? '关闭文件管理器' : '文件管理器'}
         onClick={onToggleTransfers} active={showTransfers}
         badge={transferCount > 0 ? transferCount : undefined} />
@@ -157,6 +205,10 @@ function QualityMenu({
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
   codec, onCodecChange,
+  sharpness, onSharpnessChange,
+  chromaMode, onToggleChroma,
+  hdrOn, onToggleHdr,
+  toneMap, onToggleToneMap,
   displays, activeDisplay, onDisplayChange,
 }: {
   resolution: ResolutionTier
@@ -171,6 +223,14 @@ function QualityMenu({
   onBitrateChange: (bitrate: number, auto: boolean) => void
   codec: 'h264' | 'h265'
   onCodecChange: (codec: 'h264' | 'h265') => void
+  sharpness: SharpnessLevel
+  onSharpnessChange: (level: SharpnessLevel) => void
+  chromaMode: ChromaMode
+  onToggleChroma: () => void
+  hdrOn: boolean
+  onToggleHdr: () => void
+  toneMap: boolean
+  onToggleToneMap: () => void
   displays: DisplayInfo[]
   activeDisplay: number
   onDisplayChange: (id: number) => void
@@ -216,6 +276,120 @@ function QualityMenu({
             formatValue={formatBitrate} width={92} onChange={onBitrateChange} />
           {h265Available && (
             <CodecSelect value={codec} onChange={onCodecChange} />
+          )}
+          <SharpnessSelect value={sharpness} onChange={onSharpnessChange} />
+          <div style={s.menuSep} />
+          <div style={s.qualityToggleRow} title="开启 4:4:4 无色度抽样真彩模式（适合精细代码与文字）">
+            <span>真彩 4:4:4</span>
+            <Toggle checked={chromaMode === '444'} onToggle={onToggleChroma} />
+          </div>
+          <div style={s.qualityToggleRow} title="开启 10-bit HDR 捕获与编码">
+            <span>HDR 10-bit</span>
+            <Toggle checked={hdrOn} onToggle={onToggleHdr} />
+          </div>
+          {hdrOn && (
+            <div style={s.qualityToggleRow} title="在 SDR 显示器上自动将 HDR 映射为自然色彩 (ACES)">
+              <span>SDR 映射</span>
+              <Toggle checked={toneMap} onToggle={onToggleToneMap} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SharpnessSelect({ value, onChange }: { value: SharpnessLevel; onChange: (level: SharpnessLevel) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const current = SHARPNESS_OPTIONS.find(o => o.level === value) ?? SHARPNESS_OPTIONS[0]
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button style={{ ...s.selectBtn, width: 120, justifyContent: 'space-between' }} onClick={() => setOpen(v => !v)}>
+        <span>锐化: {current.label}</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={s.dropdown}>
+          {SHARPNESS_OPTIONS.map(o => {
+            const active = o.level === value
+            return (
+              <button
+                key={o.level}
+                style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
+                onClick={() => { onChange(o.level); setOpen(false) }}
+              >
+                <span>{o.label}</span>
+                {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ZoomMenu({ zoom, onZoomChange }: { zoom: number; onZoomChange: (z: number) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const pct = Math.round(zoom * 100)
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        style={{ ...s.selectBtn, gap: 5, ...(zoom !== 1 ? s.btnActive : {}) }}
+        onClick={() => setOpen(v => !v)}
+        title="缩放视图 (放大后可按住中键或 Alt+拖拽平移)"
+      >
+        <span>{pct}%</span>
+        <span style={{ fontSize: 9, opacity: 0.45, lineHeight: 1 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={{ ...s.dropdown, minWidth: 110 }}>
+          {ZOOM_TIERS.map(z => {
+            const active = Math.abs(zoom - z) < 0.01
+            return (
+              <button
+                key={z}
+                style={{ ...s.dropItem, ...(active ? s.dropItemActive : {}) }}
+                onClick={() => { onZoomChange(z); setOpen(false) }}
+              >
+                <span>{Math.round(z * 100)}%</span>
+                {active && <span style={{ color: '#0d9488', fontSize: 11 }}>✓</span>}
+              </button>
+            )
+          })}
+          {Math.abs(zoom - 1) >= 0.01 && (
+            <>
+              <div style={s.menuSep} />
+              <button
+                style={s.dropItem}
+                onClick={() => { onZoomChange(1); setOpen(false) }}
+              >
+                <span>重置缩放</span>
+              </button>
+            </>
           )}
         </div>
       )}
@@ -810,6 +984,11 @@ const s: Record<string, React.CSSProperties> = {
   ctrlItemIcon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
   shortcut: { fontSize: 11, color: 'var(--ov-text2)', flexShrink: 0 },
   menuSep: { height: 1, background: 'var(--ov-sep)', margin: '3px 0' },
+  qualityToggleRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    gap: 10, padding: '4px 2px', fontSize: 12, color: 'var(--ov-text)',
+    whiteSpace: 'nowrap',
+  },
   // shared
   sep: { width: 1, height: 18, background: 'var(--ov-sep)', margin: '0 4px', flexShrink: 0 },
   btn: {

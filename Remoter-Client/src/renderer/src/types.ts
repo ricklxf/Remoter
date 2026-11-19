@@ -18,6 +18,8 @@ export interface ConnectParams {
 
 export type ScaleMode = 'fit' | 'stretch' | 'original'
 export type ResolutionTier = 'match' | 'native' | '1080' | '2k'
+export type SharpnessLevel = 'off' | 'low' | 'medium' | 'high'
+export type ChromaMode = '420' | '444'
 
 export interface DisplayInfo {
   id: number

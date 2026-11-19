@@ -21,11 +21,13 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     var isVideoChannelOpen: Bool { videoChannel?.readyState == .open }
     /// RTP 视频轨道可用：ICE 已连通且答复里协商出了 sendonly 视频 m-line。
     var isMediaReady: Bool { iceConnected && videoSender != nil }
+    /// Preferred RTP video codec for SDP answer ordering (default `"h264"`, preferring H.264 High Profile).
+    var preferredCodec: String = "h264"
 
     private static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         return RTCPeerConnectionFactory(
-            encoderFactory: RTCDefaultVideoEncoderFactory(),
+            encoderFactory: LowLatencyVideoEncoderFactory(),
             decoderFactory: RTCDefaultVideoDecoderFactory()
         )
     }()
@@ -194,6 +196,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         }
     }
 
+    private var lastFrameTimestampNs: Int64 = 0
+
     /// Feed one captured frame into the RTP pipeline. libwebrtc owns
     /// everything downstream (encode, pacing, congestion control) — this can
     /// be called at capture rate regardless of network conditions; the stack
@@ -201,9 +205,17 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     func sendVideoBuffer(_ pb: CVPixelBuffer) {
         guard let source = videoSource, let capturer = videoCapturer else { return }
         let buf = RTCCVPixelBuffer(pixelBuffer: pb)
-        let ts  = Int64(CACurrentMediaTime() * 1_000_000_000)
+        let nowNs = Int64(CACurrentMediaTime() * 1_000_000_000)
+        let ts = max(nowNs, lastFrameTimestampNs + 1_000_000)
+        lastFrameTimestampNs = ts
         let frame = RTCVideoFrame(buffer: buf, rotation: ._0, timeStampNs: ts)
         source.capturer(capturer, didCapture: frame)
+    }
+
+    /// Feed a static-frame refinement pixel buffer into the RTP pipeline so
+    /// the WebRTC encoder emits a crisp update after motion settles.
+    func sendRefinementFrame(_ pb: CVPixelBuffer) {
+        sendVideoBuffer(pb)
     }
 
     /// Cap the RTP encoder's framerate.
@@ -470,13 +482,160 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private func createAnswer(pc: RTCPeerConnection) {
         let c = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         pc.answer(for: c) { [weak self] sdp, error in
-            guard let sdp, error == nil else {
+            guard let self, let sdp, error == nil else {
                 print("[WebRTC] createAnswer error: \(String(describing: error))")
                 return
             }
-            pc.setLocalDescription(sdp) { _ in }
-            self?.onLocalDescription?("answer", sdp.sdp)
+            let reorderedSdpStr = self.preferCodecInSDP(sdp.sdp, preferred: self.preferredCodec)
+            let finalSdp = RTCSessionDescription(type: sdp.type, sdp: reorderedSdpStr)
+            pc.setLocalDescription(finalSdp) { err in
+                if let err {
+                    ConnectionLogger.shared.logStep(
+                        sessionId: "webrtc",
+                        step: "set_local_desc_fallback",
+                        detail: "err=\(err.localizedDescription)"
+                    )
+                    pc.setLocalDescription(sdp) { _ in }
+                    self.onLocalDescription?("answer", sdp.sdp)
+                    return
+                }
+                self.onLocalDescription?("answer", finalSdp.sdp)
+            }
         }
+    }
+
+    /// Reorders `m=video` payload types to prioritize `preferred` codec (defaulting to
+    /// H.264 High Profile `640c..`/`6400..`) while de-prioritizing VP8 and H.264 Constrained Baseline.
+    private func preferCodecInSDP(_ sdp: String, preferred: String) -> String {
+        let lineSep = sdp.contains("\r\n") ? "\r\n" : "\n"
+        var lines = sdp.components(separatedBy: lineSep)
+
+        guard let videoMLineIdx = lines.firstIndex(where: { $0.hasPrefix("m=video ") }) else {
+            return sdp
+        }
+        let nextMLineIdx = lines[(videoMLineIdx + 1)...].firstIndex(where: { $0.hasPrefix("m=") }) ?? lines.endIndex
+
+        let mParts = lines[videoMLineIdx].split(separator: " ").map(String.init)
+        guard mParts.count > 3 else { return sdp }
+        let header = mParts[0..<3]
+        let payloadTypes = Array(mParts[3...])
+
+        var rtpmap: [String: String] = [:]   // pt -> lowercased codec name
+        var fmtp: [String: String] = [:]     // pt -> lowercased fmtp params
+        for i in (videoMLineIdx + 1)..<nextMLineIdx {
+            let line = lines[i]
+            if line.hasPrefix("a=rtpmap:") {
+                let body = line.dropFirst("a=rtpmap:".count)
+                let comps = body.split(separator: " ", maxSplits: 1)
+                if comps.count == 2 {
+                    let pt = String(comps[0])
+                    let codec = comps[1].split(separator: "/").first.map { String($0).lowercased() } ?? ""
+                    rtpmap[pt] = codec
+                }
+            } else if line.hasPrefix("a=fmtp:") {
+                let body = line.dropFirst("a=fmtp:".count)
+                let comps = body.split(separator: " ", maxSplits: 1)
+                if comps.count == 2 {
+                    fmtp[String(comps[0])] = String(comps[1]).lowercased()
+                }
+            }
+        }
+
+        // Map primary PT -> associated RTX PT(s) via `apt=<pt>`
+        var rtxForApt: [String: [String]] = [:]
+        var rtxSet: Set<String> = []
+        for pt in payloadTypes where rtpmap[pt] == "rtx" {
+            if let params = fmtp[pt],
+               let aptRange = params.range(of: "apt=") {
+                let rest = params[aptRange.upperBound...]
+                let apt = String(rest.prefix { $0.isNumber })
+                if !apt.isEmpty {
+                    rtxForApt[apt, default: []].append(pt)
+                    rtxSet.insert(pt)
+                }
+            }
+        }
+
+        let pref = preferred.lowercased()
+        let isH264High: (String) -> Bool = { pt in
+            guard rtpmap[pt] == "h264", let p = fmtp[pt] else { return false }
+            return p.contains("profile-level-id=640c") || p.contains("profile-level-id=6400")
+        }
+        let isH264Baseline: (String) -> Bool = { pt in
+            guard rtpmap[pt] == "h264", let p = fmtp[pt] else { return false }
+            return p.contains("profile-level-id=42e0") || p.contains("profile-level-id=4200")
+        }
+
+        func priority(for pt: String) -> Int {
+            let codec = rtpmap[pt] ?? ""
+            if codec == "red" || codec == "ulpfec" || codec == "flexfec-03" || codec == "rtx" {
+                return 90
+            }
+            if codec == "vp8" { return 80 }
+            if isH264Baseline(pt) { return 70 }
+
+            switch pref {
+            case "h265", "hevc":
+                if codec == "h265" || codec == "hevc" { return 0 }
+                if isH264High(pt) { return 10 }
+                if codec == "av1" || codec == "vp9" { return 20 }
+                if codec == "h264" { return 30 }
+                return 50
+            case "av1":
+                if codec == "av1" { return 0 }
+                if isH264High(pt) { return 10 }
+                if codec == "vp9" || codec == "h265" || codec == "hevc" { return 20 }
+                if codec == "h264" { return 30 }
+                return 50
+            case "vp9":
+                if codec == "vp9" { return 0 }
+                if isH264High(pt) { return 10 }
+                if codec == "av1" || codec == "h265" || codec == "hevc" { return 20 }
+                if codec == "h264" { return 30 }
+                return 50
+            case "h264":
+                if isH264High(pt) { return 0 }
+                if codec == "h264" { return 10 }
+                if codec == "h265" || codec == "hevc" || codec == "av1" || codec == "vp9" { return 20 }
+                return 50
+            default:
+                if codec == pref { return 0 }
+                if isH264High(pt) { return 10 }
+                if codec == "h264" { return 20 }
+                return 50
+            }
+        }
+
+        let primaryPTs = payloadTypes.filter { !rtxSet.contains($0) }
+        let sortedPrimary = primaryPTs.enumerated().sorted { a, b in
+            let pa = priority(for: a.element)
+            let pb = priority(for: b.element)
+            return pa != pb ? pa < pb : a.offset < b.offset
+        }.map(\.element)
+
+        var ordered: [String] = []
+        ordered.reserveCapacity(payloadTypes.count)
+        for pt in sortedPrimary {
+            ordered.append(pt)
+            if let rtxList = rtxForApt[pt] {
+                ordered.append(contentsOf: rtxList)
+            }
+        }
+        // Append any unassociated RTX payload types if present
+        let orderedSet = Set(ordered)
+        for pt in payloadTypes where !orderedSet.contains(pt) {
+            ordered.append(pt)
+        }
+
+        lines[videoMLineIdx] = (Array(header) + ordered).joined(separator: " ")
+        if let firstPT = ordered.first {
+            ConnectionLogger.shared.logStep(
+                sessionId: "webrtc",
+                step: "answer_codec_order",
+                detail: "preferred=\(pref) top=\(rtpmap[firstPT] ?? "?")(pt=\(firstPT)) fmtp=\(fmtp[firstPT] ?? "")"
+            )
+        }
+        return lines.joined(separator: lineSep)
     }
 }
 

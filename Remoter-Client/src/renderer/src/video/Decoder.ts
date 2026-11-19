@@ -1,12 +1,30 @@
-// WebCodecs VideoDecoder wrapper — supports H.264 and H.265 (HEVC)
+// WebCodecs VideoDecoder wrapper — supports H.264 and H.265 (HEVC),
+// including 4:4:4 chroma and 10-bit HDR profiles.
 // H.265 需要 Chromium 107+ / Electron 22+ 且硬件解码器支持
 
 export type FrameCallback = (frame: VideoFrame) => void
 export type VideoCodec = 'h264' | 'h265' | 'jpeg'
 
-const CODEC_STRING: Record<Exclude<VideoCodec, 'jpeg'>, string> = {
-  h264: 'avc3.640034',      // H.264 High profile (matches the encoder), Annex-B in-band SPS/PPS, Level 5.2
-  h265: 'hvc1.1.6.L150.B0'  // H.265 Main Profile Level 5.0
+export interface DecoderOptions {
+  chroma444?: boolean
+  hdr?: boolean
+}
+
+const CODEC_STRINGS = {
+  h264_420: 'avc3.640034',       // H.264 High profile (4:2:0), Annex-B in-band SPS/PPS, Level 5.2
+  h264_444: 'avc3.f40034',       // H.264 High 4:4:4 Predictive profile, Level 5.2
+  h265_420: 'hvc1.1.6.L150.B0',  // H.265 Main Profile (4:2:0 8-bit) Level 5.0
+  h265_hdr: 'hvc1.2.4.L150.B0',  // H.265 Main10 Profile (4:2:0 10-bit HDR) Level 5.0
+  h265_444: 'hvc1.4.10.L150.B0', // H.265 Format Range Extensions (4:4:4) Level 5.0
+} as const
+
+function resolveCodecString(codec: Exclude<VideoCodec, 'jpeg'>, options?: DecoderOptions): string {
+  if (codec === 'h264') {
+    return options?.chroma444 ? CODEC_STRINGS.h264_444 : CODEC_STRINGS.h264_420
+  }
+  if (options?.chroma444) return CODEC_STRINGS.h265_444
+  if (options?.hdr) return CODEC_STRINGS.h265_hdr
+  return CODEC_STRINGS.h265_420
 }
 
 // If decode can't keep up with arrival rate (e.g. no hardware decoder
@@ -25,6 +43,7 @@ export class VideoDecoder_ {
   private onFrame: FrameCallback
   private pendingKeyframe = true
   private currentCodec: VideoCodec = 'h264'
+  private currentOptions: DecoderOptions = {}
 
   /** Fired (once per recovery cycle) when the decode queue backs up and a fresh keyframe is needed to recover. */
   onOverloaded: (() => void) | null = null
@@ -43,22 +62,43 @@ export class VideoDecoder_ {
     this.onFrame = onFrame
   }
 
-  async init(width: number, height: number, codec: VideoCodec = 'h264'): Promise<void> {
+  async init(
+    width: number,
+    height: number,
+    codec: VideoCodec = 'h264',
+    options: DecoderOptions = {}
+  ): Promise<void> {
     if (codec === 'jpeg') return  // JPEG 由 RemoteCanvas 直接处理
     if (this.decoder) this.close()
-    this.currentCodec = codec
 
-    const codecStr = CODEC_STRING[codec as Exclude<VideoCodec, 'jpeg'>]
+    let targetCodec: Exclude<VideoCodec, 'jpeg'> = codec
+    let targetOptions: DecoderOptions = { ...options }
 
-    // H.265 需要先检查浏览器是否支持
-    if (codec === 'h265') {
-      const support = await VideoDecoder_.isH265Supported()
-      if (!support) {
+    // Check browser support and gracefully fall back if an advanced profile is unavailable
+    if (targetCodec === 'h265') {
+      if (targetOptions.chroma444 && !(await VideoDecoder_.is444Supported('h265'))) {
+        console.warn('[Decoder] H.265 4:4:4 not supported, falling back to 4:2:0')
+        targetOptions.chroma444 = false
+      }
+      if (targetOptions.hdr && !(await VideoDecoder_.isHdrSupported())) {
+        console.warn('[Decoder] H.265 Main10 HDR not supported, falling back to SDR')
+        targetOptions.hdr = false
+      }
+      if (!targetOptions.chroma444 && !targetOptions.hdr && !(await VideoDecoder_.isH265Supported())) {
         console.warn('[Decoder] H.265 not supported, falling back to H.264')
-        this.currentCodec = 'h264'
-        return this.init(width, height, 'h264')
+        targetCodec = 'h264'
+        targetOptions = { chroma444: false, hdr: false }
+      }
+    } else if (targetCodec === 'h264' && targetOptions.chroma444) {
+      if (!(await VideoDecoder_.is444Supported('h264'))) {
+        console.warn('[Decoder] H.264 4:4:4 not supported, falling back to 4:2:0')
+        targetOptions.chroma444 = false
       }
     }
+
+    this.currentCodec = targetCodec
+    this.currentOptions = targetOptions
+    const codecStr = resolveCodecString(targetCodec, targetOptions)
 
     this.decoder = new VideoDecoder({
       output: (frame) => {
@@ -85,7 +125,10 @@ export class VideoDecoder_ {
     })
 
     this.pendingKeyframe = true
-    console.log(`[Decoder] configured ${codec} (${codecStr}) ${width}×${height}`)
+    console.log(
+      `[Decoder] configured ${targetCodec} (${codecStr}) ${width}×${height}` +
+      `${targetOptions.chroma444 ? ' 4:4:4' : ''}${targetOptions.hdr ? ' HDR10' : ''}`
+    )
   }
 
   decode(data: ArrayBuffer, keyframe: boolean, timestampUs: number): void {
@@ -126,12 +169,19 @@ export class VideoDecoder_ {
     }
   }
 
-  /** 收到服务端 codec_changed 通知后，重新初始化解码器 */
-  async switchCodec(width: number, height: number, codec: VideoCodec): Promise<void> {
-    await this.init(width, height, codec)
+  /** 收到服务端 codec_changed / chroma / hdr 通知后，重新初始化解码器 */
+  async switchCodec(
+    width: number,
+    height: number,
+    codec: VideoCodec,
+    options?: DecoderOptions
+  ): Promise<void> {
+    await this.init(width, height, codec, options ?? this.currentOptions)
   }
 
   get codec(): VideoCodec { return this.currentCodec }
+  get chroma444(): boolean { return Boolean(this.currentOptions.chroma444) }
+  get hdr(): boolean { return Boolean(this.currentOptions.hdr) }
 
   flush(): Promise<void> {
     return this.decoder?.flush() ?? Promise.resolve()
@@ -150,18 +200,17 @@ export class VideoDecoder_ {
     return typeof VideoDecoder !== 'undefined'
   }
 
-  static async isH265Supported(): Promise<boolean> {
+  private static async checkCodecConfig(codecStr: string, isHevc: boolean): Promise<boolean> {
     if (!VideoDecoder_.isSupported()) return false
     try {
       const result = await VideoDecoder.isConfigSupported({
-        codec: CODEC_STRING['h265'],
+        codec: codecStr,
         codedWidth: 1920,
         codedHeight: 1080,
         // Must mirror the flags configure() actually uses: Chromium has no
-        // software HEVC decoder, so on win32 (where we force prefer-software
-        // — see configure() above) HEVC is genuinely unavailable and this
-        // check correctly reports so, hiding the option in the UI.
-        ...(window.remoterAPI?.platform === 'win32'
+        // software HEVC decoder, so on win32 (where we force prefer-software)
+        // HEVC is genuinely unavailable and this check correctly reports so.
+        ...(isHevc && window.remoterAPI?.platform === 'win32'
           ? { hardwareAcceleration: 'prefer-software' as HardwareAcceleration }
           : {}),
       })
@@ -169,6 +218,19 @@ export class VideoDecoder_ {
     } catch {
       return false
     }
+  }
+
+  static async isH265Supported(): Promise<boolean> {
+    return VideoDecoder_.checkCodecConfig(CODEC_STRINGS.h265_420, true)
+  }
+
+  static async is444Supported(codec: Exclude<VideoCodec, 'jpeg'> = 'h265'): Promise<boolean> {
+    const codecStr = codec === 'h264' ? CODEC_STRINGS.h264_444 : CODEC_STRINGS.h265_444
+    return VideoDecoder_.checkCodecConfig(codecStr, codec === 'h265')
+  }
+
+  static async isHdrSupported(): Promise<boolean> {
+    return VideoDecoder_.checkCodecConfig(CODEC_STRINGS.h265_hdr, true)
   }
 }
 

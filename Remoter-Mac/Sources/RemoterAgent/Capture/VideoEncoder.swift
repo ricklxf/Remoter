@@ -17,6 +17,8 @@ final class VideoEncoder {
     private var codec: StreamCodec = .h264
     private var frameIndex: Int64 = 0
     private var forceKeyframeNext = false
+    private var currentBitrateBps: Int = 8_000_000
+    private var isRefinementBoostActive = false
 
     // True per-frame encode latency (submit → VT completion callback), for
     // the client's latency-breakdown panel. The perf_5s "enc=" figure only
@@ -55,12 +57,20 @@ final class VideoEncoder {
     /// silently inert, which matters most exactly when it's needed:
     /// a client whose decode can't keep up with the fixed default bitrate.
     func setBitrate(_ bitrateBps: Int) {
+        currentBitrateBps = bitrateBps
+        isRefinementBoostActive = false
         guard let session else { return }
+        applyBitrateProperties(session, bitrateBps: bitrateBps, burstMultiplier: 1.5, prioritizeSpeed: true)
+    }
+
+    private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int, burstMultiplier: Double, prioritizeSpeed: Bool) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
-                              value: NSNumber(value: bitrateBps))
-        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
+                             value: NSNumber(value: bitrateBps))
+        let burstByteLimit = Int64(Double(bitrateBps) * burstMultiplier / 8.0)
         let dataRateLimits: [Any] = [burstByteLimit, 1.0]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                             value: prioritizeSpeed ? kCFBooleanTrue : kCFBooleanFalse)
     }
 
     /// Adjusts the live session's expected frame rate without tearing it down.
@@ -70,8 +80,18 @@ final class VideoEncoder {
                              value: NSNumber(value: fps))
     }
 
-    func setup(width: Int, height: Int, fps: Int, bitrateBps: Int, codec: StreamCodec = .h264) throws {
+    func setup(
+        width: Int,
+        height: Int,
+        fps: Int,
+        bitrateBps: Int,
+        codec: StreamCodec = .h264,
+        chroma444: Bool = false,
+        hdr: Bool = false
+    ) throws {
         self.codec = codec
+        self.currentBitrateBps = bitrateBps
+        self.isRefinementBoostActive = false
         var s: VTCompressionSession?
         let encoderSpec: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue!,
@@ -97,25 +117,11 @@ final class VideoEncoder {
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount,   value: 0 as CFNumber)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
-        if codec == .h265 {
-            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
-                                 value: kVTProfileLevel_HEVC_Main_AutoLevel)
-        } else {
-            // High profile, not Baseline: B-frames are already disabled by
-            // AllowFrameReordering=false above (that's the only Baseline
-            // property latency actually needs), while Baseline additionally
-            // forfeits CABAC entropy coding and 8x8 transforms — a free
-            // 10-20% compression loss. WebCodecs decodes High everywhere;
-            // the client's codec string declares High to match.
-            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,
-                                 value: kVTProfileLevel_H264_High_AutoLevel)
-        }
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,
-                             value: NSNumber(value: bitrateBps))
-        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
-        let dataRateLimits: [Any] = [burstByteLimit, 1.0]
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
+
+        let selectedProfile = configureProfileLevel(s, codec: codec, chroma444: chroma444, hdr: hdr)
+        configureColorMetadata(s, hdr: hdr)
+
+        applyBitrateProperties(s, bitrateBps: bitrateBps, burstMultiplier: 1.5, prioritizeSpeed: true)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: NSNumber(value: fps))
         // A keyframe is ~10-20x the size of a delta frame; at the old 2s
@@ -135,13 +141,117 @@ final class VideoEncoder {
         frameIndex = 0
         var usingHW: CFTypeRef?
         VTSessionCopyProperty(s, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
-                               allocator: kCFAllocatorDefault, valueOut: &usingHW)
+                              allocator: kCFAllocatorDefault, valueOut: &usingHW)
         ConnectionLogger.shared.logStep(sessionId: "encoder", step: "encoder_ready",
-            detail: "\(codec.rawValue) \(width)x\(height) \(fps)fps \(bitrateBps/1000)kbps hw=\((usingHW as? Bool) ?? false)")
+            detail: "\(codec.rawValue) \(width)x\(height) \(fps)fps \(bitrateBps/1000)kbps profile=\(selectedProfile) chroma444=\(chroma444) hdr=\(hdr) hw=\((usingHW as? Bool) ?? false)")
+    }
+
+    private func configureProfileLevel(
+        _ session: VTCompressionSession,
+        codec: StreamCodec,
+        chroma444: Bool,
+        hdr: Bool
+    ) -> String {
+        if codec == .h265 {
+            if chroma444 {
+                // Try HEVC Main 4:4:4 (10-bit first if HDR) and fall back gracefully if unsupported.
+                let candidates: [(CFString, String)] = hdr
+                    ? [
+                        ("HEVC_Main44410_AutoLevel" as CFString, "HEVC_Main44410"),
+                        ("HEVC_Main444_AutoLevel" as CFString, "HEVC_Main444"),
+                        (kVTProfileLevel_HEVC_Main42210_AutoLevel, "HEVC_Main42210"),
+                        (kVTProfileLevel_HEVC_Main10_AutoLevel, "HEVC_Main10")
+                    ]
+                    : [
+                        ("HEVC_Main444_AutoLevel" as CFString, "HEVC_Main444"),
+                        (kVTProfileLevel_HEVC_Main42210_AutoLevel, "HEVC_Main42210"),
+                        (kVTProfileLevel_HEVC_Main_AutoLevel, "HEVC_Main")
+                    ]
+                for (index, candidate) in candidates.enumerated() {
+                    let status = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: candidate.0)
+                    if status == noErr {
+                        if index > 0 {
+                            ConnectionLogger.shared.logStep(sessionId: "encoder", step: "profile_fallback",
+                                detail: "requested=HEVC_444 selected=\(candidate.1)")
+                        }
+                        return candidate.1
+                    }
+                }
+            }
+            if hdr {
+                let status = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                                  value: kVTProfileLevel_HEVC_Main10_AutoLevel)
+                if status == noErr {
+                    return "HEVC_Main10"
+                }
+                ConnectionLogger.shared.logStep(sessionId: "encoder", step: "profile_fallback",
+                    detail: "requested=HEVC_Main10 err=\(status) selected=HEVC_Main")
+            }
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_HEVC_Main_AutoLevel)
+            return "HEVC_Main"
+        } else {
+            if chroma444 {
+                let status = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                                  value: "H264_High444_AutoLevel" as CFString)
+                if status == noErr {
+                    return "H264_High444"
+                }
+                ConnectionLogger.shared.logStep(sessionId: "encoder", step: "profile_fallback",
+                    detail: "requested=H264_High444 err=\(status) selected=H264_High")
+            }
+            // High profile, not Baseline: B-frames are already disabled by
+            // AllowFrameReordering=false above (that's the only Baseline
+            // property latency actually needs), while Baseline additionally
+            // forfeits CABAC entropy coding and 8x8 transforms — a free
+            // 10-20% compression loss. WebCodecs decodes High everywhere;
+            // the client's codec string declares High to match.
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_H264_High_AutoLevel)
+            return "H264_High"
+        }
+    }
+
+    private func configureColorMetadata(_ session: VTCompressionSession, hdr: Bool) {
+        if hdr {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ColorPrimaries,
+                                 value: kCVImageBufferColorPrimaries_ITU_R_2020)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_TransferFunction,
+                                 value: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_YCbCrMatrix,
+                                 value: kCVImageBufferYCbCrMatrix_ITU_R_2020)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_HDRMetadataInsertionMode,
+                                 value: kVTHDRMetadataInsertionMode_Auto)
+        } else {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ColorPrimaries,
+                                 value: kCVImageBufferColorPrimaries_ITU_R_709_2)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_TransferFunction,
+                                 value: kCVImageBufferTransferFunction_ITU_R_709_2)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_YCbCrMatrix,
+                                 value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
+        }
+    }
+
+    /// Encodes a clean, high-quality refinement frame for static-frame sharpening
+    /// (temporarily lifting bitrate limit and prioritizing quality over speed).
+    func encodeRefinementFrame(_ pb: CVPixelBuffer) {
+        guard let session else { return }
+        let boostedBitrate = min(max(currentBitrateBps * 2, 20_000_000), 60_000_000)
+        applyBitrateProperties(session, bitrateBps: boostedBitrate, burstMultiplier: 2.5, prioritizeSpeed: false)
+        isRefinementBoostActive = true
+        submitFrame(pb, session: session)
     }
 
     func encode(_ pb: CVPixelBuffer) {
         guard let session else { return }
+        if isRefinementBoostActive {
+            applyBitrateProperties(session, bitrateBps: currentBitrateBps, burstMultiplier: 1.5, prioritizeSpeed: true)
+            isRefinementBoostActive = false
+        }
+        submitFrame(pb, session: session)
+    }
+
+    private func submitFrame(_ pb: CVPixelBuffer, session: VTCompressionSession) {
 
         let idx  = frameIndex
         frameIndex += 1

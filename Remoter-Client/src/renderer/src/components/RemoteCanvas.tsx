@@ -3,7 +3,7 @@ import { Connection } from '../network/Connection'
 import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
-import { StreamInfo, ScaleMode } from '../types'
+import { StreamInfo, ScaleMode, SharpnessLevel } from '../types'
 import { useImeOffset, setImeOffset, resolutionKey } from '../utils/imeOffset'
 
 interface Props {
@@ -15,9 +15,30 @@ interface Props {
    * up rather than kept as local state so the toolbar can show/drive it. */
   imeCalibrating?: boolean
   scaleMode?: ScaleMode
+  sharpness?: SharpnessLevel
+  toneMap?: boolean
+  zoom?: number
+  onZoomChange?: (z: number) => void
+  forceCanvas?: boolean
+  chroma444?: boolean
+  hdr?: boolean
 }
 
-export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive = true, imeCalibrating = false, scaleMode = 'fit' }: Props) {
+export function RemoteCanvas({
+  conn,
+  streamInfo,
+  initialCodec = 'h264',
+  isActive = true,
+  imeCalibrating = false,
+  scaleMode = 'fit',
+  sharpness = 'off',
+  toneMap = false,
+  zoom = 1,
+  onZoomChange: _onZoomChange,
+  forceCanvas = false,
+  chroma444 = false,
+  hdr = false,
+}: Props) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const videoRef    = useRef<HTMLVideoElement>(null)
   const frameRef    = useRef<HTMLDivElement>(null)
@@ -32,6 +53,18 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   // (WS fallback). Driven by the track's mute/unmute events, which is how
   // the browser signals "RTP packets stopped/resumed arriving".
   const [mediaActive, setMediaActive] = useState(false)
+  const clampedZoom = Math.min(3, Math.max(1, zoom))
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const rvfcIdRef = useRef<number | null>(null)
+  const useVideoShader = mediaActive && !forceCanvas && (sharpness !== 'off' || toneMap)
+  const useVideoShaderRef = useRef(useVideoShader)
+  useVideoShaderRef.current = useVideoShader
+  const chroma444Ref = useRef(chroma444)
+  chroma444Ref.current = chroma444
+  const hdrRef = useRef(hdr)
+  hdrRef.current = hdr
+  const showCanvas = !mediaActive || forceCanvas || useVideoShader
+  const showVideoEl = mediaActive && !forceCanvas
   // The IME staging textarea is invisible (see below) — but that also hides
   // the raw composition text (e.g. pinyin) while typing, so a typo is
   // invisible until the wrong character actually lands remotely. Echo it in
@@ -80,6 +113,53 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     }
     // Capture phase, ahead of InputHandler's bubble-phase listeners on the
     // frame div — otherwise dragging here would also move the remote cursor.
+    window.addEventListener('mousemove', onMove, true)
+    window.addEventListener('mouseup', onUp, true)
+  }
+
+  // Reset pan when returning to 1.0x zoom, and clamp pan bounds when zoomed
+  useEffect(() => {
+    if (clampedZoom <= 1) {
+      setPan({ x: 0, y: 0 })
+      return
+    }
+    const el = wrapRef.current
+    if (!el || !cssSize) return
+    const maxX = Math.max(0, (cssSize.w * clampedZoom - el.clientWidth) / 2)
+    const maxY = Math.max(0, (cssSize.h * clampedZoom - el.clientHeight) / 2)
+    setPan(prev => ({
+      x: Math.max(-maxX, Math.min(maxX, prev.x)),
+      y: Math.max(-maxY, Math.min(maxY, prev.y)),
+    }))
+  }, [clampedZoom, cssSize])
+
+  // Panning when zoomed in: middle-mouse drag or Alt + left-mouse drag
+  function onWrapMouseDownCapture(e: React.MouseEvent): void {
+    if (clampedZoom <= 1) return
+    const isPanGesture = e.button === 1 || (e.button === 0 && e.altKey)
+    if (!isPanGesture) return
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startY = e.clientY
+    const origX = pan.x
+    const origY = pan.y
+    const el = wrapRef.current
+    const maxX = el && cssSize ? Math.max(0, (cssSize.w * clampedZoom - el.clientWidth) / 2) : 0
+    const maxY = el && cssSize ? Math.max(0, (cssSize.h * clampedZoom - el.clientHeight) / 2) : 0
+    const onMove = (ev: MouseEvent) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      const nx = Math.max(-maxX, Math.min(maxX, origX + (ev.clientX - startX)))
+      const ny = Math.max(-maxY, Math.min(maxY, origY + (ev.clientY - startY)))
+      setPan({ x: nx, y: ny })
+    }
+    const onUp = (ev: MouseEvent) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      window.removeEventListener('mousemove', onMove, true)
+      window.removeEventListener('mouseup', onUp, true)
+    }
     window.addEventListener('mousemove', onMove, true)
     window.addEventListener('mouseup', onUp, true)
   }
@@ -138,6 +218,8 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       const renderer = rendererRef.current
       renderer.resize(streamInfo.width, streamInfo.height)
       renderer.attach(canvas)
+      renderer.setSharpness(sharpness)
+      renderer.setToneMap(toneMap)
 
       if (!VideoDecoder_.isSupported()) {
         console.error('[RemoteCanvas] WebCodecs not supported')
@@ -151,7 +233,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       }
       decoderRef.current = decoder
       conn.decodeMsProvider = () => decoder.lastDecodeMs
-      decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec).catch(console.error)
+      decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec, {
+        chroma444: chroma444Ref.current,
+        hdr: hdrRef.current,
+      }).catch(console.error)
       console.log('[RemoteCanvas] H.264 mode, decoder initializing')
       // This decoder is brand new and won't decode anything until it gets a
       // keyframe (Decoder.ts buffers/drops delta frames until then) — ask the
@@ -169,6 +254,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     }
 
     return () => {
+      if (rvfcIdRef.current !== null && videoRef.current && 'cancelVideoFrameCallback' in videoRef.current) {
+        videoRef.current.cancelVideoFrameCallback(rvfcIdRef.current)
+        rvfcIdRef.current = null
+      }
       decoderRef.current?.close()
       decoderRef.current = null
       conn.decodeMsProvider = null
@@ -177,6 +266,24 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
       ctx2dRef.current = null
     }
   }, [streamInfo, initialCodec])
+
+  // Sync GPU CAS sharpness and ACES SDR tone-mapping settings to WebGL2 renderer
+  useEffect(() => {
+    rendererRef.current.setSharpness(sharpness)
+    rendererRef.current.setToneMap(toneMap)
+    if (useVideoShader && videoRef.current && videoRef.current.readyState >= 2) {
+      rendererRef.current.renderVideo(videoRef.current)
+    }
+  }, [sharpness, toneMap, useVideoShader])
+
+  // Reconfigure WebCodecs decoder when 4:4:4 or 10-bit HDR mode changes
+  useEffect(() => {
+    const decoder = decoderRef.current
+    if (!decoder || initialCodec === 'jpeg') return
+    if (decoder.chroma444 === chroma444 && decoder.hdr === hdr) return
+    decoder.switchCodec(streamInfo.width, streamInfo.height, decoder.codec, { chroma444, hdr }).catch(console.error)
+    conn.sendRequestKeyframe()
+  }, [chroma444, hdr, streamInfo.width, streamInfo.height, initialCodec, conn])
 
   // Tab switched away: this canvas stays mounted (decoder keeps decoding in
   // the background, see App.tsx), but its keyboard capture must not — else
@@ -209,16 +316,25 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
     if (track) {
       track.onended = () => setMediaActive(false)
     }
+    if (rvfcIdRef.current !== null && 'cancelVideoFrameCallback' in video) {
+      video.cancelVideoFrameCallback(rvfcIdRef.current)
+      rvfcIdRef.current = null
+    }
     // TEMP DIAGNOSTIC — see Connection.sendMouseScroll/markFrameRendered.
     // <video> owns decode/render internally for the RTP path (no per-frame
     // JS callback otherwise), so requestVideoFrameCallback is the only way
     // to know when a frame actually got composited on screen, as opposed to
     // when the server captured/sent it (already measured, and fast).
+    // When GPU CAS sharpening or ACES tone-mapping is active on the RTP path,
+    // also pump each decoded <video> frame through the WebGL2 VideoRenderer.
     const tick = (): void => {
       conn.markFrameRendered()
-      video.requestVideoFrameCallback(tick)
+      if (useVideoShaderRef.current && video.readyState >= 2) {
+        rendererRef.current.renderVideo(video)
+      }
+      rvfcIdRef.current = video.requestVideoFrameCallback(tick)
     }
-    video.requestVideoFrameCallback(tick)
+    rvfcIdRef.current = video.requestVideoFrameCallback(tick)
   }
 
   // Wire up video frames + codec_changed events
@@ -253,7 +369,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
 
       if (e.type === 'codec_changed' && decoderRef.current) {
         console.log(`[RemoteCanvas] switching decoder to ${e.codec}`)
-        decoderRef.current.switchCodec(streamInfo.width, streamInfo.height, e.codec).catch(console.error)
+        decoderRef.current.switchCodec(streamInfo.width, streamInfo.height, e.codec, {
+          chroma444: chroma444Ref.current,
+          hdr: hdrRef.current,
+        }).catch(console.error)
       }
 
       // Remote cursor *shape* rendered on the local pointer: the capture
@@ -273,7 +392,15 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
   }, [conn, streamInfo, initialCodec])
 
   return (
-    <div ref={wrapRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+    <div
+      ref={wrapRef}
+      onMouseDownCapture={onWrapMouseDownCapture}
+      style={{
+        width: '100%', height: '100%',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        position: 'relative', overflow: 'hidden',
+      }}
+    >
       {/* The frame div is the single interactive surface (input handler +
           cursor shape live here) and exactly bounds the picture, so the
           RTP <video> and the fallback canvas map coordinates identically. */}
@@ -282,8 +409,10 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
         tabIndex={0}
         style={{
           position: 'relative',
-          width:  cssSize ? cssSize.w : '100%',
-          height: cssSize ? cssSize.h : '100%',
+          width:  cssSize ? cssSize.w * clampedZoom : '100%',
+          height: cssSize ? cssSize.h * clampedZoom : '100%',
+          flexShrink: 0,
+          transform: clampedZoom > 1 ? `translate(${pan.x}px, ${pan.y}px)` : undefined,
           cursor: 'default',
           outline: 'none',
         }}
@@ -292,7 +421,8 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           ref={canvasRef}
           style={{
             position: 'absolute', inset: 0, width: '100%', height: '100%',
-            display: mediaActive ? 'none' : 'block',
+            display: showCanvas ? 'block' : 'none',
+            zIndex: useVideoShader ? 1 : undefined,
             pointerEvents: 'none',
           }}
         />
@@ -302,7 +432,8 @@ export function RemoteCanvas({ conn, streamInfo, initialCodec = 'h264', isActive
           playsInline
           style={{
             position: 'absolute', inset: 0, width: '100%', height: '100%',
-            display: mediaActive ? 'block' : 'none',
+            display: showVideoEl ? 'block' : 'none',
+            opacity: useVideoShader ? 0 : 1,
             pointerEvents: 'none',
             objectFit: 'fill',   // the frame div already has the correct aspect ratio
           }}

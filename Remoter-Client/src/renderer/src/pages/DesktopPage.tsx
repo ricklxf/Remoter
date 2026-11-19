@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
-import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode } from '../types'
+import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode } from '../types'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
@@ -30,6 +30,16 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // Manual pick only (both sides default to h264); jpeg fallback is chosen
   // by the connection layer itself, not from this menu.
   const [codec, setCodec] = useState<'h264' | 'h265'>('h264')
+  const [sharpness, setSharpness] = useState<SharpnessLevel>(() => {
+    const saved = localStorage.getItem('remoter_sharpness')
+    if (saved === 'off' || saved === 'low' || saved === 'medium' || saved === 'high') return saved
+    return 'off'
+  })
+  const [chromaMode, setChromaMode] = useState<ChromaMode>('420')
+  const [hdrOn, setHdrOn] = useState(false)
+  const [toneMap, setToneMap] = useState(false)
+  const [forceCanvas, setForceCanvas] = useState(false)
+  const [zoom, setZoom] = useState(1)
   // Remote system-audio forwarding — off by default (bandwidth + privacy:
   // don't silently pick up whatever's playing on the remote machine).
   const [audioOn, setAudioOn] = useState(false)
@@ -96,14 +106,32 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
     localStorage.setItem('remoter_scale_mode', mode)
   }
 
+  function handleSharpnessChange(level: SharpnessLevel) {
+    setSharpness(level)
+    localStorage.setItem('remoter_sharpness', level)
+  }
+
+  function handleToggleChroma() {
+    const next: ChromaMode = chromaMode === '444' ? '420' : '444'
+    setChromaMode(next)
+    conn.sendChroma(next)
+  }
+
+  function handleToggleHdr() {
+    const next = !hdrOn
+    setHdrOn(next)
+    setToneMap(next)
+    conn.sendHdr(next)
+  }
+
   function handleResolutionChange(tier: ResolutionTier) {
     setResolution(tier)
     localStorage.setItem('remoter_resolution', tier)
     if (tier === 'match') {
       const dpr = window.devicePixelRatio || 1
-      const w = Math.round((window.screen.width || window.innerWidth) * dpr) & ~1
-      const h = Math.round((window.screen.height || window.innerHeight) * dpr) & ~1
-      conn.sendResolution(tier, w, h)
+      const w = Math.round(window.screen.width || window.innerWidth) & ~1
+      const h = Math.round(window.screen.height || window.innerHeight) & ~1
+      conn.sendResolution(tier, w, h, dpr)
     } else {
       conn.sendResolution(tier)
     }
@@ -120,6 +148,16 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
       if (e.type === 'quality_active') {
         setFps(e.fps)
         setBitrate(e.bitrate)
+      }
+      if (e.type === 'chroma_active') {
+        setChromaMode(e.mode)
+      }
+      if (e.type === 'hdr_active') {
+        setHdrOn(e.enabled)
+        setToneMap(e.enabled)
+      }
+      if (e.type === 'force_canvas') {
+        setForceCanvas(e.enabled)
       }
       if (e.type === 'audio_frame') {
         audioPlayerRef.current?.push(e.data)
@@ -183,6 +221,13 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
         isActive={isActive}
         imeCalibrating={imeCalibrating}
         scaleMode={scaleMode}
+        sharpness={sharpness}
+        toneMap={toneMap}
+        zoom={zoom}
+        onZoomChange={setZoom}
+        forceCanvas={forceCanvas}
+        chroma444={chromaMode === '444'}
+        hdr={hdrOn}
       />
 
       {showTransfers && (
@@ -236,6 +281,16 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             onScaleModeChange={handleScaleModeChange}
             codec={codec}
             onCodecChange={setCodec}
+            sharpness={sharpness}
+            onSharpnessChange={handleSharpnessChange}
+            chromaMode={chromaMode}
+            onToggleChroma={handleToggleChroma}
+            hdrOn={hdrOn}
+            onToggleHdr={handleToggleHdr}
+            toneMap={toneMap}
+            onToggleToneMap={() => setToneMap(v => !v)}
+            zoom={zoom}
+            onZoomChange={setZoom}
             audioOn={audioOn}
             onToggleAudio={handleToggleAudio}
             privacyOn={privacyOn}

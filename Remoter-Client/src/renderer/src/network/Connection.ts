@@ -1,4 +1,4 @@
-import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry } from '../types'
+import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry, ChromaMode } from '../types'
 import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
@@ -19,6 +19,9 @@ export type ConnEvent =
   | { type: 'video_frame'; data: ArrayBuffer; frameId: number; ptsMs: number; keyframe: boolean }
   | { type: 'codec_changed'; codec: VideoCodec }
   | { type: 'quality_active'; fps: number; bitrate: number }
+  | { type: 'chroma_active'; mode: ChromaMode }
+  | { type: 'hdr_active'; enabled: boolean }
+  | { type: 'force_canvas'; enabled: boolean }
   | { type: 'audio_frame'; data: ArrayBuffer }
   | { type: 'cursor_shape'; pngBase64: string; hotX: number; hotY: number }
   | { type: 'media_stream'; stream: MediaStream }
@@ -316,8 +319,14 @@ export class Connection {
   sendBitrate(bitrate: number, auto = false): void {
     this.sendJson({ type: 'bitrate', bitrate, auto })
   }
-  sendResolution(tier: 'native' | '1080' | '2k' | 'match', width?: number, height?: number): void {
-    this.sendJson({ type: 'resolution', tier, width, height })
+  sendResolution(tier: 'native' | '1080' | '2k' | 'match', width?: number, height?: number, scale?: number): void {
+    this.sendJson({ type: 'resolution', tier, width, height, scale })
+  }
+  sendChroma(mode: ChromaMode): void {
+    this.sendJson({ type: 'chroma', mode })
+  }
+  sendHdr(enabled: boolean): void {
+    this.sendJson({ type: 'hdr', enabled })
   }
   sendSetAudio(enabled: boolean): void {
     this.sendJson({ type: 'set_audio', enabled })
@@ -814,6 +823,22 @@ export class Connection {
         const fps = msg.fps as number
         const bitrate = msg.bitrate as number
         this.emit({ type: 'quality_active', fps, bitrate })
+        break
+      }
+
+      case 'chroma_active': {
+        const mode: ChromaMode = msg.mode === '444' ? '444' : '420'
+        this.emit({ type: 'chroma_active', mode })
+        break
+      }
+
+      case 'hdr_active': {
+        this.emit({ type: 'hdr_active', enabled: Boolean(msg.enabled) })
+        break
+      }
+
+      case 'force_canvas': {
+        this.emit({ type: 'force_canvas', enabled: Boolean(msg.enabled) })
         break
       }
 

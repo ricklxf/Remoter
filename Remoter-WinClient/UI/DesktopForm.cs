@@ -35,7 +35,9 @@ public sealed class DesktopForm : Form
     private readonly object _renderLock = new();
     private readonly object _audioLock = new();
 
-    // Dedicated video decode/render pipeline so WebSocket receive and WinForms UI threads never block
+    // Dedicated MTA video thread owns D3D11Renderer & MfVideoDecoder init, decode, render & dispose.
+    // The WinForms STA UI thread NEVER acquires _renderLock or touches Media Foundation COM objects,
+    // eliminating both DXGI Present AB-BA deadlocks and STA/MTA COM marshaling hangs.
     private readonly Channel<VideoFramePacket> _videoChannel = Channel.CreateBounded<VideoFramePacket>(
         new BoundedChannelOptions(4)
         {
@@ -43,9 +45,13 @@ public sealed class DesktopForm : Form
             SingleWriter = false,
             FullMode = BoundedChannelFullMode.DropOldest,
         });
-    private Task? _videoWorkerTask;
+    private Thread? _videoThread;
+    private nint _videoHostHwnd;
+    private int _initWidth;
+    private int _initHeight;
     private int _pendingResizeW;
     private int _pendingResizeH;
+    private bool _firstFrameLogged;
 
     private VideoCodecType _activeDecoderCodec = VideoCodecType.Jpeg;
     private int _remoteWidth;
@@ -156,60 +162,87 @@ public sealed class DesktopForm : Form
 
     private void InitializeVideoPipeline()
     {
-        lock (_renderLock)
-        {
-            if (_disposed || _rendererInitialized) return;
-            int w = Math.Max(1, _videoHost.ClientSize.Width);
-            int h = Math.Max(1, _videoHost.ClientSize.Height);
+        if (_disposed || _videoThread != null) return;
 
-            _renderer.Initialize(_videoHost.Handle, w, h);
-            _renderer.ScaleMode = _settings.ScaleMode;
-            _renderer.VSyncEnabled = _settings.VSyncEnabled;
-            _rendererInitialized = true;
-            _videoHost.D3D11Active = true;
-
-            if (_streamInfo.Codec != VideoCodecType.Jpeg)
-            {
-                try
-                {
-                    _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
-                    _activeDecoderCodec = _streamInfo.Codec;
-                    _mfInitialized = true;
-                }
-                catch
-                {
-                    _mfInitialized = false;
-                }
-            }
-        }
-
+        _videoHostHwnd = _videoHost.Handle;
+        _initWidth = Math.Max(1, _videoHost.ClientSize.Width);
+        _initHeight = Math.Max(1, _videoHost.ClientSize.Height);
         _conn.DecodeMsProvider = () => _mfDecoder.LastDecodeMs;
         SyncContentRect();
 
-        _videoWorkerTask = Task.Factory.StartNew(
-            VideoWorkerLoop,
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
+        _videoThread = new Thread(VideoWorkerLoop)
+        {
+            Name = "RemoterVideoPipeline",
+            IsBackground = true,
+            Priority = ThreadPriority.AboveNormal,
+        };
+        _videoThread.SetApartmentState(ApartmentState.MTA);
+        _videoThread.Start();
     }
 
     private void VideoWorkerLoop()
     {
-        var reader = _videoChannel.Reader;
         try
         {
-            while (reader.WaitToReadAsync().AsTask().GetAwaiter().GetResult())
+            LogVideo($"MTA video thread starting: hwnd=0x{_videoHostHwnd:X} size={_initWidth}x{_initHeight} codec={_streamInfo.Codec} remote={_remoteWidth}x{_remoteHeight}");
+
+            lock (_renderLock)
             {
-                while (reader.TryRead(out var pkt))
+                if (_disposed) return;
+
+                _renderer.Initialize(_videoHostHwnd, _initWidth, _initHeight);
+                _renderer.ScaleMode = _settings.ScaleMode;
+                _renderer.VSyncEnabled = _settings.VSyncEnabled;
+                _rendererInitialized = true;
+                SafeBeginInvoke(() => { _videoHost.D3D11Active = true; });
+
+                LogVideo($"D3D11 ready: tearing={_renderer.AllowTearingSupported} vsync={_renderer.VSyncEnabled}");
+
+                if (_streamInfo.Codec != VideoCodecType.Jpeg)
                 {
-                    if (_disposed) return;
+                    try
+                    {
+                        _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
+                        _activeDecoderCodec = _streamInfo.Codec;
+                        _mfInitialized = true;
+                        LogVideo($"MfVideoDecoder ready: codec={_streamInfo.Codec} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _mfInitialized = false;
+                        LogVideo($"MfVideoDecoder init failed: {ex.Message}");
+                    }
+                }
+            }
+
+            // Ask host for a fresh keyframe once our decoder is ready
+            _conn.SendRequestKeyframe();
+
+            var reader = _videoChannel.Reader;
+            while (!_disposed && reader.WaitToReadAsync().AsTask().GetAwaiter().GetResult())
+            {
+                while (!_disposed && reader.TryRead(out var pkt))
+                {
                     ProcessVideoFrame(pkt);
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Shutdown
+            LogVideo($"VideoWorkerLoop exception: {ex}");
+        }
+        finally
+        {
+            // Dispose COM/D3D11 objects on the same MTA thread that created them
+            lock (_renderLock)
+            {
+                _rendererInitialized = false;
+                _mfInitialized = false;
+                try { _mfDecoder.Dispose(); } catch { }
+                try { _jpegDecoder.Dispose(); } catch { }
+                try { _renderer.Dispose(); } catch { }
+            }
+            LogVideo("MTA video thread exited cleanly");
         }
     }
 
@@ -231,6 +264,11 @@ public sealed class DesktopForm : Form
             {
                 _jpegDecoder.DecodeAndRender(pkt.Data, _renderer);
                 UpdateContentRectFromRendererUnsafe();
+                if (!_firstFrameLogged)
+                {
+                    _firstFrameLogged = true;
+                    LogVideo($"First JPEG frame rendered ({pkt.Data.Length} bytes)");
+                }
             }
             else
             {
@@ -241,16 +279,38 @@ public sealed class DesktopForm : Form
                         _mfDecoder.Initialize(pkt.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
                         _activeDecoderCodec = pkt.Codec;
                         _mfInitialized = true;
+                        LogVideo($"MfVideoDecoder re-init: codec={pkt.Codec} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
                     }
-                    catch
+                    catch (Exception ex)
                     {
                         _mfInitialized = false;
+                        LogVideo($"MfVideoDecoder re-init failed: {ex.Message}");
                         return;
                     }
                 }
-                _mfDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L);
+                bool decoded = _mfDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L);
+                if (decoded && !_firstFrameLogged)
+                {
+                    _firstFrameLogged = true;
+                    LogVideo($"First {pkt.Codec} frame decoded & rendered (kf={pkt.IsKeyframe}, len={pkt.Data.Length}, decodeMs={_mfDecoder.LastDecodeMs:F1})");
+                }
             }
         }
+    }
+
+    private static void LogVideo(string msg)
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RemoterWinClient");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(
+                Path.Combine(dir, "video.log"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\r\n");
+        }
+        catch { }
     }
 
     private void WireDecoderEvents()
@@ -440,8 +500,8 @@ public sealed class DesktopForm : Form
 
     private void OnVideoFrameReceived(VideoFramePacket pkt)
     {
-        if (_disposed || !_rendererInitialized) return;
-        // Non-blocking enqueue to dedicated video worker so WebSocket receive loop never stalls
+        if (_disposed) return;
+        // Non-blocking enqueue to dedicated MTA video thread (never stalls WebSocket receive loop)
         _videoChannel.Writer.TryWrite(pkt);
     }
 
@@ -550,28 +610,11 @@ public sealed class DesktopForm : Form
 
     private void OnViewportResized(int width, int height)
     {
-        if (_disposed || !_rendererInitialized) return;
+        if (_disposed) return;
 
-        // Never block the WinForms UI thread on _renderLock (prevents DXGI Present AB-BA deadlock).
-        // Try immediate resize only if the video thread is idle; otherwise queue it for the next frame.
-        if (Monitor.TryEnter(_renderLock, 0))
-        {
-            try
-            {
-                Interlocked.Exchange(ref _pendingResizeW, 0);
-                Interlocked.Exchange(ref _pendingResizeH, 0);
-                _renderer.Resize(width, height);
-            }
-            finally
-            {
-                Monitor.Exit(_renderLock);
-            }
-        }
-        else
-        {
-            Volatile.Write(ref _pendingResizeW, width);
-            Volatile.Write(ref _pendingResizeH, height);
-        }
+        // Always queue resize for the MTA video thread — UI thread NEVER touches D3D11 or _renderLock.
+        Volatile.Write(ref _pendingResizeW, width);
+        Volatile.Write(ref _pendingResizeH, height);
 
         SyncContentRect();
         _toolbar?.UpdatePosition();
@@ -866,7 +909,6 @@ public sealed class DesktopForm : Form
             _disposed = true;
             UnwireConnectionEvents();
             _videoChannel.Writer.TryComplete();
-            try { _videoWorkerTask?.Wait(400); } catch { }
 
             _inputManager.Dispose();
             _clipboardSync.Dispose();
@@ -877,17 +919,17 @@ public sealed class DesktopForm : Form
                 _toolbar.Dispose();
             }
 
-            lock (_audioLock)
-            {
-                _audioPlayer.Dispose();
-            }
+            // Never block the WinForms UI thread on _renderLock or long thread joins;
+            // the MTA video thread disposes D3D11Renderer & MfVideoDecoder in its finally block.
+            try { _videoThread?.Join(250); } catch { }
 
-            lock (_renderLock)
+            _ = Task.Run(() =>
             {
-                _mfDecoder.Dispose();
-                _jpegDecoder.Dispose();
-                _renderer.Dispose();
-            }
+                lock (_audioLock)
+                {
+                    try { _audioPlayer.Dispose(); } catch { }
+                }
+            });
 
             _videoHost.Cursor = Cursors.Default;
             DisposeCustomCursor();

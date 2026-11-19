@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Threading.Channels;
 using System.Windows.Forms;
 using RemoterWinClient.Input;
 
@@ -33,6 +34,18 @@ public sealed class DesktopForm : Form
 
     private readonly object _renderLock = new();
     private readonly object _audioLock = new();
+
+    // Dedicated video decode/render pipeline so WebSocket receive and WinForms UI threads never block
+    private readonly Channel<VideoFramePacket> _videoChannel = Channel.CreateBounded<VideoFramePacket>(
+        new BoundedChannelOptions(4)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
+    private Task? _videoWorkerTask;
+    private int _pendingResizeW;
+    private int _pendingResizeH;
 
     private VideoCodecType _activeDecoderCodec = VideoCodecType.Jpeg;
     private int _remoteWidth;
@@ -172,6 +185,72 @@ public sealed class DesktopForm : Form
 
         _conn.DecodeMsProvider = () => _mfDecoder.LastDecodeMs;
         SyncContentRect();
+
+        _videoWorkerTask = Task.Factory.StartNew(
+            VideoWorkerLoop,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+    }
+
+    private void VideoWorkerLoop()
+    {
+        var reader = _videoChannel.Reader;
+        try
+        {
+            while (reader.WaitToReadAsync().AsTask().GetAwaiter().GetResult())
+            {
+                while (reader.TryRead(out var pkt))
+                {
+                    if (_disposed) return;
+                    ProcessVideoFrame(pkt);
+                }
+            }
+        }
+        catch
+        {
+            // Shutdown
+        }
+    }
+
+    private void ProcessVideoFrame(VideoFramePacket pkt)
+    {
+        lock (_renderLock)
+        {
+            if (_disposed || !_rendererInitialized) return;
+
+            // Apply any pending viewport resize queued by the UI thread
+            int rw = Interlocked.Exchange(ref _pendingResizeW, 0);
+            int rh = Interlocked.Exchange(ref _pendingResizeH, 0);
+            if (rw > 0 && rh > 0)
+            {
+                _renderer.Resize(rw, rh);
+            }
+
+            if (pkt.Codec == VideoCodecType.Jpeg)
+            {
+                _jpegDecoder.DecodeAndRender(pkt.Data, _renderer);
+                UpdateContentRectFromRendererUnsafe();
+            }
+            else
+            {
+                if (!_mfInitialized || _activeDecoderCodec != pkt.Codec)
+                {
+                    try
+                    {
+                        _mfDecoder.Initialize(pkt.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
+                        _activeDecoderCodec = pkt.Codec;
+                        _mfInitialized = true;
+                    }
+                    catch
+                    {
+                        _mfInitialized = false;
+                        return;
+                    }
+                }
+                _mfDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L);
+            }
+        }
     }
 
     private void WireDecoderEvents()
@@ -256,14 +335,7 @@ public sealed class DesktopForm : Form
             DeviceStore.Shared.SaveSettings(_settings);
             _toolbar.UpdateState(scaleMode: modeStr);
 
-            lock (_renderLock)
-            {
-                if (!_disposed && _rendererInitialized)
-                {
-                    _renderer.ScaleMode = mode;
-                    _renderer.RePresent();
-                }
-            }
+            _renderer.ScaleMode = mode;
             SyncContentRect();
         };
 
@@ -368,26 +440,9 @@ public sealed class DesktopForm : Form
 
     private void OnVideoFrameReceived(VideoFramePacket pkt)
     {
-        lock (_renderLock)
-        {
-            if (_disposed || !_rendererInitialized) return;
-
-            if (pkt.Codec == VideoCodecType.Jpeg)
-            {
-                _jpegDecoder.DecodeAndRender(pkt.Data, _renderer);
-                UpdateContentRectFromRendererUnsafe();
-            }
-            else
-            {
-                if (!_mfInitialized || _activeDecoderCodec != pkt.Codec)
-                {
-                    _mfDecoder.Initialize(pkt.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
-                    _activeDecoderCodec = pkt.Codec;
-                    _mfInitialized = true;
-                }
-                _mfDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L);
-            }
-        }
+        if (_disposed || !_rendererInitialized) return;
+        // Non-blocking enqueue to dedicated video worker so WebSocket receive loop never stalls
+        _videoChannel.Writer.TryWrite(pkt);
     }
 
     private void OnAudioFrameReceived(AudioFramePacket pkt)
@@ -495,17 +550,32 @@ public sealed class DesktopForm : Form
 
     private void OnViewportResized(int width, int height)
     {
-        lock (_renderLock)
+        if (_disposed || !_rendererInitialized) return;
+
+        // Never block the WinForms UI thread on _renderLock (prevents DXGI Present AB-BA deadlock).
+        // Try immediate resize only if the video thread is idle; otherwise queue it for the next frame.
+        if (Monitor.TryEnter(_renderLock, 0))
         {
-            if (!_disposed && _rendererInitialized)
+            try
             {
+                Interlocked.Exchange(ref _pendingResizeW, 0);
+                Interlocked.Exchange(ref _pendingResizeH, 0);
                 _renderer.Resize(width, height);
-                _renderer.RePresent();
+            }
+            finally
+            {
+                Monitor.Exit(_renderLock);
             }
         }
+        else
+        {
+            Volatile.Write(ref _pendingResizeW, width);
+            Volatile.Write(ref _pendingResizeH, height);
+        }
+
         SyncContentRect();
-        _toolbar.UpdatePosition();
-        _inputManager.UpdateClipCursor();
+        _toolbar?.UpdatePosition();
+        _inputManager?.UpdateClipCursor();
     }
 
     private void OnFilesDropped(string[] files)
@@ -578,26 +648,23 @@ public sealed class DesktopForm : Form
     private void SyncContentRect()
     {
         Rectangle rect;
-        lock (_renderLock)
+        var cr = _renderer.ContentRect;
+        if (cr.Width > 1 && cr.Height > 1)
         {
-            var cr = _renderer.ContentRect;
-            if (cr.Width > 1 && cr.Height > 1)
-            {
-                rect = new Rectangle(
-                    (int)Math.Round(cr.X),
-                    (int)Math.Round(cr.Y),
-                    Math.Max(1, (int)Math.Round(cr.Width)),
-                    Math.Max(1, (int)Math.Round(cr.Height)));
-            }
-            else
-            {
-                rect = RawInputManager.ComputeContentRect(
-                    _videoHost.ClientSize.Width,
-                    _videoHost.ClientSize.Height,
-                    _remoteWidth,
-                    _remoteHeight,
-                    FormatScaleMode(_settings.ScaleMode));
-            }
+            rect = new Rectangle(
+                (int)Math.Round(cr.X),
+                (int)Math.Round(cr.Y),
+                Math.Max(1, (int)Math.Round(cr.Width)),
+                Math.Max(1, (int)Math.Round(cr.Height)));
+        }
+        else
+        {
+            rect = RawInputManager.ComputeContentRect(
+                _videoHost.ClientSize.Width,
+                _videoHost.ClientSize.Height,
+                _remoteWidth,
+                _remoteHeight,
+                FormatScaleMode(_settings.ScaleMode));
         }
         _inputManager.SetContentRect(rect);
     }
@@ -798,6 +865,8 @@ public sealed class DesktopForm : Form
         {
             _disposed = true;
             UnwireConnectionEvents();
+            _videoChannel.Writer.TryComplete();
+            try { _videoWorkerTask?.Wait(400); } catch { }
 
             _inputManager.Dispose();
             _clipboardSync.Dispose();

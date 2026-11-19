@@ -632,13 +632,19 @@ public sealed class D3D11Renderer : IDisposable
 
     /// <summary>
     /// Re-presents the most recent frame (e.g. after ScaleMode change or WM_PAINT).
+    /// Non-blocking so UI-thread callers never deadlock against DXGI Present on the video thread.
     /// </summary>
     public void RePresent()
     {
-        lock (_renderLock)
+        if (!Monitor.TryEnter(_renderLock, 0)) return;
+        try
         {
             if (_disposed || _swapChain == null || _rtv == null) return;
             DrawCurrentAndPresent();
+        }
+        finally
+        {
+            Monitor.Exit(_renderLock);
         }
     }
 
@@ -750,10 +756,10 @@ public sealed class D3D11Renderer : IDisposable
     {
         if (_context == null || _rtv == null || _swapChain == null) return;
 
-        // Wait on the flip-model frame latency object (max 100ms) so we never queue stale frames
-        if (_frameLatencyWaitableObject != nint.Zero)
+        // Wait on the flip-model frame latency object only when VSync is active (short 16ms cap)
+        if (_vsyncEnabled && _frameLatencyWaitableObject != nint.Zero)
         {
-            WaitForSingleObjectEx(_frameLatencyWaitableObject, 100, false);
+            WaitForSingleObjectEx(_frameLatencyWaitableObject, 16, false);
         }
 
         _context.OMSetRenderTargets(_rtv);

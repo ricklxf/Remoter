@@ -154,9 +154,11 @@ public sealed class MfVideoDecoder : IDisposable
     {
         try
         {
-            uint flags = (preferHardware
-                ? (MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT)
-                : MFT_ENUM_FLAG_SYNCMFT) | MFT_ENUM_FLAG_SORTANDFILTER;
+            // Always use synchronous MFTs for synchronous ProcessInput/ProcessOutput:
+            // Microsoft's built-in H.264/HEVC Video Decoder MFT is a sync MFT that
+            // automatically enables DXVA2/D3D11 hardware acceleration when bound to IMFDXGIDeviceManager.
+            // Async MFTs require IMFMediaEventGenerator and would fail or stall in synchronous mode.
+            uint flags = MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER;
 
             MediaFactory.MFTEnumEx(
                 MftCategoryVideoDecoder,

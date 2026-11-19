@@ -267,9 +267,10 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
 
         let profileTag = configureProfileLevel(s)
 
-        // Explicit BT.709 color metadata (preserves Full Range from input CVPixelBuffer)
+        // Explicit BT.709 primaries/matrix + sRGB transfer (matches SCStreamConfiguration.colorSpaceName = .sRGB
+        // and VideoRange 420v, preventing sRGB/BT.709 gamma wash-out in Chromium/Electron & DXVA decoders)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_TransferFunction, value: kCVImageBufferTransferFunction_ITU_R_709_2)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_TransferFunction, value: kCVImageBufferTransferFunction_sRGB)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_YCbCrMatrix, value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
 
         applyRateControl(s, bitrateBps: bitrateBps, fps: fps)
@@ -388,7 +389,7 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
             kCFAllocatorDefault,
             Int(i420.width),
             Int(i420.height),
-            kCVPixelFormatType_420YpCbCr8PlanarFullRange,
+            kCVPixelFormatType_420YpCbCr8Planar,
             attrs as CFDictionary,
             &dst
         )

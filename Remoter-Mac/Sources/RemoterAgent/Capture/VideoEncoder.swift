@@ -226,7 +226,7 @@ final class VideoEncoder {
             VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ColorPrimaries,
                                  value: kCVImageBufferColorPrimaries_ITU_R_709_2)
             VTSessionSetProperty(session, key: kVTCompressionPropertyKey_TransferFunction,
-                                 value: kCVImageBufferTransferFunction_ITU_R_709_2)
+                                 value: kCVImageBufferTransferFunction_sRGB)
             VTSessionSetProperty(session, key: kVTCompressionPropertyKey_YCbCrMatrix,
                                  value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
         }

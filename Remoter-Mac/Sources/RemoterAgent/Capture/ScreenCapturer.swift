@@ -178,20 +178,20 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         do {
             try await startStreamWithTimeout(s, output: output)
         } catch {
-            if preferredFormat != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
-                // Safe fallback when macOS SCStream rejects 444 or 10-bit full-range pixel format.
+            if preferredFormat != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
+                // Safe fallback when macOS SCStream rejects 444 or 10-bit video-range pixel format.
                 let fallbackHdr = false
                 let fallbackChroma: ChromaMode = .yuv420
                 let fallbackConfig = makeConfiguration(
                     fps: fps,
                     chroma: fallbackChroma,
                     hdr: fallbackHdr,
-                    pixelFormatOverride: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                    pixelFormatOverride: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
                 )
                 ConnectionLogger.shared.logStep(
                     sessionId: "capturer",
                     step: "pixel_format_fallback",
-                    detail: "chroma=\(chroma.rawValue) hdr=\(hdr) failed (\(error)); falling back to 420f"
+                    detail: "chroma=\(chroma.rawValue) hdr=\(hdr) failed (\(error)); falling back to 420v"
                 )
                 let fallbackStream = SCStream(filter: filter, configuration: fallbackConfig, delegate: output)
                 do {
@@ -234,14 +234,17 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     }
 
     private func preferredPixelFormat(chroma: ChromaMode, hdr: Bool) -> OSType {
+        // Match UU Remote & standard VideoToolbox/WebRTC/DXVA pipeline: use Video/Limited Range (16..235)
+        // so Chromium WebRTC, Media Foundation DXVA, and VideoToolbox decoders all agree on luminance range
+        // without blowing out highlights / washing out light UI tones.
         if hdr {
-            return kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         }
         switch chroma {
         case .yuv420:
-            return kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         case .yuv444:
-            return kCVPixelFormatType_444YpCbCr8BiPlanarFullRange
+            return kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange
         }
     }
 
@@ -305,12 +308,12 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
                     detail: "chroma=\(chroma.rawValue) hdr=\(hdr)"
                 )
             } catch {
-                if preferredFormat != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
+                if preferredFormat != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
                     let fallbackConfig = makeConfiguration(
                         fps: currentFps,
                         chroma: .yuv420,
                         hdr: false,
-                        pixelFormatOverride: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                        pixelFormatOverride: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
                     )
                     do {
                         try await stream.updateConfiguration(fallbackConfig)
@@ -319,7 +322,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
                         ConnectionLogger.shared.logStep(
                             sessionId: "capturer",
                             step: "color_config_fallback",
-                            detail: "chroma=\(chroma.rawValue) hdr=\(hdr) failed (\(error)); fell back to 420f"
+                            detail: "chroma=\(chroma.rawValue) hdr=\(hdr) failed (\(error)); fell back to 420v"
                         )
                     } catch {
                         ConnectionLogger.shared.logStep(

@@ -33,13 +33,17 @@ public sealed class D3D11Renderer : IDisposable
     private ID3D11RasterizerState? _rasterizerState;
     private ID3D11Buffer? _paramsBuffer;
 
-    [StructLayout(LayoutKind.Sequential, Size = 16)]
+    [StructLayout(LayoutKind.Sequential, Size = 32)]
     private struct RenderParams
     {
         public float TexelWidth;
         public float TexelHeight;
         public float Sharpness;
         public int FullRange;
+        public int ToneMap;
+        private int _pad0;
+        private int _pad1;
+        private int _pad2;
     }
 
     // Persistent GPU NV12 texture (ArraySize=1, BindFlags.ShaderResource) used as
@@ -64,8 +68,10 @@ public sealed class D3D11Renderer : IDisposable
     private SwapChainFlags _swapChainFlags;
     private ScaleMode _scaleMode = ScaleMode.Fit;
     private bool _vsyncEnabled;
-    private bool _fullRangeColor;
-    private float _sharpness = 0.25f; // Gentle AMD FidelityFX CAS anti-blur sharpening for crisp scrolling text
+    private bool _fullRangeColor = true;
+    private SharpnessLevel _sharpnessLevel = SharpnessLevel.Low;
+    private float _sharpness = 0.35f; // AMD FidelityFX CAS anti-blur sharpening (Low = 0.35 default)
+    private bool _toneMap;
     private bool _disposed;
 
     // Present stats
@@ -99,7 +105,7 @@ public sealed class D3D11Renderer : IDisposable
     }
 
     /// <summary>
-    /// AMD FidelityFX CAS anti-blur sharpening intensity (0.0 = off, 0.25 = subtle default, 1.0 = max).
+    /// AMD FidelityFX CAS anti-blur sharpening intensity (0.0 = off, 0.35 = low default, 0.65 = medium, 1.0 = high).
     /// </summary>
     public float Sharpness
     {
@@ -109,6 +115,40 @@ public sealed class D3D11Renderer : IDisposable
             float clamped = Math.Clamp(value, 0f, 1f);
             if (Math.Abs(_sharpness - clamped) < 0.001f) return;
             _sharpness = clamped;
+            RePresent();
+        }
+    }
+
+    /// <summary>
+    /// Discrete CAS sharpening preset matching Remoter-Client / Remoter-MacClient.
+    /// </summary>
+    public SharpnessLevel SharpnessLevel
+    {
+        get => _sharpnessLevel;
+        set
+        {
+            _sharpnessLevel = value;
+            Sharpness = value switch
+            {
+                SharpnessLevel.Off    => 0.0f,
+                SharpnessLevel.Low    => 0.35f,
+                SharpnessLevel.Medium => 0.65f,
+                SharpnessLevel.High   => 1.0f,
+                _                     => 0.35f,
+            };
+        }
+    }
+
+    /// <summary>
+    /// Enables ACES Filmic SDR tone-mapping when viewing HDR 10-bit streams on SDR displays.
+    /// </summary>
+    public bool ToneMap
+    {
+        get => _toneMap;
+        set
+        {
+            if (_toneMap == value) return;
+            _toneMap = value;
             RePresent();
         }
     }
@@ -151,12 +191,14 @@ public sealed class D3D11Renderer : IDisposable
         """;
 
     // BT.709 NV12 -> RGB conversion (supports both limited-range & UU full-range)
-    // + AMD FidelityFX CAS 5-tap anti-blur sharpening for crisp text during fast scroll.
+    // + AMD FidelityFX CAS 5-tap anti-blur sharpening + ACES Filmic SDR tone-mapping.
     private const string Nv12PsHlsl = """
         cbuffer RenderParams : register(b0) {
             float2 texelSize;
             float  sharpness;
             int    fullRange;
+            int    toneMap;
+            float3 _pad;
         };
 
         Texture2D<float>  texY  : register(t0);
@@ -167,6 +209,15 @@ public sealed class D3D11Renderer : IDisposable
             float4 pos : SV_Position;
             float2 uv  : TEXCOORD0;
         };
+
+        float3 acesToneMap(float3 x) {
+            const float a = 2.51;
+            const float b = 0.03;
+            const float c = 2.43;
+            const float d = 0.59;
+            const float e = 0.14;
+            return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+        }
 
         float3 sampleNv12Rgb(float2 coord) {
             float yRaw = texY.Sample(samp, coord).r;
@@ -209,6 +260,10 @@ public sealed class D3D11Renderer : IDisposable
                 color = saturate(((b + d + f + h) * wRGB + e) * rcpWeight);
             }
 
+            if (toneMap != 0) {
+                color = acesToneMap(color);
+            }
+
             return float4(color, 1.0);
         }
         """;
@@ -218,6 +273,8 @@ public sealed class D3D11Renderer : IDisposable
             float2 texelSize;
             float  sharpness;
             int    fullRange;
+            int    toneMap;
+            float3 _pad;
         };
 
         Texture2D<float4> texBgra : register(t0);
@@ -227,6 +284,15 @@ public sealed class D3D11Renderer : IDisposable
             float4 pos : SV_Position;
             float2 uv  : TEXCOORD0;
         };
+
+        float3 acesToneMap(float3 x) {
+            const float a = 2.51;
+            const float b = 0.03;
+            const float c = 2.43;
+            const float d = 0.59;
+            const float e = 0.14;
+            return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+        }
 
         float4 main(PSIn input) : SV_Target {
             float3 e = texBgra.Sample(samp, input.uv).rgb;
@@ -247,6 +313,10 @@ public sealed class D3D11Renderer : IDisposable
                 float3 wRGB = ampRGB * peak;
                 float3 rcpWeight = 1.0 / (1.0 + 4.0 * wRGB);
                 color = saturate(((b + d + f + h) * wRGB + e) * rcpWeight);
+            }
+
+            if (toneMap != 0) {
+                color = acesToneMap(color);
             }
 
             return float4(color, 1.0);
@@ -406,7 +476,7 @@ public sealed class D3D11Renderer : IDisposable
         _rasterizerState = _device.CreateRasterizerState(rastDesc);
 
         var cbDesc = new BufferDescription(
-            16,
+            32,
             BindFlags.ConstantBuffer,
             ResourceUsage.Dynamic,
             CpuAccessFlags.Write);
@@ -480,6 +550,7 @@ public sealed class D3D11Renderer : IDisposable
                 srcTexture,
                 subresourceIndex,
                 srcBox);
+            _context.Flush();
 
             VideoWidth = videoWidth;
             VideoHeight = videoHeight;
@@ -817,6 +888,7 @@ public sealed class D3D11Renderer : IDisposable
                 TexelHeight = VideoHeight > 0 ? 1.0f / VideoHeight : 0f,
                 Sharpness = _sharpness,
                 FullRange = _fullRangeColor ? 1 : 0,
+                ToneMap = _toneMap ? 1 : 0,
             };
         }
         finally

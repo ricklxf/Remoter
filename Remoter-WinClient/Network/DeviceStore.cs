@@ -195,6 +195,7 @@ public sealed class DeviceStore
                 AudioEnabled = s.AudioEnabled,
                 ClipboardSyncEnabled = s.ClipboardSyncEnabled,
                 VSyncEnabled = s.VSyncEnabled,
+                HardwareDecode = s.HardwareDecode,
                 DownloadDirectory = s.DownloadDirectory,
             };
         }

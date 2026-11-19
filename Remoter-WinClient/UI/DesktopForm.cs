@@ -151,8 +151,27 @@ public sealed class DesktopForm : Form
         _toolbar.UpdatePosition();
 
         // Sync initial settings with server
-        _conn.SendFps(_settings.Fps, _settings.AutoFps);
-        _conn.SendBitrate(_settings.BitrateBps, _settings.AutoBitrate);
+        if (_settings.QualityPreset == QualityPreset.Auto)
+        {
+            _conn.SendFps(_settings.Fps, _settings.AutoFps);
+            _conn.SendBitrate(_settings.BitrateBps, _settings.AutoBitrate);
+        }
+        else
+        {
+            ApplyQualityPreset(_settings.QualityPreset, persist: false);
+        }
+        if (_settings.ChromaMode == ChromaMode.Yuv444)
+        {
+            _conn.SendChroma(ChromaMode.Yuv444);
+        }
+        if (_settings.HdrEnabled)
+        {
+            _conn.SendHdr(true);
+        }
+        if (_settings.LowLatencyEnabled)
+        {
+            _conn.SendLowLatency(true);
+        }
         _conn.SetClipboardSyncEnabled(_settings.ClipboardSyncEnabled);
         _conn.SetReverseClipboardActive(true);
         _conn.SendRequestKeyframe();
@@ -202,7 +221,8 @@ public sealed class DesktopForm : Form
                 {
                     try
                     {
-                        _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
+                        var hwDevice = _settings.HardwareDecode ? _renderer.Device : null;
+                        _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, hwDevice);
                         _activeDecoderCodec = _streamInfo.Codec;
                         _mfInitialized = true;
                         LogVideo($"MfVideoDecoder ready: codec={_streamInfo.Codec} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
@@ -276,7 +296,8 @@ public sealed class DesktopForm : Form
                 {
                     try
                     {
-                        _mfDecoder.Initialize(pkt.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
+                        var hwDevice = _settings.HardwareDecode ? _renderer.Device : null;
+                        _mfDecoder.Initialize(pkt.Codec, _remoteWidth, _remoteHeight, hwDevice);
                         _activeDecoderCodec = pkt.Codec;
                         _mfInitialized = true;
                         LogVideo($"MfVideoDecoder re-init: codec={pkt.Codec} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");

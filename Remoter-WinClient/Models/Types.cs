@@ -55,6 +55,22 @@ public enum ChromaMode
     Yuv444,
 }
 
+public enum QualityPreset
+{
+    Auto,
+    Smooth,
+    Hd,
+    Original,
+}
+
+public enum SharpnessLevel
+{
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
 public enum FileTransferDirection
 {
     Upload,
@@ -172,6 +188,19 @@ public sealed class ClientSettings
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public VideoCodecType PreferredCodec { get; set; } = VideoCodecType.H264;
 
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public QualityPreset QualityPreset { get; set; } = QualityPreset.Auto;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public SharpnessLevel Sharpness { get; set; } = SharpnessLevel.Low;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public ChromaMode ChromaMode { get; set; } = ChromaMode.Yuv420;
+
+    public bool HdrEnabled { get; set; } = false;
+    public bool ToneMapEnabled { get; set; } = false;
+    public bool LowLatencyEnabled { get; set; } = false;
+
     public int Fps { get; set; } = 60;
     public bool AutoFps { get; set; } = true;
     public int BitrateBps { get; set; } = 8_000_000;
@@ -179,6 +208,9 @@ public sealed class ClientSettings
     public bool AudioEnabled { get; set; } = true;
     public bool ClipboardSyncEnabled { get; set; } = true;
     public bool VSyncEnabled { get; set; } = false;
+    // Default false: avoids Windows GPU driver DXVA H.264 macroblock garbling on fast scroll
+    // while keeping ~1ms CPU MediaFoundation decode + full D3D11 GPU NV12 shader rendering.
+    public bool HardwareDecode { get; set; } = false;
     public string? DownloadDirectory { get; set; }
 }
 

@@ -47,6 +47,7 @@ public sealed class MfVideoDecoder : IDisposable
     public double LastDecodeMs { get; private set; }
     public long DecodedFrames { get; private set; }
     public long DroppedFrames { get; private set; }
+    public string LastError { get; private set; } = "";
 
     // ── Media Foundation Constants & GUIDs (mfapi.h / mftransform.h) ───────
 
@@ -463,9 +464,19 @@ public sealed class MfVideoDecoder : IDisposable
                 inSample.AddBuffer(inBuf);
                 inSample.SampleTime = timestampUs * 10L; // us -> 100ns
 
-                _transform.ProcessInput(0, inSample, 0);
+                bool emitted = false;
+                try
+                {
+                    _transform.ProcessInput(0, inSample, 0);
+                }
+                catch (SharpGen.Runtime.SharpGenException sgEx) when (sgEx.ResultCode.Code == unchecked((int)0xC00D36B5))
+                {
+                    // MF_E_NOTACCEPTING: drain pending output frames first, then retry ProcessInput
+                    emitted |= DrainOutputs();
+                    _transform.ProcessInput(0, inSample, 0);
+                }
 
-                bool emitted = DrainOutputs();
+                emitted |= DrainOutputs();
                 if (emitted)
                 {
                     long t1 = Stopwatch.GetTimestamp();
@@ -476,6 +487,7 @@ public sealed class MfVideoDecoder : IDisposable
             }
             catch (Exception ex)
             {
+                LastError = ex.Message;
                 Debug.WriteLine($"[MfVideoDecoder] Decode error: {ex.Message}");
                 DroppedFrames++;
                 _waitingForKeyframe = true;
@@ -566,7 +578,7 @@ public sealed class MfVideoDecoder : IDisposable
     {
         using var mediaBuf = sample.ConvertToContiguousBuffer();
 
-        // 1. Try true GPU zero-copy path via IMFDXGIBuffer
+        // 1. Try true GPU zero-copy path via IMFDXGIBuffer (direct COM vtable — zero RCW leak on DXVA surface pool!)
         if (IsGpuZeroCopy && OnGpuNv12Frame != null)
         {
             Guid iidDxgiBuf = IID_IMFDXGIBuffer;
@@ -575,11 +587,8 @@ public sealed class MfVideoDecoder : IDisposable
             {
                 try
                 {
-                    var dxgiBuf = (IMFDXGIBufferCom)Marshal.GetObjectForIUnknown(pDxgiBuf);
-                    Guid iidTex2d = IID_ID3D11Texture2D;
-                    if (dxgiBuf.GetResource(ref iidTex2d, out nint pTex) >= 0 && pTex != nint.Zero)
+                    if (TryExtractDxgiTexture(pDxgiBuf, out nint pTex, out uint subIdx) && pTex != nint.Zero)
                     {
-                        dxgiBuf.GetSubresourceIndex(out uint subIdx);
                         using var texture = new ID3D11Texture2D(pTex);
                         OnGpuNv12Frame.Invoke(texture, (int)subIdx, Width, Height);
                         return;
@@ -609,6 +618,29 @@ public sealed class MfVideoDecoder : IDisposable
                 mediaBuf.Unlock();
             }
         }
+    }
+
+    private static unsafe bool TryExtractDxgiTexture(nint pDxgiBuf, out nint pTex, out uint subIdx)
+    {
+        pTex = nint.Zero;
+        subIdx = 0;
+        // IMFDXGIBuffer inherits IUnknown (slots 0..2):
+        // slot 3 = GetResource(REFIID riid, LPVOID* ppvObject)
+        // slot 4 = GetSubresourceIndex(UINT* puSubresource)
+        nint* vtbl = *(nint**)pDxgiBuf;
+        var getResource = (delegate* unmanaged[Stdcall]<nint, Guid*, nint*, int>)vtbl[3];
+        var getSubIdx   = (delegate* unmanaged[Stdcall]<nint, uint*, int>)vtbl[4];
+
+        Guid iid = IID_ID3D11Texture2D;
+        nint tex = nint.Zero;
+        int hr = getResource(pDxgiBuf, &iid, &tex);
+        if (hr < 0 || tex == nint.Zero) return false;
+
+        uint idx = 0;
+        getSubIdx(pDxgiBuf, &idx);
+        pTex = tex;
+        subIdx = idx;
+        return true;
     }
 
     // ── Annex-B NAL Inspection & Parameter Set Cache (UU Pattern) ───────────

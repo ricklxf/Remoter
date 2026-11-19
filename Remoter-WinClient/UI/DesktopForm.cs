@@ -36,14 +36,12 @@ public sealed class DesktopForm : Form
     private readonly object _audioLock = new();
 
     // Dedicated MTA video thread owns D3D11Renderer & MfVideoDecoder init, decode, render & dispose.
-    // The WinForms STA UI thread NEVER acquires _renderLock or touches Media Foundation COM objects,
-    // eliminating both DXGI Present AB-BA deadlocks and STA/MTA COM marshaling hangs.
-    private readonly Channel<VideoFramePacket> _videoChannel = Channel.CreateBounded<VideoFramePacket>(
-        new BoundedChannelOptions(4)
+    // Unbounded channel ensures we NEVER randomly drop an H.264/H.265 P-frame mid-GOP.
+    private readonly Channel<VideoFramePacket> _videoChannel = Channel.CreateUnbounded<VideoFramePacket>(
+        new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropOldest,
         });
     private Thread? _videoThread;
     private nint _videoHostHwnd;
@@ -52,6 +50,8 @@ public sealed class DesktopForm : Form
     private int _pendingResizeW;
     private int _pendingResizeH;
     private bool _firstFrameLogged;
+    private long _videoRecvCount;
+    private long _lastStatsLogTick;
 
     private VideoCodecType _activeDecoderCodec = VideoCodecType.Jpeg;
     private int _remoteWidth;
@@ -294,6 +294,13 @@ public sealed class DesktopForm : Form
                     _firstFrameLogged = true;
                     LogVideo($"First {pkt.Codec} frame decoded & rendered (kf={pkt.IsKeyframe}, len={pkt.Data.Length}, decodeMs={_mfDecoder.LastDecodeMs:F1})");
                 }
+
+                long nowTick = Environment.TickCount64;
+                if (nowTick - _lastStatsLogTick >= 3000)
+                {
+                    _lastStatsLogTick = nowTick;
+                    LogVideo($"Stats: recv={Interlocked.Read(ref _videoRecvCount)} decoded={_mfDecoder.DecodedFrames} dropped={_mfDecoder.DroppedFrames} renderFps={_renderer.RenderedFps:F1} err='{_mfDecoder.LastError}'");
+                }
             }
         }
     }
@@ -501,6 +508,7 @@ public sealed class DesktopForm : Form
     private void OnVideoFrameReceived(VideoFramePacket pkt)
     {
         if (_disposed) return;
+        Interlocked.Increment(ref _videoRecvCount);
         // Non-blocking enqueue to dedicated MTA video thread (never stalls WebSocket receive loop)
         _videoChannel.Writer.TryWrite(pkt);
     }

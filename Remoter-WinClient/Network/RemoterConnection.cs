@@ -129,6 +129,7 @@ public sealed class RemoterConnection : IDisposable
     public event Action<int, int>? QualityActiveChanged;
     public event Action<ChromaMode>? ChromaActiveChanged;
     public event Action<bool>? HdrActiveChanged;
+    public event Action<bool>? ForceCanvasChanged;
     public event Action<CursorShapeInfo>? CursorShapeReceived;
     public event Action<ClipboardData>? ClipboardReceived;
     public event Action<bool>? InputLockChanged;
@@ -946,8 +947,11 @@ public sealed class RemoterConnection : IDisposable
                 }
                 break;
 
+            case ServerMessage.ForceCanvas fc:
+                ForceCanvasChanged?.Invoke(fc.Enabled);
+                break;
+
             case ServerMessage.Keepalive:
-            case ServerMessage.ForceCanvas:
             case ServerMessage.Unknown:
                 break;
         }
@@ -1179,11 +1183,29 @@ public sealed class RemoterConnection : IDisposable
     public void SendResolution(ResolutionTier tier, int? width = null, int? height = null, double? scale = null) =>
         EnqueueControlJson(ClientMessages.Resolution(tier, width, height, scale));
 
+    public void SendResolution(string tier, int? width = null, int? height = null, double? scale = null)
+    {
+        var parsed = tier?.Trim().ToLowerInvariant() switch
+        {
+            "match" => ResolutionTier.Match,
+            "1080"  => ResolutionTier.Res1080,
+            "2k"    => ResolutionTier.Res2K,
+            _       => ResolutionTier.Native,
+        };
+        EnqueueControlJson(ClientMessages.Resolution(parsed, width, height, scale));
+    }
+
     public void SendChroma(ChromaMode mode) =>
         EnqueueControlJson(ClientMessages.Chroma(mode));
 
+    public void SendChroma(string mode) =>
+        EnqueueControlJson(ClientMessages.Chroma(ProtocolHelpers.ParseChroma(mode)));
+
     public void SendHdr(bool enabled) =>
         EnqueueControlJson(ClientMessages.Hdr(enabled));
+
+    public void SendLowLatency(bool enabled) =>
+        EnqueueControlJson(ClientMessages.LowLatency(enabled));
 
     public void SendSetCodec(VideoCodecType codec) =>
         EnqueueControlJson(ClientMessages.SetCodec(codec));

@@ -68,9 +68,9 @@ public sealed class D3D11Renderer : IDisposable
     private SwapChainFlags _swapChainFlags;
     private ScaleMode _scaleMode = ScaleMode.Fit;
     private bool _vsyncEnabled;
-    private bool _fullRangeColor = true;
-    private SharpnessLevel _sharpnessLevel = SharpnessLevel.Low;
-    private float _sharpness = 0.35f; // AMD FidelityFX CAS anti-blur sharpening (Low = 0.35 default)
+    private bool _fullRangeColor = false; // Default BT.709 Video/Limited Range (16..235), matching UU Remote & MfVideoDecoder.IsFullRange
+    private SharpnessLevel _sharpnessLevel = SharpnessLevel.Off;
+    private float _sharpness = 0.0f; // Off by default to avoid bright haloing on light UI
     private bool _toneMap;
     private bool _disposed;
 

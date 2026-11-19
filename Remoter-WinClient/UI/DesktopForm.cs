@@ -212,6 +212,8 @@ public sealed class DesktopForm : Form
                 _renderer.Initialize(_videoHostHwnd, _initWidth, _initHeight);
                 _renderer.ScaleMode = _settings.ScaleMode;
                 _renderer.VSyncEnabled = _settings.VSyncEnabled;
+                _renderer.SharpnessLevel = _settings.Sharpness;
+                _renderer.ToneMap = _settings.ToneMapEnabled;
                 _rendererInitialized = true;
                 SafeBeginInvoke(() => { _videoHost.D3D11Active = true; });
 
@@ -369,6 +371,13 @@ public sealed class DesktopForm : Form
             });
         };
 
+        _mfDecoder.OnColorRangeChanged = fullRange =>
+        {
+            if (_disposed || !_rendererInitialized) return;
+            _renderer.FullRangeColor = fullRange;
+            LogVideo($"Color range synced from decoder: fullRange={fullRange}");
+        };
+
         _mfDecoder.OnKeyframeNeeded = () =>
         {
             _conn.SendRequestKeyframe();
@@ -393,8 +402,106 @@ public sealed class DesktopForm : Form
         };
     }
 
+    private void ApplyQualityPreset(QualityPreset preset, bool persist = true)
+    {
+        _settings.QualityPreset = preset;
+        switch (preset)
+        {
+            case QualityPreset.Auto:
+                _settings.AutoFps = true;
+                _settings.AutoBitrate = true;
+                _settings.Sharpness = SharpnessLevel.Low;
+                break;
+
+            case QualityPreset.Smooth:
+                _settings.Fps = 30;
+                _settings.AutoFps = false;
+                _settings.BitrateBps = 4_000_000;
+                _settings.AutoBitrate = false;
+                _settings.Sharpness = SharpnessLevel.Off;
+                break;
+
+            case QualityPreset.Hd:
+                _settings.Fps = 60;
+                _settings.AutoFps = false;
+                _settings.BitrateBps = 8_000_000;
+                _settings.AutoBitrate = false;
+                _settings.Sharpness = SharpnessLevel.Low;
+                break;
+
+            case QualityPreset.Original:
+                _settings.Fps = 120;
+                _settings.AutoFps = false;
+                _settings.BitrateBps = 25_000_000;
+                _settings.AutoBitrate = false;
+                _settings.Sharpness = SharpnessLevel.Medium;
+                break;
+        }
+
+        if (persist)
+        {
+            DeviceStore.Shared.SaveSettings(_settings);
+        }
+
+        _renderer.SharpnessLevel = _settings.Sharpness;
+        _toolbar.UpdateState(
+            qualityPreset: preset,
+            fps: _settings.Fps,
+            fpsAuto: _settings.AutoFps,
+            bitrate: _settings.BitrateBps,
+            bitrateAuto: _settings.AutoBitrate,
+            sharpness: _settings.Sharpness);
+
+        _conn.SendFps(_settings.Fps, _settings.AutoFps);
+        _conn.SendBitrate(_settings.BitrateBps, _settings.AutoBitrate);
+    }
+
     private void WireToolbarEvents()
     {
+        _toolbar.QualityPresetChanged += preset => ApplyQualityPreset(preset);
+
+        _toolbar.SharpnessChanged += level =>
+        {
+            _settings.Sharpness = level;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _renderer.SharpnessLevel = level;
+            _toolbar.UpdateState(sharpness: level);
+        };
+
+        _toolbar.ChromaToggled += mode =>
+        {
+            _settings.ChromaMode = mode;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _toolbar.UpdateState(chromaMode: mode);
+            _conn.SendChroma(mode);
+        };
+
+        _toolbar.HdrToggled += enable =>
+        {
+            _settings.HdrEnabled = enable;
+            _settings.ToneMapEnabled = enable;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _renderer.ToneMap = enable;
+            _toolbar.UpdateState(hdrOn: enable, toneMapOn: enable);
+            _conn.SendHdr(enable);
+        };
+
+        _toolbar.ToneMapToggled += enable =>
+        {
+            _settings.ToneMapEnabled = enable;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _renderer.ToneMap = enable;
+            _toolbar.UpdateState(toneMapOn: enable);
+        };
+
+        _toolbar.LowLatencyToggled += enable =>
+        {
+            _settings.LowLatencyEnabled = enable;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _toolbar.UpdateState(lowLatencyOn: enable);
+            _conn.SendLowLatency(enable);
+        };
+
         _toolbar.ResolutionChanged += tierStr =>
         {
             var tier = ParseResolutionTier(tierStr);
@@ -405,10 +512,10 @@ public sealed class DesktopForm : Form
             if (tier == ResolutionTier.Match)
             {
                 var screen = Screen.FromControl(this);
-                int w = screen.Bounds.Width & ~1;
-                int h = screen.Bounds.Height & ~1;
-                double scale = DeviceDpi / 96.0;
-                _conn.SendResolution(tier, w, h, scale);
+                double scale = Math.Max(1.0, DeviceDpi / 96.0);
+                int w = (int)Math.Round(screen.Bounds.Width / scale) & ~1;
+                int h = (int)Math.Round(screen.Bounds.Height / scale) & ~1;
+                _conn.SendResolution(tier, Math.Max(2, w), Math.Max(2, h), scale);
             }
             else
             {
@@ -501,6 +608,8 @@ public sealed class DesktopForm : Form
         _conn.StreamStarted += OnStreamUpdated;
         _conn.CodecChanged += OnCodecChanged;
         _conn.QualityActiveChanged += OnQualityActiveChanged;
+        _conn.ChromaActiveChanged += OnChromaActiveChanged;
+        _conn.HdrActiveChanged += OnHdrActiveChanged;
         _conn.CursorShapeReceived += OnCursorShapeReceived;
         _conn.ClipboardReceived += OnClipboardReceived;
         _conn.StatsUpdated += OnStatsUpdated;
@@ -516,6 +625,8 @@ public sealed class DesktopForm : Form
         _conn.StreamStarted -= OnStreamUpdated;
         _conn.CodecChanged -= OnCodecChanged;
         _conn.QualityActiveChanged -= OnQualityActiveChanged;
+        _conn.ChromaActiveChanged -= OnChromaActiveChanged;
+        _conn.HdrActiveChanged -= OnHdrActiveChanged;
         _conn.CursorShapeReceived -= OnCursorShapeReceived;
         _conn.ClipboardReceived -= OnClipboardReceived;
         _conn.StatsUpdated -= OnStatsUpdated;
@@ -572,6 +683,26 @@ public sealed class DesktopForm : Form
     private void OnQualityActiveChanged(int fps, int bitrate)
     {
         SafeBeginInvoke(() => _toolbar.UpdateState(fps: fps, bitrate: bitrate));
+    }
+
+    private void OnChromaActiveChanged(ChromaMode mode)
+    {
+        SafeBeginInvoke(() =>
+        {
+            _settings.ChromaMode = mode;
+            _toolbar.UpdateState(chromaMode: mode);
+        });
+    }
+
+    private void OnHdrActiveChanged(bool enabled)
+    {
+        SafeBeginInvoke(() =>
+        {
+            _settings.HdrEnabled = enabled;
+            _settings.ToneMapEnabled = enabled;
+            _renderer.ToneMap = enabled;
+            _toolbar.UpdateState(hdrOn: enabled, toneMapOn: enabled);
+        });
     }
 
     private void OnCursorShapeReceived(CursorShapeInfo info)
@@ -757,6 +888,12 @@ public sealed class DesktopForm : Form
     private void SyncToolbarFromState()
     {
         _toolbar.UpdateState(
+            qualityPreset: _settings.QualityPreset,
+            sharpness: _settings.Sharpness,
+            chromaMode: _settings.ChromaMode,
+            hdrOn: _settings.HdrEnabled,
+            toneMapOn: _settings.ToneMapEnabled,
+            lowLatencyOn: _settings.LowLatencyEnabled,
             resolution: FormatResolutionTier(_settings.ResolutionTier),
             scaleMode: FormatScaleMode(_settings.ScaleMode),
             fps: _settings.Fps,

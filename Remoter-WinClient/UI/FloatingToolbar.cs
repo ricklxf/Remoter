@@ -45,6 +45,12 @@ public sealed class FloatingToolbar : Form
     private readonly ContextMenuStrip _displayMenu;
 
     // Current state
+    private QualityPreset _qualityPreset = QualityPreset.Auto;
+    private SharpnessLevel _sharpness = SharpnessLevel.Low;
+    private ChromaMode _chromaMode = ChromaMode.Yuv420;
+    private bool _hdrOn;
+    private bool _toneMapOn;
+    private bool _lowLatencyOn;
     private string _resolution = "native";
     private string _scaleMode = "fit";
     private int _fps = 60;
@@ -60,6 +66,12 @@ public sealed class FloatingToolbar : Form
     private List<(int Id, string Name, int Width, int Height)> _displays = new();
 
     // Events wired by DesktopForm
+    public event Action<QualityPreset>? QualityPresetChanged;
+    public event Action<SharpnessLevel>? SharpnessChanged;
+    public event Action<ChromaMode>? ChromaToggled;
+    public event Action<bool>? HdrToggled;
+    public event Action<bool>? ToneMapToggled;
+    public event Action<bool>? LowLatencyToggled;
     public event Action<string>? ResolutionChanged;
     public event Action<string>? ScaleModeChanged;
     public event Action<int, bool>? FpsChanged;
@@ -264,6 +276,12 @@ public sealed class FloatingToolbar : Form
     }
 
     public void UpdateState(
+        QualityPreset? qualityPreset = null,
+        SharpnessLevel? sharpness = null,
+        ChromaMode? chromaMode = null,
+        bool? hdrOn = null,
+        bool? toneMapOn = null,
+        bool? lowLatencyOn = null,
         string? resolution = null,
         string? scaleMode = null,
         int? fps = null,
@@ -277,13 +295,19 @@ public sealed class FloatingToolbar : Form
         bool? fullscreen = null)
     {
         bool rebuildMenu = false;
-        if (resolution != null) { _resolution = resolution; rebuildMenu = true; }
-        if (scaleMode != null)  { _scaleMode = scaleMode;   rebuildMenu = true; }
-        if (fps.HasValue)       { _fps = fps.Value;         rebuildMenu = true; }
-        if (fpsAuto.HasValue)   { _fpsAuto = fpsAuto.Value; rebuildMenu = true; }
-        if (bitrate.HasValue)   { _bitrate = bitrate.Value; rebuildMenu = true; }
-        if (bitrateAuto.HasValue) { _bitrateAuto = bitrateAuto.Value; rebuildMenu = true; }
-        if (codec != null)      { _codec = codec;           rebuildMenu = true; }
+        if (qualityPreset.HasValue) { _qualityPreset = qualityPreset.Value; rebuildMenu = true; }
+        if (sharpness.HasValue)     { _sharpness = sharpness.Value;         rebuildMenu = true; }
+        if (chromaMode.HasValue)    { _chromaMode = chromaMode.Value;       rebuildMenu = true; }
+        if (hdrOn.HasValue)         { _hdrOn = hdrOn.Value;                 rebuildMenu = true; }
+        if (toneMapOn.HasValue)     { _toneMapOn = toneMapOn.Value;         rebuildMenu = true; }
+        if (lowLatencyOn.HasValue)  { _lowLatencyOn = lowLatencyOn.Value;   rebuildMenu = true; }
+        if (resolution != null)     { _resolution = resolution;             rebuildMenu = true; }
+        if (scaleMode != null)      { _scaleMode = scaleMode;               rebuildMenu = true; }
+        if (fps.HasValue)           { _fps = fps.Value;                     rebuildMenu = true; }
+        if (fpsAuto.HasValue)       { _fpsAuto = fpsAuto.Value;             rebuildMenu = true; }
+        if (bitrate.HasValue)       { _bitrate = bitrate.Value;             rebuildMenu = true; }
+        if (bitrateAuto.HasValue)   { _bitrateAuto = bitrateAuto.Value;     rebuildMenu = true; }
+        if (codec != null)          { _codec = codec;                       rebuildMenu = true; }
 
         if (audioOn.HasValue)
         {
@@ -318,53 +342,140 @@ public sealed class FloatingToolbar : Form
         _activeDisplayId = activeId;
         _displayBtn.Visible = _displays.Count > 1;
         RebuildDisplayMenu();
+        RebuildQualityMenu();
         if (_expanded) UpdatePosition();
     }
+
+    private void CycleDisplay()
+    {
+        if (_displays.Count <= 1) return;
+        int idx = _displays.FindIndex(d => d.Id == _activeDisplayId);
+        int nextIdx = (idx + 1) % _displays.Count;
+        DisplaySelected?.Invoke(_displays[nextIdx].Id);
+    }
+
+    private static string FormatBitrate(int bps)
+    {
+        double mbps = bps / 1_000_000.0;
+        return Math.Abs(mbps - Math.Round(mbps)) < 0.05
+            ? $"{Math.Round(mbps):F0}Mbps"
+            : $"{mbps:F1}Mbps";
+    }
+
+    private static string FormatSharpness(SharpnessLevel level) => level switch
+    {
+        SharpnessLevel.Off    => "关",
+        SharpnessLevel.Low    => "柔和",
+        SharpnessLevel.Medium => "清晰",
+        SharpnessLevel.High   => "极致",
+        _                     => "柔和",
+    };
 
     private void RebuildQualityMenu()
     {
         _qualityMenu.Items.Clear();
 
+        // 1. Multi-display picker + one-click switch (only when >1 display)
+        if (_displays.Count > 1)
+        {
+            var dispSub = new ToolStripMenuItem("显示器");
+            foreach (var d in _displays)
+            {
+                int id = d.Id;
+                AddCheckItem(dispSub, $"{d.Name} ({d.Width}×{d.Height})", d.Id == _activeDisplayId, () => DisplaySelected?.Invoke(id));
+            }
+            _qualityMenu.Items.Add(dispSub);
+
+            var cycleItem = new ToolStripMenuItem("一键切屏");
+            cycleItem.Click += (_, _) => CycleDisplay();
+            _qualityMenu.Items.Add(cycleItem);
+            _qualityMenu.Items.Add(new ToolStripSeparator());
+        }
+
+        // 2. UU-style Quality Presets (top-level zero-knob selector)
+        string autoLabel = _qualityPreset == QualityPreset.Auto
+            ? $"自动 ({_fps}fps · {FormatBitrate(_bitrate)})"
+            : "自动";
+        AddRootCheckItem(_qualityMenu, autoLabel, _qualityPreset == QualityPreset.Auto, () => QualityPresetChanged?.Invoke(QualityPreset.Auto));
+        AddRootCheckItem(_qualityMenu, "流畅 (30fps · 4Mbps)", _qualityPreset == QualityPreset.Smooth, () => QualityPresetChanged?.Invoke(QualityPreset.Smooth));
+        AddRootCheckItem(_qualityMenu, "高清 (60fps · 8Mbps)", _qualityPreset == QualityPreset.Hd, () => QualityPresetChanged?.Invoke(QualityPreset.Hd));
+        AddRootCheckItem(_qualityMenu, "原画 (120fps · 25Mbps)", _qualityPreset == QualityPreset.Original, () => QualityPresetChanged?.Invoke(QualityPreset.Original));
+
+        _qualityMenu.Items.Add(new ToolStripSeparator());
+
+        // 3. True Color 4:4:4 & HDR 10-bit toggles
+        AddRootCheckItem(
+            _qualityMenu,
+            "真彩 4:4:4",
+            _chromaMode == ChromaMode.Yuv444,
+            () => ChromaToggled?.Invoke(_chromaMode == ChromaMode.Yuv444 ? ChromaMode.Yuv420 : ChromaMode.Yuv444));
+        AddRootCheckItem(
+            _qualityMenu,
+            "HDR 10-bit",
+            _hdrOn,
+            () => HdrToggled?.Invoke(!_hdrOn));
+
+        _qualityMenu.Items.Add(new ToolStripSeparator());
+
+        // 4. Collapsible Advanced Settings submenu (collapsed by default)
+        var advMenu = new ToolStripMenuItem("高级设置");
+
         // Resolution
         var resMenu = new ToolStripMenuItem("分辨率");
-        AddCheckItem(resMenu, "自适应屏幕 (Match)", _resolution == "match", () => ResolutionChanged?.Invoke("match"));
         AddCheckItem(resMenu, "原生 (Native)",      _resolution == "native", () => ResolutionChanged?.Invoke("native"));
+        AddCheckItem(resMenu, "自适应屏幕 (Match)", _resolution == "match", () => ResolutionChanged?.Invoke("match"));
         AddCheckItem(resMenu, "1080p",              _resolution == "1080", () => ResolutionChanged?.Invoke("1080"));
         AddCheckItem(resMenu, "2K",                 _resolution == "2k", () => ResolutionChanged?.Invoke("2k"));
-        _qualityMenu.Items.Add(resMenu);
+        advMenu.DropDownItems.Add(resMenu);
 
         // Scale Mode
         var scaleMenu = new ToolStripMenuItem("缩放模式");
         AddCheckItem(scaleMenu, "等比缩放 (Fit)",      _scaleMode == "fit", () => ScaleModeChanged?.Invoke("fit"));
-        AddCheckItem(scaleMenu, "拉伸铺满 (Stretch)",  _scaleMode == "stretch", () => ScaleModeChanged?.Invoke("stretch"));
+        AddCheckItem(scaleMenu, "拉伸全屏 (Stretch)",  _scaleMode == "stretch", () => ScaleModeChanged?.Invoke("stretch"));
         AddCheckItem(scaleMenu, "原始 1:1 (Original)", _scaleMode == "original", () => ScaleModeChanged?.Invoke("original"));
-        _qualityMenu.Items.Add(scaleMenu);
+        advMenu.DropDownItems.Add(scaleMenu);
 
-        // FPS
-        var fpsMenu = new ToolStripMenuItem($"帧率 ({(_fpsAuto ? "自动" : $"{_fps}fps")})");
+        // Manual FPS
+        var fpsMenu = new ToolStripMenuItem($"手动帧率 ({(_fpsAuto ? "自动" : $"{_fps}fps")})");
         AddCheckItem(fpsMenu, $"自动 ({_fps}fps)", _fpsAuto, () => FpsChanged?.Invoke(_fps, true));
         foreach (int f in new[] { 30, 60, 90, 120 })
         {
             int val = f;
             AddCheckItem(fpsMenu, $"{val} fps", !_fpsAuto && _fps == val, () => FpsChanged?.Invoke(val, false));
         }
-        _qualityMenu.Items.Add(fpsMenu);
+        advMenu.DropDownItems.Add(fpsMenu);
 
-        // Bitrate
-        var brMenu = new ToolStripMenuItem($"码率 ({(_bitrateAuto ? "自动" : $"{_bitrate / 1_000_000}Mbps")})");
-        AddCheckItem(brMenu, $"自动 ({_bitrate / 1_000_000}Mbps)", _bitrateAuto, () => BitrateChanged?.Invoke(_bitrate, true));
+        // Manual Bitrate
+        var brMenu = new ToolStripMenuItem($"手动码率 ({(_bitrateAuto ? "自动" : FormatBitrate(_bitrate))})");
+        AddCheckItem(brMenu, $"自动 ({FormatBitrate(_bitrate)})", _bitrateAuto, () => BitrateChanged?.Invoke(_bitrate, true));
         foreach (int b in new[] { 2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000 })
         {
             int val = b;
             AddCheckItem(brMenu, $"{val / 1_000_000} Mbps", !_bitrateAuto && _bitrate == val, () => BitrateChanged?.Invoke(val, false));
         }
-        _qualityMenu.Items.Add(brMenu);
+        advMenu.DropDownItems.Add(brMenu);
+
+        // CAS Sharpness
+        var sharpMenu = new ToolStripMenuItem($"锐化强度 ({FormatSharpness(_sharpness)})");
+        AddCheckItem(sharpMenu, "关",   _sharpness == SharpnessLevel.Off,    () => SharpnessChanged?.Invoke(SharpnessLevel.Off));
+        AddCheckItem(sharpMenu, "柔和", _sharpness == SharpnessLevel.Low,    () => SharpnessChanged?.Invoke(SharpnessLevel.Low));
+        AddCheckItem(sharpMenu, "清晰", _sharpness == SharpnessLevel.Medium, () => SharpnessChanged?.Invoke(SharpnessLevel.Medium));
+        AddCheckItem(sharpMenu, "极致", _sharpness == SharpnessLevel.High,   () => SharpnessChanged?.Invoke(SharpnessLevel.High));
+        advMenu.DropDownItems.Add(sharpMenu);
 
         // Codec
-        var codecMenu = new ToolStripMenuItem($"编码 ({_codec.ToUpperInvariant()})");
+        var codecMenu = new ToolStripMenuItem($"编解码器 ({_codec.ToUpperInvariant()})");
         AddCheckItem(codecMenu, "H.264 (AVC)",  _codec == "h264", () => CodecChanged?.Invoke("h264"));
         AddCheckItem(codecMenu, "H.265 (HEVC)", _codec == "h265", () => CodecChanged?.Invoke("h265"));
-        _qualityMenu.Items.Add(codecMenu);
+        advMenu.DropDownItems.Add(codecMenu);
+
+        advMenu.DropDownItems.Add(new ToolStripSeparator());
+
+        // Zero-buffer low latency & ACES SDR tone-mapping
+        AddCheckItem(advMenu, "零缓冲极速", _lowLatencyOn, () => LowLatencyToggled?.Invoke(!_lowLatencyOn));
+        AddCheckItem(advMenu, "SDR 色调映射 (ACES)", _toneMapOn, () => ToneMapToggled?.Invoke(!_toneMapOn));
+
+        _qualityMenu.Items.Add(advMenu);
 
         _qualityMenu.Items.Add(new ToolStripSeparator());
         var cadItem = new ToolStripMenuItem("发送 Ctrl + Alt + Delete");
@@ -385,6 +496,20 @@ public sealed class FloatingToolbar : Form
             item.Click += (_, _) => DisplaySelected?.Invoke(id);
             _displayMenu.Items.Add(item);
         }
+        if (_displays.Count > 1)
+        {
+            _displayMenu.Items.Add(new ToolStripSeparator());
+            var cycleItem = new ToolStripMenuItem("一键切屏");
+            cycleItem.Click += (_, _) => CycleDisplay();
+            _displayMenu.Items.Add(cycleItem);
+        }
+    }
+
+    private static void AddRootCheckItem(ContextMenuStrip menu, string text, bool isChecked, Action onClick)
+    {
+        var item = new ToolStripMenuItem(text) { Checked = isChecked };
+        item.Click += (_, _) => onClick();
+        menu.Items.Add(item);
     }
 
     private static void AddCheckItem(ToolStripMenuItem parent, string text, bool isChecked, Action onClick)

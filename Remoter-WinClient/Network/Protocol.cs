@@ -245,6 +245,9 @@ public static class ClientMessages
     public static byte[] Hdr(bool enabled) =>
         Serialize(new { type = "hdr", enabled });
 
+    public static byte[] LowLatency(bool enabled) =>
+        Serialize(new { type = "low_latency", enabled });
+
     public static byte[] SetCodec(VideoCodecType codec) =>
         Serialize(new { type = "set_codec", codec = ProtocolHelpers.ToWireString(codec) });
 

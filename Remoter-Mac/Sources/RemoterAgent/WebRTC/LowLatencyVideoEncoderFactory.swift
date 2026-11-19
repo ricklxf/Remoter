@@ -27,7 +27,23 @@ final class LowLatencyVideoEncoderFactory: NSObject, RTCVideoEncoderFactory {
 
     func supportedCodecs() -> [RTCVideoCodecInfo] {
         let defaults = defaultFactory.supportedCodecs()
-        let highH264 = defaults.filter { Self.isH264HighProfile($0) }
+        var highH264: [RTCVideoCodecInfo] = []
+        // Chrome offers H.264 High Profile (64001f/640032), whereas RTCDefaultVideoEncoderFactory
+        // only advertises Constrained High (640c1f). libwebrtc treats kProfileHigh !=
+        // kProfileConstrainedHigh and falls back to Constrained Baseline (42e01f, no CABAC).
+        // Explicitly advertising 640032 first lets Chrome negotiate High Profile with CABAC.
+        let hasHigh6400 = defaults.contains {
+            $0.name.uppercased() == "H264"
+                && ($0.parameters["profile-level-id"]?.lowercased().hasPrefix("6400") ?? false)
+        }
+        if !hasHigh6400 {
+            highH264.append(RTCVideoCodecInfo(name: "H264", parameters: [
+                "profile-level-id": "640032",
+                "level-asymmetry-allowed": "1",
+                "packetization-mode": "1"
+            ]))
+        }
+        highH264.append(contentsOf: defaults.filter { Self.isH264HighProfile($0) })
         let otherH264 = defaults.filter { $0.name.uppercased() == "H264" && !Self.isH264HighProfile($0) }
         let others = defaults.filter { $0.name.uppercased() != "H264" }
         return highH264 + otherH264 + others
@@ -321,8 +337,10 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
 
     private func applyRateControl(_ session: VTCompressionSession, bitrateBps: Int, fps: Int) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: bitrateBps))
-        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
-        let dataRateLimits: [Any] = [burstByteLimit, 1.0]
+        // 2.0x burst headroom over a 0.5s window so sudden full-screen scrolling gets instant
+        // burst bits without QP spiking into blurry text.
+        let burstByteLimit = Int64(Double(bitrateBps) * 2.0 * 0.5 / 8.0)
+        let dataRateLimits: [Any] = [burstByteLimit, 0.5]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: fps))
     }

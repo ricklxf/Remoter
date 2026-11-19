@@ -97,10 +97,11 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // So: arm up to 20ms, and revoke on evidence the path is actually
     // overloaded — receiver-reported loss, one very high RTT sample, or two
     // *new* samples in a row above wanRttThresholdMs — not on a single blip.
-    private static let lanRttThresholdMs = 20.0
+    private static let wiredLanRttThresholdMs = 3.5
+    private static let lanRttThresholdMs = 18.0
     private static let wanRttThresholdMs = 40.0
     private static let hardRttThresholdMs = 150.0
-    private static let lossRevokeFraction = 0.02
+    private static let lossRevokeFraction = 0.06
     // After a revoke, don't re-arm for a while: the same session later showed
     // this path at ~1.5Mbps with real loss and ~1s receiver jitter, where
     // idle RTT still reads 8-15ms — without a hold-off the floor would re-arm
@@ -137,6 +138,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // and 12Mbps with loss, so hold it in a 6-10Mbps band instead: enough for
     // a 30fps scroll, and no climbing to 25-30Mbps until it breaks. Loss
     // still revokes the floor and lowers the cap (evaluateLossCap).
+    private static let wifiFloorBps: Int = 6_000_000
     private static let tunnelFloorBps: Int = 6_000_000
     private static let tunnelCapBps: Int = 10_000_000
     /// Set by Session: true when the client is off-LAN AND bitrate is on auto.
@@ -154,7 +156,17 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private var isDirectP2P = false
     private var isDirectPrivateLan = false
     private var effectiveLanAllowed: Bool { lanFloorAllowed || isDirectPrivateLan }
-    private var floorBps: Int { effectiveLanAllowed ? Self.lanFloorBps : Self.tunnelFloorBps }
+    /// Only arm the 12 Mbps wired LAN floor when RTT <= 3.5ms (true wired Ethernet);
+    /// for Wi-Fi / P2P (3.5 < RTT <= 18ms), use the safe 6 Mbps `wifiFloorBps` so
+    /// the floor never floods a Wi-Fi link into a loss spike.
+    private var lastObservedRttMs: Double = 999.0
+    private var floorBps: Int {
+        if effectiveLanAllowed && lastObservedRttMs <= Self.wiredLanRttThresholdMs {
+            return Self.lanFloorBps
+        }
+        return effectiveLanAllowed ? Self.wifiFloorBps : Self.tunnelFloorBps
+    }
+    private var activeFloorBps: Int = 0
     private var minBitrateFloorActive = false
 
     // MARK: - 信令处理
@@ -285,28 +297,42 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // keeps overshooting. Each time the receiver reports real loss, cap the
     // encoder at a fraction of the rate that produced it, for the rest of
     // this connection (a renegotiation starts clean).
-    private static let lossCapTrigger = 0.02
+    private static let lossCapTrigger = 0.06
     private static let lossCapFactor = 0.6
-    private static let lossCapMinBps = 2_000_000
+    private static let lossCapMinBps = 5_000_000
     private static let lossCapHoldSec = 10.0
+    private static let lossCapRecoveryLossThreshold = 0.02
+    private static let lossCapRecoveryRttThresholdMs = 30.0
+    private static let lossCapRecoveryStreakRequired = 6   // 3s at 0.5s poll
+    private static let lossCapRecoveryFactor = 1.35
+    private static let lossCapClearBps = 10_000_000
     private var requestedMaxBps = Int.max
     private var requestedMaxFps = 120
     private var lossCapBps: Int?
     private var lossCapSetAt: CFAbsoluteTime = 0
     private var zeroLossStreak = 0
-    private static let lossCapClearStreakRequired = 20  // 10s of 0% loss at 0.5s poll
 
     private func evaluateLossCap(lossFraction: Double, targetBps: Int?, rttMs: Double?) {
         if lossFraction < Self.lossCapTrigger {
-            if lossCapBps != nil {
-                if lossFraction == 0, let rttMs, rttMs <= Self.lanRttThresholdMs {
+            if let currentCap = lossCapBps {
+                if lossFraction < Self.lossCapRecoveryLossThreshold,
+                   let rttMs, rttMs <= Self.lossCapRecoveryRttThresholdMs {
                     zeroLossStreak += 1
-                    if zeroLossStreak >= Self.lossCapClearStreakRequired {
-                        lossCapBps = nil
+                    if zeroLossStreak >= Self.lossCapRecoveryStreakRequired {
                         zeroLossStreak = 0
-                        applyMaxBitrate()
-                        ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "loss_cap",
-                            detail: "cleared rttMs=\(String(format: "%.1f", rttMs))")
+                        let nextCap = Int(Double(currentCap) * Self.lossCapRecoveryFactor)
+                        let clearLimit = min(Self.lossCapClearBps, requestedMaxBps)
+                        if nextCap >= clearLimit {
+                            lossCapBps = nil
+                            applyMaxBitrate()
+                            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "loss_cap",
+                                detail: "cleared rttMs=\(String(format: "%.1f", rttMs))")
+                        } else {
+                            lossCapBps = nextCap
+                            applyMaxBitrate()
+                            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "loss_cap",
+                                detail: "step_up cap=\(nextCap) rttMs=\(String(format: "%.1f", rttMs))")
+                        }
                     }
                 } else {
                     zeroLossStreak = 0
@@ -412,6 +438,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         lossCapBps = nil
         isDirectP2P = false
         isDirectPrivateLan = false
+        lastObservedRttMs = 999.0
+        activeFloorBps = 0
         minBitrateFloorActive = false
         pc?.close()
         pc = nil
@@ -495,6 +523,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// holds off re-arming — see the comments on the thresholds above.
     private func evaluateMinBitrateFloor(rttMs: Double?, rttSamples: Double, lossFraction: Double) {
         guard let rttMs, rttMs >= 0 else { return }
+        lastObservedRttMs = rttMs
         let isNewSample = rttSamples != lastRttSampleCount
         lastRttSampleCount = rttSamples
         if isNewSample { highRttStreak = rttMs >= Self.wanRttThresholdMs ? highRttStreak + 1 : 0 }
@@ -509,6 +538,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             floorRevokedAt = CFAbsoluteTimeGetCurrent()
             if minBitrateFloorActive {
                 minBitrateFloorActive = false
+                activeFloorBps = 0
                 setMinBitrate(nil)
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
                     detail: "off reason=\(revokeReason) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
@@ -522,17 +552,16 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 if isDirectP2P, !isDirectPrivateLan, rttMs <= 15.0, lossFraction == 0 {
                     isDirectPrivateLan = true
                     applyMaxBitrate()
-                    if minBitrateFloorActive {
-                        setMinBitrate(floorBps)
-                    }
                     ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "direct_lan_promoted",
                         detail: "bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
                 }
-                if !minBitrateFloorActive {
+                let desiredFloor = floorBps
+                if !minBitrateFloorActive || activeFloorBps != desiredFloor {
                     minBitrateFloorActive = true
-                    setMinBitrate(floorBps)
+                    activeFloorBps = desiredFloor
+                    setMinBitrate(desiredFloor)
                     ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
-                        detail: "on bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
+                        detail: "on bps=\(desiredFloor) rttMs=\(String(format: "%.1f", rttMs))")
                 }
             }
         } else {

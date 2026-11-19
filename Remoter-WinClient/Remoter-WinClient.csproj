@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>RemoterWinClient</AssemblyName>
+    <RootNamespace>RemoterWinClient</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>..\Remoter-Win\Remoter.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pure native Direct3D 11 + DXGI 1.2 Flip-Model rendering -->
+    <PackageReference Include="Vortice.Direct3D11" Version="3.5.0" />
+    <PackageReference Include="Vortice.DXGI" Version="3.5.0" />
+    <!-- Hardware H.264/H.265 video decoding & AAC audio decoding via Media Foundation -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.5.0" />
+    <!-- Native GDI+ JPEG fallback decoding & clipboard image support -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- Copy Remoter.ico to output for runtime window/taskbar icon -->
+  <ItemGroup>
+    <None Include="..\Remoter-Win\Remoter.ico" Link="Remoter.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>

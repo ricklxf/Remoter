@@ -1,0 +1,246 @@
+using System;
+using System.Text.Json.Serialization;
+
+namespace RemoterWinClient;
+
+public enum ConnectMode
+{
+    Direct,
+    Relay,
+}
+
+public enum AuthMethod
+{
+    Pin,
+    Credentials,
+    Token,
+}
+
+public enum ConnectionState
+{
+    Idle,
+    Connecting,
+    Authenticating,
+    Streaming,
+    Reconnecting,
+    Disconnected,
+    Error,
+}
+
+public enum ScaleMode
+{
+    Fit,
+    Stretch,
+    Original,
+}
+
+public enum ResolutionTier
+{
+    Match,
+    Native,
+    Res1080,
+    Res2K,
+}
+
+public enum VideoCodecType
+{
+    H264,
+    H265,
+    Jpeg,
+}
+
+public enum ChromaMode
+{
+    Yuv420,
+    Yuv444,
+}
+
+public enum FileTransferDirection
+{
+    Upload,
+    Download,
+}
+
+public sealed record DisplayInfo(
+    uint Id,
+    string Name,
+    int Width,
+    int Height
+);
+
+public sealed record StreamInfo(
+    int Width,
+    int Height,
+    VideoCodecType Codec,
+    int Fps,
+    DisplayInfo[] Displays,
+    uint ActiveDisplayId
+);
+
+public sealed class ConnectParams
+{
+    public ConnectMode Mode { get; set; } = ConnectMode.Direct;
+    public string Host { get; set; } = "";
+    public int Port { get; set; } = 7788;
+    public bool UseTls { get; set; } = true;
+    public string? DirectUrl { get; set; }
+    public string? RelayUrl { get; set; }
+    public string? SessionId { get; set; }
+    public string Pin { get; set; } = "";
+    public string? Label { get; set; }
+    public AuthMethod AuthMethod { get; set; } = AuthMethod.Pin;
+    public string? Username { get; set; }
+    public string? Password { get; set; }
+    public string? Token { get; set; }
+    public bool RememberDevice { get; set; } = true;
+
+    public Uri BuildWebSocketUri()
+    {
+        if (Mode == ConnectMode.Direct)
+        {
+            if (!string.IsNullOrWhiteSpace(DirectUrl))
+            {
+                var raw = DirectUrl.Trim();
+                if (!raw.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) &&
+                    !raw.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+                {
+                    var scheme = UseTls ? "wss" : "ws";
+                    raw = $"{scheme}://{raw}";
+                }
+                return new Uri(raw);
+            }
+
+            var host = Host.Trim();
+            if (host.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                host.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Uri(host);
+            }
+
+            var proto = UseTls ? "wss" : "ws";
+            // Bracket bare IPv6 addresses
+            if (host.Contains(':') && !host.StartsWith('['))
+            {
+                host = $"[{host}]";
+            }
+            return new Uri($"{proto}://{host}:{Port}");
+        }
+        else
+        {
+            var baseUrl = (RelayUrl ?? "").Trim().TrimEnd('/');
+            var sid = Uri.EscapeDataString(SessionId ?? "");
+            var pin = Uri.EscapeDataString(Pin ?? "");
+            return new Uri($"{baseUrl}?role=client&session={sid}&pin={pin}");
+        }
+    }
+}
+
+public sealed class SavedDevice
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "";
+    public string Host { get; set; } = "";
+    public int Port { get; set; } = 7788;
+    public bool UseTls { get; set; } = true;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public AuthMethod AuthMethod { get; set; } = AuthMethod.Pin;
+
+    public string? Pin { get; set; }
+    public string? Username { get; set; }
+    public string? Token { get; set; }
+    public string? ComputerName { get; set; }
+    public string? ModelId { get; set; }
+    public string? ServerOs { get; set; }
+    public DateTime LastConnectedUtc { get; set; } = DateTime.UtcNow;
+
+    [JsonIgnore]
+    public string DisplayName =>
+        !string.IsNullOrWhiteSpace(Name) ? Name :
+        !string.IsNullOrWhiteSpace(ComputerName) ? ComputerName :
+        $"{Host}:{Port}";
+}
+
+public sealed class ClientSettings
+{
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public ScaleMode ScaleMode { get; set; } = ScaleMode.Fit;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public ResolutionTier ResolutionTier { get; set; } = ResolutionTier.Native;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public VideoCodecType PreferredCodec { get; set; } = VideoCodecType.H264;
+
+    public int Fps { get; set; } = 60;
+    public bool AutoFps { get; set; } = true;
+    public int BitrateBps { get; set; } = 8_000_000;
+    public bool AutoBitrate { get; set; } = true;
+    public bool AudioEnabled { get; set; } = true;
+    public bool ClipboardSyncEnabled { get; set; } = true;
+    public bool VSyncEnabled { get; set; } = false;
+    public string? DownloadDirectory { get; set; }
+}
+
+public readonly record struct ClientStats(
+    double Fps,
+    int RttMs,
+    int BitrateKbps,
+    int EncodeMs,
+    int DecodeMs,
+    string Transport,
+    VideoCodecType Codec
+);
+
+public readonly record struct ServerStats(
+    int Fps,
+    string UploadSpeed,
+    int Quality
+);
+
+public readonly record struct VideoFramePacket(
+    byte[] Data,
+    uint FrameId,
+    uint PtsMs,
+    bool IsKeyframe,
+    VideoCodecType Codec
+);
+
+public readonly record struct AudioFramePacket(
+    byte[] Data
+);
+
+public sealed record CursorShapeInfo(
+    byte[] PngBytes,
+    string PngBase64,
+    int HotX,
+    int HotY,
+    int Width,
+    int Height,
+    bool IsVisible = true
+);
+
+public sealed record ClipboardData(
+    string? Text,
+    byte[]? ImagePngBytes,
+    string? ImageBase64
+);
+
+public sealed record DirEntry(
+    string Name,
+    long Size,
+    bool IsDir,
+    long ModifiedMs
+);
+
+public sealed record FileTransferProgress(
+    string Id,
+    string Name,
+    long Size,
+    long Transferred,
+    FileTransferDirection Direction,
+    double SpeedBps,
+    bool Done,
+    string? SavedPath = null,
+    string? Error = null
+);

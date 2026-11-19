@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
-import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode } from '../types'
+import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode, QualityPreset } from '../types'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
@@ -19,6 +19,11 @@ interface Props {
 
 export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers, isReconnecting = false, isActive = true, onDisconnect }: Props) {
   const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
+  const [qualityPreset, setQualityPreset] = useState<QualityPreset>(() => {
+    const saved = localStorage.getItem('remoter_quality_preset')
+    if (saved === 'auto' || saved === 'smooth' || saved === 'hd' || saved === 'original') return saved
+    return 'auto'
+  })
   const [fps, setFps]         = useState(30)
   const [fpsAuto, setFpsAuto] = useState(true)
   const [bitrate, setBitrate] = useState(2_000_000)
@@ -33,7 +38,7 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   const [sharpness, setSharpness] = useState<SharpnessLevel>(() => {
     const saved = localStorage.getItem('remoter_sharpness')
     if (saved === 'off' || saved === 'low' || saved === 'medium' || saved === 'high') return saved
-    return 'off'
+    return 'low'
   })
   const [chromaMode, setChromaMode] = useState<ChromaMode>('420')
   const [hdrOn, setHdrOn] = useState(false)
@@ -100,12 +105,56 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
   // menu and picks it manually. fps and bitrate are independent, so both
   // get enabled separately.
   useEffect(() => {
-    conn.sendFps(fps, true)
-    conn.sendBitrate(bitrate, true)
+    if (qualityPreset === 'smooth') {
+      setFps(30); setFpsAuto(false); setBitrate(4_000_000); setBitrateAuto(false)
+      conn.sendFps(30, false)
+      conn.sendBitrate(4_000_000, false)
+    } else if (qualityPreset === 'hd') {
+      setFps(60); setFpsAuto(false); setBitrate(8_000_000); setBitrateAuto(false)
+      conn.sendFps(60, false)
+      conn.sendBitrate(8_000_000, false)
+    } else if (qualityPreset === 'original') {
+      setFps(120); setFpsAuto(false); setBitrate(25_000_000); setBitrateAuto(false)
+      conn.sendFps(120, false)
+      conn.sendBitrate(25_000_000, false)
+    } else {
+      conn.sendFps(fps, true)
+      conn.sendBitrate(bitrate, true)
+    }
     if (lowLatency) {
       conn.sendLowLatency(true)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleQualityPresetChange(preset: QualityPreset) {
+    setQualityPreset(preset)
+    localStorage.setItem('remoter_quality_preset', preset)
+    if (preset === 'auto') {
+      setFpsAuto(true)
+      setBitrateAuto(true)
+      handleSharpnessChange('low')
+      conn.sendFps(fps, true)
+      conn.sendBitrate(bitrate, true)
+    } else if (preset === 'smooth') {
+      setFps(30); setFpsAuto(false)
+      setBitrate(4_000_000); setBitrateAuto(false)
+      handleSharpnessChange('off')
+      conn.sendFps(30, false)
+      conn.sendBitrate(4_000_000, false)
+    } else if (preset === 'hd') {
+      setFps(60); setFpsAuto(false)
+      setBitrate(8_000_000); setBitrateAuto(false)
+      handleSharpnessChange('low')
+      conn.sendFps(60, false)
+      conn.sendBitrate(8_000_000, false)
+    } else if (preset === 'original') {
+      setFps(120); setFpsAuto(false)
+      setBitrate(25_000_000); setBitrateAuto(false)
+      handleSharpnessChange('medium')
+      conn.sendFps(120, false)
+      conn.sendBitrate(25_000_000, false)
+    }
+  }
 
   function handleScaleModeChange(mode: ScaleMode) {
     setScaleMode(mode)
@@ -282,6 +331,8 @@ export function DesktopPage({ conn, streamInfo, initialCodec = 'jpeg', transfers
             conn={conn}
             onHide={toggleToolbar}
             onToggleFullscreen={() => window.remoterAPI?.toggleFullscreen()}
+            qualityPreset={qualityPreset}
+            onQualityPresetChange={handleQualityPresetChange}
             fps={fps}
             fpsAuto={fpsAuto}
             onFpsChange={handleFpsChange}

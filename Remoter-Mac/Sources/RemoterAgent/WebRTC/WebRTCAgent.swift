@@ -139,6 +139,11 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // a 30fps scroll, and no climbing to 25-30Mbps until it breaks. Loss
     // still revokes the floor and lowers the cap (evaluateLossCap).
     private static let wifiFloorBps: Int = 6_000_000
+    private static let wifiElevatedFloorBps: Int = 9_000_000
+    private static let wifiElevationRttThresholdMs = 15.0
+    private static let wifiElevationStreakRequired = 10  // 5s of clean link at 0.5s poll
+    private static let wifiDemoteRttThresholdMs = 25.0
+    private static let wifiDemoteLossFraction = 0.02
     private static let tunnelFloorBps: Int = 6_000_000
     private static let tunnelCapBps: Int = 10_000_000
     /// Set by Session: true when the client is off-LAN AND bitrate is on auto.
@@ -157,14 +162,19 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private var isDirectPrivateLan = false
     private var effectiveLanAllowed: Bool { lanFloorAllowed || isDirectPrivateLan }
     /// Only arm the 12 Mbps wired LAN floor when RTT <= 3.5ms (true wired Ethernet);
-    /// for Wi-Fi / P2P (3.5 < RTT <= 18ms), use the safe 6 Mbps `wifiFloorBps` so
-    /// the floor never floods a Wi-Fi link into a loss spike.
+    /// for Wi-Fi / P2P (3.5 < RTT <= 18ms), start at the safe 6 Mbps `wifiFloorBps` and
+    /// elevate to 9 Mbps (`wifiElevatedFloorBps`) after 5s of 0% loss + RTT <= 15ms.
     private var lastObservedRttMs: Double = 999.0
+    private var wifiCleanStreak = 0
+    private var wifiFloorElevated = false
     private var floorBps: Int {
         if effectiveLanAllowed && lastObservedRttMs <= Self.wiredLanRttThresholdMs {
             return Self.lanFloorBps
         }
-        return effectiveLanAllowed ? Self.wifiFloorBps : Self.tunnelFloorBps
+        if effectiveLanAllowed {
+            return wifiFloorElevated ? Self.wifiElevatedFloorBps : Self.wifiFloorBps
+        }
+        return Self.tunnelFloorBps
     }
     private var activeFloorBps: Int = 0
     private var minBitrateFloorActive = false
@@ -439,6 +449,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         isDirectP2P = false
         isDirectPrivateLan = false
         lastObservedRttMs = 999.0
+        wifiCleanStreak = 0
+        wifiFloorElevated = false
         activeFloorBps = 0
         minBitrateFloorActive = false
         pc?.close()
@@ -535,6 +547,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
         if let revokeReason {
             lowRttStreak = 0
+            wifiCleanStreak = 0
+            wifiFloorElevated = false
             floorRevokedAt = CFAbsoluteTimeGetCurrent()
             if minBitrateFloorActive {
                 minBitrateFloorActive = false
@@ -543,29 +557,67 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
                     detail: "off reason=\(revokeReason) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
             }
-        } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil,
-                  CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
-            lowRttStreak += 1
-            if lowRttStreak >= Self.lanRttStreakRequired {
-                // Direct P2P (local=host, remote!=relay) with sustained <=15ms RTT and 0% loss
-                // is a real LAN link even when browser mDNS / prflx hides the remote IP.
-                if isDirectP2P, !isDirectPrivateLan, rttMs <= 15.0, lossFraction == 0 {
-                    isDirectPrivateLan = true
-                    applyMaxBitrate()
-                    ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "direct_lan_promoted",
-                        detail: "bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
-                }
-                let desiredFloor = floorBps
-                if !minBitrateFloorActive || activeFloorBps != desiredFloor {
-                    minBitrateFloorActive = true
-                    activeFloorBps = desiredFloor
-                    setMinBitrate(desiredFloor)
-                    ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
-                        detail: "on bps=\(desiredFloor) rttMs=\(String(format: "%.1f", rttMs))")
-                }
-            }
         } else {
-            lowRttStreak = 0
+            // If Wi-Fi floor was elevated to 9 Mbps and mild congestion appears
+            // (rttMs > 25 or loss >= 2%), immediately drop back to the safe 6 Mbps floor.
+            if minBitrateFloorActive, wifiFloorElevated,
+               (rttMs > Self.wifiDemoteRttThresholdMs || lossFraction >= Self.wifiDemoteLossFraction) {
+                wifiFloorElevated = false
+                wifiCleanStreak = 0
+                let demotedFloor = min(floorBps, requestedMaxBps, lossCapBps ?? Int.max)
+                activeFloorBps = demotedFloor
+                setMinBitrate(demotedFloor)
+                ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
+                    detail: "demote bps=\(demotedFloor) rttMs=\(String(format: "%.1f", rttMs)) loss=\(String(format: "%.3f", lossFraction))")
+            }
+
+            if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil,
+               CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
+                lowRttStreak += 1
+                if lowRttStreak >= Self.lanRttStreakRequired {
+                    // Direct P2P (local=host, remote!=relay) with sustained <=15ms RTT and 0% loss
+                    // is a real LAN link even when browser mDNS / prflx hides the remote IP.
+                    if isDirectP2P, !isDirectPrivateLan, rttMs <= 15.0, lossFraction == 0 {
+                        isDirectPrivateLan = true
+                        applyMaxBitrate()
+                        ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "direct_lan_promoted",
+                            detail: "bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
+                    }
+
+                    // UU-style post-recovery ramp-up: once Wi-Fi 6 Mbps floor is active and proves
+                    // completely clean (0% loss & RTT <= 15ms) for 10 consecutive polls (5s),
+                    // elevate floor smoothly to 9 Mbps (capped by requestedMaxBps / lossCapBps).
+                    var justElevated = false
+                    if minBitrateFloorActive, effectiveLanAllowed, !wifiFloorElevated,
+                       rttMs > Self.wiredLanRttThresholdMs {
+                        if lossFraction == 0.0, rttMs <= Self.wifiElevationRttThresholdMs {
+                            wifiCleanStreak += 1
+                            if wifiCleanStreak >= Self.wifiElevationStreakRequired {
+                                wifiFloorElevated = true
+                                wifiCleanStreak = 0
+                                justElevated = true
+                            }
+                        } else {
+                            wifiCleanStreak = 0
+                        }
+                    } else if !wifiFloorElevated {
+                        wifiCleanStreak = 0
+                    }
+
+                    let desiredFloor = min(floorBps, requestedMaxBps, lossCapBps ?? Int.max)
+                    if !minBitrateFloorActive || activeFloorBps != desiredFloor {
+                        minBitrateFloorActive = true
+                        activeFloorBps = desiredFloor
+                        setMinBitrate(desiredFloor)
+                        let action = justElevated ? "elevate" : "on"
+                        ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
+                            detail: "\(action) bps=\(desiredFloor) rttMs=\(String(format: "%.1f", rttMs))")
+                    }
+                }
+            } else {
+                lowRttStreak = 0
+                wifiCleanStreak = 0
+            }
         }
     }
 
@@ -768,6 +820,14 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
             statsTimer = nil
             highRttStreak = 0
             lowRttStreak = 0
+            zeroLossStreak = 0
+            lossCapBps = nil
+            isDirectP2P = false
+            isDirectPrivateLan = false
+            lastObservedRttMs = 999.0
+            wifiCleanStreak = 0
+            wifiFloorElevated = false
+            activeFloorBps = 0
             minBitrateFloorActive = false
             onDisconnected?()
         default: break

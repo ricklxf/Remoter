@@ -3,12 +3,14 @@ import { Connection } from '../network/Connection'
 import { Theme, useTheme, applyTheme } from '../utils/theme'
 import { KeyMap, ModKey, loadKeymap, setKeymapGlobal } from '../utils/keymap'
 import { VideoDecoder_ } from '../video/Decoder'
-import { DisplayInfo, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode } from '../types'
+import { DisplayInfo, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode, QualityPreset } from '../types'
 
 interface Props {
   conn: Connection
   onHide: () => void
   onToggleFullscreen: () => void
+  qualityPreset: QualityPreset
+  onQualityPresetChange: (preset: QualityPreset) => void
   fps: number
   fpsAuto: boolean
   onFpsChange: (fps: number, auto: boolean) => void
@@ -82,6 +84,13 @@ const SHARPNESS_OPTIONS: Array<{ label: string; level: SharpnessLevel }> = [
   { label: '极致', level: 'high'   },
 ]
 
+const QUALITY_PRESET_OPTIONS: Array<{ label: string; preset: QualityPreset }> = [
+  { label: '自动', preset: 'auto'     },
+  { label: '流畅', preset: 'smooth'   },
+  { label: '高清', preset: 'hd'       },
+  { label: '原画', preset: 'original' },
+]
+
 const ZOOM_TIERS = [1, 1.25, 1.5, 2]
 
 const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
@@ -90,6 +99,7 @@ const THEME_LABEL: Record<Theme, string> = { system: '跟随系统', light: '浅
 
 export function Toolbar({
   conn, onHide, onToggleFullscreen,
+  qualityPreset, onQualityPresetChange,
   fps, fpsAuto, onFpsChange,
   bitrate, bitrateAuto, onBitrateChange,
   resolution, onResolutionChange,
@@ -118,6 +128,8 @@ export function Toolbar({
   return (
     <div style={s.bar} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
       <QualityMenu
+        qualityPreset={qualityPreset}
+        onQualityPresetChange={onQualityPresetChange}
         resolution={resolution}
         onResolutionChange={onResolutionChange}
         scaleMode={scaleMode}
@@ -205,6 +217,7 @@ export function Toolbar({
 // controls side by side, instead of three separate top-level dropdowns.
 
 function QualityMenu({
+  qualityPreset, onQualityPresetChange,
   resolution, onResolutionChange,
   scaleMode, onScaleModeChange,
   fps, fpsAuto, onFpsChange,
@@ -217,6 +230,8 @@ function QualityMenu({
   lowLatency, onToggleLowLatency,
   displays, activeDisplay, onDisplayChange,
 }: {
+  qualityPreset: QualityPreset
+  onQualityPresetChange: (preset: QualityPreset) => void
   resolution: ResolutionTier
   onResolutionChange: (tier: ResolutionTier) => void
   scaleMode: ScaleMode
@@ -244,6 +259,7 @@ function QualityMenu({
   onDisplayChange: (id: number) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [h265Available, setH265Available] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -270,23 +286,60 @@ function QualityMenu({
       </button>
       {open && (
         <div style={{
-          ...s.dropdown, minWidth: 'auto', width: 'max-content', overflow: 'visible',
-          display: 'flex', flexDirection: 'column', gap: 8, padding: 8,
+          ...s.dropdown, minWidth: 220, width: 'max-content', overflow: 'visible',
+          display: 'flex', flexDirection: 'column', gap: 8, padding: 10,
         }}>
           {displays.length > 1 && (
             <DisplaySelect displays={displays} value={activeDisplay} onChange={onDisplayChange} />
           )}
-          <ResolutionSelect value={resolution} onChange={onResolutionChange} />
-          <ScaleModeSelect value={scaleMode} onChange={onScaleModeChange} />
-          <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
-            formatValue={v => `${v}fps`} width={92} onChange={onFpsChange} />
-          <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
-            formatValue={formatBitrate} width={92} onChange={onBitrateChange} />
-          {h265Available && (
-            <CodecSelect value={codec} onChange={onCodecChange} />
-          )}
-          <SharpnessSelect value={sharpness} onChange={onSharpnessChange} />
+
+          {/* 画质预设: 自动 / 流畅 / 高清 / 原画 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              fontSize: 11, color: 'var(--ov-text2)', padding: '0 2px',
+            }}>
+              <span>画质预设</span>
+              {qualityPreset === 'auto' && (
+                <span style={{ fontSize: 10, opacity: 0.85 }}>
+                  {`${fps}fps · ${formatBitrate(bitrate)}`}
+                </span>
+              )}
+            </div>
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4,
+              background: 'var(--ov-input-bg)', padding: 3, borderRadius: 8,
+              border: '1px solid var(--ov-input-bdr)',
+            }}>
+              {QUALITY_PRESET_OPTIONS.map(o => {
+                const active = o.preset === qualityPreset
+                return (
+                  <button
+                    key={o.preset}
+                    onClick={() => onQualityPresetChange(o.preset)}
+                    style={{
+                      padding: '5px 8px',
+                      fontSize: 12,
+                      fontWeight: active ? 600 : 400,
+                      borderRadius: 6,
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      whiteSpace: 'nowrap',
+                      background: active ? '#0d9488' : 'transparent',
+                      color: active ? '#fff' : 'var(--ov-text)',
+                      transition: 'background 0.15s, color 0.15s',
+                    }}
+                  >
+                    {o.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
           <div style={s.menuSep} />
+
           <div style={s.qualityToggleRow} title="开启 4:4:4 无色度抽样真彩模式（适合精细代码与文字）">
             <span>真彩 4:4:4</span>
             <Toggle checked={chromaMode === '444'} onToggle={onToggleChroma} />
@@ -295,16 +348,64 @@ function QualityMenu({
             <span>HDR 10-bit</span>
             <Toggle checked={hdrOn} onToggle={onToggleHdr} />
           </div>
-          {hdrOn && (
-            <div style={s.qualityToggleRow} title="在 SDR 显示器上自动将 HDR 映射为自然色彩 (ACES)">
-              <span>SDR 映射</span>
-              <Toggle checked={toneMap} onToggle={onToggleToneMap} />
+
+          <div style={s.menuSep} />
+
+          <button
+            onClick={() => setShowAdvanced(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              width: '100%', padding: '4px 2px', fontSize: 12,
+              color: 'var(--ov-text2)', background: 'transparent',
+              border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            <span>高级设置</span>
+            <span style={{ fontSize: 10 }}>{showAdvanced ? '▾' : '▸'}</span>
+          </button>
+
+          {showAdvanced && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 2 }}>
+              <div style={s.qualityToggleRow}>
+                <span>分辨率</span>
+                <ResolutionSelect value={resolution} onChange={onResolutionChange} />
+              </div>
+              <div style={s.qualityToggleRow}>
+                <span>缩放模式</span>
+                <ScaleModeSelect value={scaleMode} onChange={onScaleModeChange} />
+              </div>
+              <div style={s.qualityToggleRow}>
+                <span>手动帧率</span>
+                <AutoSelect value={fps} auto={fpsAuto} options={FPS_TIERS}
+                  formatValue={v => `${v}fps`} width={92} onChange={onFpsChange} />
+              </div>
+              <div style={s.qualityToggleRow}>
+                <span>手动码率</span>
+                <AutoSelect value={bitrate} auto={bitrateAuto} options={BITRATE_TIERS}
+                  formatValue={formatBitrate} width={92} onChange={onBitrateChange} />
+              </div>
+              <div style={s.qualityToggleRow}>
+                <span>锐化强度</span>
+                <SharpnessSelect value={sharpness} onChange={onSharpnessChange} />
+              </div>
+              {h265Available && (
+                <div style={s.qualityToggleRow}>
+                  <span>编解码器</span>
+                  <CodecSelect value={codec} onChange={onCodecChange} />
+                </div>
+              )}
+              <div style={s.qualityToggleRow} title="局域网绕过 WebRTC 抖动缓冲，采用 WebCodecs + WebGL2 零缓冲极速渲染">
+                <span>零缓冲极速</span>
+                <Toggle checked={lowLatency} onToggle={onToggleLowLatency} />
+              </div>
+              {hdrOn && (
+                <div style={s.qualityToggleRow} title="在 SDR 显示器上自动将 HDR 映射为自然色彩 (ACES)">
+                  <span>SDR 映射</span>
+                  <Toggle checked={toneMap} onToggle={onToggleToneMap} />
+                </div>
+              )}
             </div>
           )}
-          <div style={s.qualityToggleRow} title="局域网绕过 WebRTC 抖动缓冲，采用 WebCodecs + WebGL2 零缓冲极速渲染">
-            <span>零缓冲极速</span>
-            <Toggle checked={lowLatency} onToggle={onToggleLowLatency} />
-          </div>
         </div>
       )}
     </div>

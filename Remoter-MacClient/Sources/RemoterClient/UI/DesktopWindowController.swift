@@ -36,6 +36,10 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private let toastLabel = Theme.makeLabel("", size: 12.5, weight: .medium, color: Theme.textPrimary)
     private var toastTimer: Timer?
 
+    // Floating IME composition echo pill (bottom-center, matching Web RemoteCanvas.tsx)
+    private let imeEchoCard = Theme.makeCard(background: Theme.elevated.withAlphaComponent(0.95), cornerRadius: 8)
+    private let imeEchoLabel = Theme.makeLabel("", size: 14, weight: .medium, color: Theme.textPrimary)
+
     // Session state
     private static let qualityPresetDefaultsKey = "remoter_quality_preset"
     private var isTornDown = false
@@ -165,6 +169,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         setupOverlayBanner(in: contentView)
         setupToast(in: contentView)
+        setupImeEcho(in: contentView)
 
         if let win = window {
             let toolbar = FloatingToolbarPanel(ownerWindow: win)
@@ -229,9 +234,58 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         ])
     }
 
+    private func setupImeEcho(in container: NSView) {
+        imeEchoCard.layer?.borderColor = Theme.accent.withAlphaComponent(0.6).cgColor
+        imeEchoCard.layer?.borderWidth = 1
+        imeEchoCard.addSubview(imeEchoLabel)
+        imeEchoCard.isHidden = true
+        container.addSubview(imeEchoCard)
+
+        NSLayoutConstraint.activate([
+            imeEchoLabel.leadingAnchor.constraint(equalTo: imeEchoCard.leadingAnchor, constant: 14),
+            imeEchoLabel.trailingAnchor.constraint(equalTo: imeEchoCard.trailingAnchor, constant: -14),
+            imeEchoLabel.topAnchor.constraint(equalTo: imeEchoCard.topAnchor, constant: 6),
+            imeEchoLabel.bottomAnchor.constraint(equalTo: imeEchoCard.bottomAnchor, constant: -6),
+
+            imeEchoCard.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            imeEchoCard.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -64),
+        ])
+    }
+
+    private func updateImeEcho(_ text: String) {
+        if text.isEmpty {
+            imeEchoLabel.stringValue = ""
+            imeEchoCard.isHidden = true
+        } else {
+            imeEchoLabel.stringValue = text
+            imeEchoCard.isHidden = false
+        }
+    }
+
     // MARK: - Subsystem Wiring
 
     private func wireSubsystems() {
+        // Controller-side native IME -> text_input + bottom-center echo pill
+        rendererView.onImeTextCommitted = { [weak self] text in
+            self?.connection.sendTextInput(text)
+        }
+        rendererView.onImeCompositionChanged = { [weak self] text in
+            DispatchQueue.main.async {
+                self?.updateImeEcho(text)
+            }
+        }
+        rendererView.imeCandidateAnchorRectProvider = { [weak self] in
+            guard let self, let win = self.window else { return nil }
+            if !self.imeEchoCard.isHidden {
+                let winRect = self.imeEchoCard.convert(self.imeEchoCard.bounds, to: nil)
+                return win.convertToScreen(winRect)
+            }
+            let viewBounds = self.canvasContainer.bounds
+            let anchorLocal = NSRect(x: viewBounds.midX, y: 64, width: 1, height: 22)
+            let winRect = self.canvasContainer.convert(anchorLocal, to: nil)
+            return win.convertToScreen(winRect)
+        }
+
         // Video decode -> Metal render
         videoDecoder.onDecodedFrame = { [weak self] pixelBuffer in
             self?.rendererView.updateFrame(pixelBuffer)
@@ -333,6 +387,10 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                 self.clipboardSync.isEnabled = self.settings.clipboardSyncEnabled
                 self.clipboardSync.start(connection: self.connection)
                 self.connection.setClipboardSyncEnabled(self.settings.clipboardSyncEnabled)
+                self.connection.setReverseClipboardActive(self.settings.clipboardSyncEnabled)
+                if self.settings.clipboardSyncEnabled {
+                    self.clipboardSync.syncNow()
+                }
             }
         }
 
@@ -680,6 +738,10 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             DeviceStore.shared.saveSettings(self.settings)
             self.clipboardSync.isEnabled = enabled
             self.connection.setClipboardSyncEnabled(enabled)
+            self.connection.setReverseClipboardActive(enabled)
+            if enabled {
+                self.clipboardSync.syncNow()
+            }
             self.toolbarPanel?.updateState(clipboardSyncOn: enabled)
             self.showToast(enabled ? "已开启剪贴板同步" : "已关闭剪贴板同步")
         }
@@ -831,6 +893,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         toastTimer?.invalidate()
         toastTimer = nil
 
+        rendererView.cancelImeComposition()
         inputManager.setPointerLocked(false)
         inputManager.releaseAllKeys()
         inputManager.resetCursor()
@@ -865,7 +928,15 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         toolbarPanel?.updatePosition()
     }
 
+    public func windowDidBecomeKey(_ notification: Notification) {
+        if clipboardSync.isEnabled {
+            clipboardSync.syncNow()
+            connection.setReverseClipboardActive(true)
+        }
+    }
+
     public func windowDidResignKey(_ notification: Notification) {
+        rendererView.cancelImeComposition()
         inputManager.releaseAllKeys()
         if inputManager.isPointerLocked {
             inputManager.setPointerLocked(false)

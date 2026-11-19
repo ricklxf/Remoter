@@ -1,31 +1,46 @@
 using System.ComponentModel;
 using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 namespace RemoterWinClient.UI;
 
 /// <summary>
 /// Lightweight native Win32 viewport control (CS_OWNDC, WS_CLIPCHILDREN, zero GDI erase flicker)
-/// that exposes its HWND to D3D11Renderer, routes raw Win32 input messages, and accepts file drag-and-drop.
+/// that exposes its HWND to D3D11Renderer, routes raw Win32 input messages, handles local Windows IME
+/// composition/commit via imm32.dll, and accepts file drag-and-drop.
 /// </summary>
 public sealed class VideoHostControl : Control
 {
     private const int CS_OWNDC          = 0x0020;
     private const int WS_CLIPCHILDREN   = 0x02000000;
 
-    private const int WM_SIZE           = 0x0005;
-    private const int WM_KILLFOCUS      = 0x0008;
-    private const int WM_SETCURSOR      = 0x0020;
-    private const int WM_INPUT          = 0x00FF;
-    private const int WM_KEYDOWN        = 0x0100;
-    private const int WM_KEYUP          = 0x0101;
-    private const int WM_CHAR           = 0x0102;
-    private const int WM_SYSKEYDOWN     = 0x0104;
-    private const int WM_SYSKEYUP       = 0x0105;
-    private const int WM_MOUSEWHEEL     = 0x020A;
-    private const int WM_MOUSEHWHEEL    = 0x020E;
-    private const int WM_IME_CHAR       = 0x0286;
-    private const int WM_DPICHANGED     = 0x02E0;
+    private const int WM_SIZE                  = 0x0005;
+    private const int WM_KILLFOCUS             = 0x0008;
+    private const int WM_SETCURSOR             = 0x0020;
+    private const int WM_INPUT                 = 0x00FF;
+    private const int WM_KEYDOWN               = 0x0100;
+    private const int WM_KEYUP                 = 0x0101;
+    private const int WM_CHAR                  = 0x0102;
+    private const int WM_SYSKEYDOWN            = 0x0104;
+    private const int WM_SYSKEYUP              = 0x0105;
+    private const int WM_IME_STARTCOMPOSITION  = 0x010D;
+    private const int WM_IME_ENDCOMPOSITION    = 0x010E;
+    private const int WM_IME_COMPOSITION       = 0x010F;
+    private const int WM_MOUSEWHEEL            = 0x020A;
+    private const int WM_MOUSEHWHEEL           = 0x020E;
+    private const int WM_IME_CHAR              = 0x0286;
+    private const int WM_DPICHANGED            = 0x02E0;
+
+    private const int VK_PROCESSKEY            = 0xE5;
+    private const int GCS_COMPSTR              = 0x0008;
+    private const int GCS_RESULTSTR            = 0x0800;
+    private const int CFS_POINT                = 0x0002;
+    private const int CFS_CANDIDATEPOS         = 0x0040;
+
+    private int _suppressImeCharCount;
+    private long _suppressImeCharTick;
 
     /// <summary>True once D3D11 swapchain is actively presenting frames; suppresses GDI fallback clear.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -34,6 +49,10 @@ public sealed class VideoHostControl : Control
     /// <summary>When true, WM_SETCURSOR is suppressed so the OS cursor stays hidden during Pointer Lock.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool SuppressSystemCursor { get; set; }
+
+    /// <summary>True while local Windows IME composition is active.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool IsImeComposing { get; private set; }
 
     /// <summary>Fired on WM_INPUT with raw HRAWINPUT (lParam).</summary>
     public event Action<nint>? RawInputReceived;
@@ -47,8 +66,14 @@ public sealed class VideoHostControl : Control
     /// </summary>
     public event Func<bool, nint, nint, bool>? KeyMessageReceived;
 
-    /// <summary>Fired on WM_CHAR / WM_IME_CHAR for committed local IME / Unicode characters.</summary>
+    /// <summary>Fired on WM_CHAR / WM_IME_CHAR for committed non-ASCII characters outside composition.</summary>
     public event Action<char>? CharReceived;
+
+    /// <summary>Fired when the local IME composition text updates (empty string hides the echo overlay).</summary>
+    public event Action<string>? ImeCompositionChanged;
+
+    /// <summary>Fired when local Windows IME commits Unicode/CJK text (sent to host via text_input).</summary>
+    public event Action<string>? ImeTextCommitted;
 
     /// <summary>Fired on WM_SIZE with new client width and height in physical pixels.</summary>
     public event Action<int, int>? ViewportResized;
@@ -150,30 +175,109 @@ public sealed class VideoHostControl : Control
 
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
+            {
+                int vkDown = (int)(m.WParam & 0xFFFF);
+                if (vkDown == VK_PROCESSKEY || IsImeComposing)
+                {
+                    // Let Windows IME compose / select candidates locally without leaking raw keys
+                    base.WndProc(ref m);
+                    return;
+                }
                 if (KeyMessageReceived?.Invoke(true, m.WParam, m.LParam) == true)
                 {
                     m.Result = nint.Zero;
                     return;
                 }
                 break;
+            }
 
             case WM_KEYUP:
             case WM_SYSKEYUP:
+            {
+                int vkUp = (int)(m.WParam & 0xFFFF);
+                if (vkUp == VK_PROCESSKEY || IsImeComposing)
+                {
+                    base.WndProc(ref m);
+                    return;
+                }
                 if (KeyMessageReceived?.Invoke(false, m.WParam, m.LParam) == true)
                 {
                     m.Result = nint.Zero;
                     return;
                 }
                 break;
+            }
+
+            case WM_IME_STARTCOMPOSITION:
+                IsImeComposing = true;
+                PositionImeWindow();
+                ImeCompositionChanged?.Invoke("");
+                base.WndProc(ref m);
+                return;
+
+            case WM_IME_COMPOSITION:
+            {
+                int flags = (int)m.LParam;
+                bool handledResult = false;
+
+                if ((flags & GCS_COMPSTR) != 0)
+                {
+                    PositionImeWindow();
+                    string comp = ReadImeString(GCS_COMPSTR);
+                    ImeCompositionChanged?.Invoke(comp);
+                }
+
+                if ((flags & GCS_RESULTSTR) != 0)
+                {
+                    string result = ReadImeString(GCS_RESULTSTR);
+                    if (!string.IsNullOrEmpty(result))
+                    {
+                        _suppressImeCharCount = result.Length;
+                        _suppressImeCharTick = Environment.TickCount64;
+                        ImeTextCommitted?.Invoke(result);
+                        handledResult = true;
+                    }
+                    ImeCompositionChanged?.Invoke("");
+                }
+
+                if (handledResult)
+                {
+                    // Suppress DefWindowProc so WM_IME_CHAR / WM_CHAR won't double-send this result
+                    m.Result = nint.Zero;
+                    return;
+                }
+                base.WndProc(ref m);
+                return;
+            }
+
+            case WM_IME_ENDCOMPOSITION:
+                IsImeComposing = false;
+                ImeCompositionChanged?.Invoke("");
+                base.WndProc(ref m);
+                return;
 
             case WM_CHAR:
             case WM_IME_CHAR:
+            {
                 char ch = (char)(m.WParam & 0xFFFF);
-                if (!char.IsControl(ch))
+                if (_suppressImeCharCount > 0 && Environment.TickCount64 - _suppressImeCharTick < 100)
+                {
+                    _suppressImeCharCount--;
+                    m.Result = nint.Zero;
+                    return;
+                }
+                _suppressImeCharCount = 0;
+
+                // Only forward non-ASCII characters (e.g. Chinese punctuation typed outside composition);
+                // plain ASCII keys are already forwarded via WM_KEYDOWN so sending them here would double-type.
+                if (!char.IsControl(ch) && ch > 0x7F)
                 {
                     CharReceived?.Invoke(ch);
+                    ImeTextCommitted?.Invoke(ch.ToString());
                 }
-                break;
+                m.Result = nint.Zero;
+                return;
+            }
 
             case WM_SIZE:
                 base.WndProc(ref m);
@@ -192,6 +296,11 @@ public sealed class VideoHostControl : Control
                 break;
 
             case WM_KILLFOCUS:
+                if (IsImeComposing)
+                {
+                    IsImeComposing = false;
+                    ImeCompositionChanged?.Invoke("");
+                }
                 FocusLost?.Invoke();
                 break;
 
@@ -206,4 +315,108 @@ public sealed class VideoHostControl : Control
 
         base.WndProc(ref m);
     }
+
+    // ── Win32 IMM32 Helpers ──────────────────────────────────────────────
+
+    private string ReadImeString(int dwIndex)
+    {
+        if (!IsHandleCreated) return "";
+        nint hImc = ImmGetContext(Handle);
+        if (hImc == nint.Zero) return "";
+        try
+        {
+            int byteLen = ImmGetCompositionStringW(hImc, dwIndex, null, 0);
+            if (byteLen <= 0) return "";
+            byte[] buf = new byte[byteLen];
+            int read = ImmGetCompositionStringW(hImc, dwIndex, buf, byteLen);
+            if (read <= 0) return "";
+            return Encoding.Unicode.GetString(buf, 0, read);
+        }
+        finally
+        {
+            ImmReleaseContext(Handle, hImc);
+        }
+    }
+
+    private void PositionImeWindow()
+    {
+        if (!IsHandleCreated) return;
+        nint hImc = ImmGetContext(Handle);
+        if (hImc == nint.Zero) return;
+        try
+        {
+            int x = Math.Max(16, ClientSize.Width / 2 - 60);
+            int y = Math.Max(16, ClientSize.Height - 72);
+            var pt = new POINT { X = x, Y = y };
+            var compForm = new COMPOSITIONFORM
+            {
+                dwStyle = CFS_POINT,
+                ptCurrentPos = pt,
+            };
+            ImmSetCompositionWindow(hImc, ref compForm);
+
+            var candForm = new CANDIDATEFORM
+            {
+                dwIndex = 0,
+                dwStyle = CFS_CANDIDATEPOS,
+                ptCurrentPos = pt,
+            };
+            ImmSetCandidateWindow(hImc, ref candForm);
+        }
+        finally
+        {
+            ImmReleaseContext(Handle, hImc);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct COMPOSITIONFORM
+    {
+        public int dwStyle;
+        public POINT ptCurrentPos;
+        public RECT rcArea;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CANDIDATEFORM
+    {
+        public int dwIndex;
+        public int dwStyle;
+        public POINT ptCurrentPos;
+        public RECT rcArea;
+    }
+
+    [DllImport("imm32.dll")]
+    private static extern nint ImmGetContext(nint hWnd);
+
+    [DllImport("imm32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ImmReleaseContext(nint hWnd, nint hIMC);
+
+    [DllImport("imm32.dll", CharSet = CharSet.Unicode)]
+    private static extern int ImmGetCompositionStringW(nint hIMC, int dwIndex, byte[]? lpBuf, int dwBufLen);
+
+    [DllImport("imm32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ImmSetCandidateWindow(nint hIMC, ref CANDIDATEFORM lpCandidate);
+
+    [DllImport("imm32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ImmSetCompositionWindow(nint hIMC, ref COMPOSITIONFORM lpCompForm);
 }

@@ -116,14 +116,28 @@ public final class ClipboardSync {
         }
     }
 
+    /// Immediately checks `NSPasteboard.general` and syncs any unsent text or image to the remote host.
+    /// Safe to call on connect or window activation (deduplicated via FNV-1a hashes).
+    public func syncNow() {
+        if Thread.isMainThread {
+            pollLocalPasteboard(force: true)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.pollLocalPasteboard(force: true)
+            }
+        }
+    }
+
     // MARK: - Local Pasteboard Polling
 
-    private func pollLocalPasteboard() {
+    private func pollLocalPasteboard(force: Bool = false) {
         guard isEnabled, let connection, connection.isConnected else { return }
 
         let pb = NSPasteboard.general
         let currentCount = pb.changeCount
-        guard currentCount != lastChangeCount else { return }
+        if !force {
+            guard currentCount != lastChangeCount else { return }
+        }
         lastChangeCount = currentCount
 
         // 1. Check plain text first

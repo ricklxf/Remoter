@@ -11,14 +11,15 @@ namespace RemoterWinClient.UI;
 /// </summary>
 public sealed class FloatingToolbar : Form
 {
-    private const int PillWidth = 64;
-    private const int PillHeight = 16;
+    private const int PillWidth = 92;
+    private const int PillHeight = 24;
     private const int BarHeight = 38;
 
     private readonly Form _ownerForm;
     private readonly System.Windows.Forms.Timer _autoHideTimer;
     private bool _expanded;
     private bool _menuOpen;
+    private bool _shownOnce;
 
     // Collapsed pill button
     private readonly Button _pillBtn;
@@ -26,14 +27,10 @@ public sealed class FloatingToolbar : Form
     // Expanded toolbar panel
     private readonly FlowLayoutPanel _barPanel;
 
-    // Live HUD label
-    private readonly Label _hudLabel;
-    private readonly Label _codecBadge;
-    private readonly Label _decoderBadge;
-
     // Interactive controls
     private readonly Button _qualityBtn;
     private readonly Button _audioBtn;
+    private readonly Button _clipboardBtn;
     private readonly Button _privacyBtn;
     private readonly Button _pointerLockBtn;
     private readonly Button _displayBtn;
@@ -59,9 +56,11 @@ public sealed class FloatingToolbar : Form
     private bool _bitrateAuto = true;
     private string _codec = "h264";
     private bool _audioOn;
+    private bool _clipboardOn = true;
     private bool _privacyOn;
     private bool _pointerLocked;
     private bool _fullscreen;
+    private bool _statsHudVisible = true;
     private int _activeDisplayId;
     private List<(int Id, string Name, int Width, int Height)> _displays = new();
 
@@ -72,12 +71,14 @@ public sealed class FloatingToolbar : Form
     public event Action<bool>? HdrToggled;
     public event Action<bool>? ToneMapToggled;
     public event Action<bool>? LowLatencyToggled;
+    public event Action<bool>? StatsHudToggled;
     public event Action<string>? ResolutionChanged;
     public event Action<string>? ScaleModeChanged;
     public event Action<int, bool>? FpsChanged;
     public event Action<int, bool>? BitrateChanged;
     public event Action<string>? CodecChanged;
     public event Action<bool>? AudioToggled;
+    public event Action<bool>? ClipboardToggled;
     public event Action<bool>? PrivacyToggled;
     public event Action? PointerLockToggled;
     public event Action<int>? DisplaySelected;
@@ -109,12 +110,12 @@ public sealed class FloatingToolbar : Form
         // ── Collapsed top pill ──
         _pillBtn = new Button
         {
-            Text = "▼",
+            Text = "▼  控制栏",
             Dock = DockStyle.Fill,
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.White,
             ForeColor = DarkTheme.TextMuted,
-            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 8.0f, FontStyle.Regular),
             Cursor = Cursors.Hand,
             TabStop = false,
         };
@@ -141,19 +142,6 @@ public sealed class FloatingToolbar : Form
             e.Graphics.DrawRectangle(pen, 0, 0, _barPanel.Width - 1, _barPanel.Height - 1);
         };
 
-        // HUD metrics
-        _hudLabel = new Label
-        {
-            AutoSize = true,
-            ForeColor = DarkTheme.TextPrimary,
-            Font = new Font("Consolas", 8.5f, FontStyle.Regular),
-            Text = "0 fps · 0.0 Mbps · -- ms",
-            Margin = new Padding(2, 6, 6, 0),
-        };
-
-        _codecBadge = CreateBadge("H.264", Color.FromArgb(224, 242, 254), Color.FromArgb(3, 105, 161));
-        _decoderBadge = CreateBadge("HW", Color.FromArgb(204, 251, 241), DarkTheme.Accent);
-
         // Context menus
         _qualityMenu = CreateDarkMenu();
         _displayMenu = CreateDarkMenu();
@@ -164,6 +152,8 @@ public sealed class FloatingToolbar : Form
         _displayBtn     = CreateBarButton("显示器 ▾", 78);
         _displayBtn.Visible = false;
         _audioBtn       = CreateBarButton("声音: 关", 72);
+        _clipboardBtn   = CreateBarButton("剪贴板: 开", 82);
+        SetToggleStyle(_clipboardBtn, _clipboardOn);
         _privacyBtn     = CreateBarButton("隐私屏", 64);
         _pointerLockBtn = CreateBarButton("游戏鼠标", 74);
         _fullscreenBtn  = CreateBarButton("全屏", 52);
@@ -173,19 +163,17 @@ public sealed class FloatingToolbar : Form
         _qualityBtn.Click += (_, _) => ShowMenuUnder(_qualityMenu, _qualityBtn);
         _displayBtn.Click += (_, _) => ShowMenuUnder(_displayMenu, _displayBtn);
         _audioBtn.Click += (_, _) => AudioToggled?.Invoke(!_audioOn);
+        _clipboardBtn.Click += (_, _) => ClipboardToggled?.Invoke(!_clipboardOn);
         _privacyBtn.Click += (_, _) => PrivacyToggled?.Invoke(!_privacyOn);
         _pointerLockBtn.Click += (_, _) => PointerLockToggled?.Invoke();
         _fullscreenBtn.Click += (_, _) => FullscreenToggled?.Invoke();
         _disconnectBtn.Click += (_, _) => DisconnectRequested?.Invoke();
         _collapseBtn.Click += (_, _) => SetExpanded(false);
 
-        _barPanel.Controls.Add(_hudLabel);
-        _barPanel.Controls.Add(_codecBadge);
-        _barPanel.Controls.Add(_decoderBadge);
-        _barPanel.Controls.Add(CreateSeparator());
         _barPanel.Controls.Add(_qualityBtn);
         _barPanel.Controls.Add(_displayBtn);
         _barPanel.Controls.Add(_audioBtn);
+        _barPanel.Controls.Add(_clipboardBtn);
         _barPanel.Controls.Add(_privacyBtn);
         _barPanel.Controls.Add(_pointerLockBtn);
         _barPanel.Controls.Add(CreateSeparator());
@@ -213,6 +201,12 @@ public sealed class FloatingToolbar : Form
         }
     }
 
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        _shownOnce = true;
+    }
+
     public void UpdatePosition()
     {
         if (_ownerForm.IsDisposed || !_ownerForm.IsHandleCreated) return;
@@ -220,6 +214,10 @@ public sealed class FloatingToolbar : Form
         {
             Visible = false;
             return;
+        }
+        if (_shownOnce && _ownerForm.Visible && !Visible)
+        {
+            Visible = true;
         }
 
         Point clientTopLeft = _ownerForm.PointToScreen(Point.Empty);
@@ -244,7 +242,7 @@ public sealed class FloatingToolbar : Form
                 total += c.Width + c.Margin.Horizontal;
             }
         }
-        return Math.Max(680, total);
+        return Math.Max(480, total);
     }
 
     public void SetExpanded(bool expanded)
@@ -265,14 +263,12 @@ public sealed class FloatingToolbar : Form
         }
     }
 
+    /// <summary>
+    /// Kept for compatibility with DesktopForm stats updates (live stats HUD is rendered separately).
+    /// </summary>
     public void UpdateHud(double fps, double bitrateMbps, int rttMs, string codec, bool hardwareDecode)
     {
-        if (IsDisposed) return;
-        _hudLabel.Text = $"{fps:F0} fps · {bitrateMbps:F1} Mbps · {(rttMs >= 0 ? $"{rttMs} ms" : "-- ms")}";
-        _codecBadge.Text = codec.ToUpperInvariant();
-        _decoderBadge.Text = hardwareDecode ? "HW" : "SW";
-        _decoderBadge.ForeColor = hardwareDecode ? DarkTheme.Accent : Color.FromArgb(245, 180, 65);
-        if (_expanded) UpdatePosition();
+        // No-op: toolbar no longer embeds inline HUD labels.
     }
 
     public void UpdateState(
@@ -290,9 +286,11 @@ public sealed class FloatingToolbar : Form
         bool? bitrateAuto = null,
         string? codec = null,
         bool? audioOn = null,
+        bool? clipboardOn = null,
         bool? privacyOn = null,
         bool? pointerLocked = null,
-        bool? fullscreen = null)
+        bool? fullscreen = null,
+        bool? statsHudVisible = null)
     {
         bool rebuildMenu = false;
         if (qualityPreset.HasValue) { _qualityPreset = qualityPreset.Value; rebuildMenu = true; }
@@ -308,12 +306,19 @@ public sealed class FloatingToolbar : Form
         if (bitrate.HasValue)       { _bitrate = bitrate.Value;             rebuildMenu = true; }
         if (bitrateAuto.HasValue)   { _bitrateAuto = bitrateAuto.Value;     rebuildMenu = true; }
         if (codec != null)          { _codec = codec;                       rebuildMenu = true; }
+        if (statsHudVisible.HasValue) { _statsHudVisible = statsHudVisible.Value; rebuildMenu = true; }
 
         if (audioOn.HasValue)
         {
             _audioOn = audioOn.Value;
             _audioBtn.Text = _audioOn ? "声音: 开" : "声音: 关";
             SetToggleStyle(_audioBtn, _audioOn);
+        }
+        if (clipboardOn.HasValue)
+        {
+            _clipboardOn = clipboardOn.Value;
+            _clipboardBtn.Text = _clipboardOn ? "剪贴板: 开" : "剪贴板: 关";
+            SetToggleStyle(_clipboardBtn, _clipboardOn);
         }
         if (privacyOn.HasValue)
         {
@@ -403,7 +408,7 @@ public sealed class FloatingToolbar : Form
 
         _qualityMenu.Items.Add(new ToolStripSeparator());
 
-        // 3. True Color 4:4:4 & HDR 10-bit toggles
+        // 3. True Color 4:4:4, HDR 10-bit & Stats HUD toggles
         AddRootCheckItem(
             _qualityMenu,
             "真彩 4:4:4",
@@ -414,6 +419,11 @@ public sealed class FloatingToolbar : Form
             "HDR 10-bit",
             _hdrOn,
             () => HdrToggled?.Invoke(!_hdrOn));
+        AddRootCheckItem(
+            _qualityMenu,
+            "性能浮窗",
+            _statsHudVisible,
+            () => StatsHudToggled?.Invoke(!_statsHudVisible));
 
         _qualityMenu.Items.Add(new ToolStripSeparator());
 
@@ -541,20 +551,6 @@ public sealed class FloatingToolbar : Form
             if (_expanded) _autoHideTimer.Start();
         };
         return menu;
-    }
-
-    private static Label CreateBadge(string text, Color bg, Color fg)
-    {
-        return new Label
-        {
-            Text = text,
-            AutoSize = true,
-            BackColor = bg,
-            ForeColor = fg,
-            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
-            Padding = new Padding(5, 2, 5, 2),
-            Margin = new Padding(2, 5, 2, 0),
-        };
     }
 
     private static Panel CreateSeparator()

@@ -39,6 +39,7 @@ public abstract record ClientMsg
     public record AuthCredentials(string Username, string Password) : ClientMsg;
     public record AuthToken(string Token) : ClientMsg;
     public record MouseDoubleClick(string Button, double X, double Y) : ClientMsg;
+    public record SetReverseClipboardSync(bool Enabled) : ClientMsg;
     public record Unknown : ClientMsg;
 
     public static ClientMsg Parse(JsonElement e)
@@ -81,6 +82,7 @@ public abstract record ClientMsg
             "auth_credentials"        => new AuthCredentials(e.Str("username"), e.Str("password")),
             "auth_token"              => new AuthToken(e.Str("token")),
             "mouse_double_click"      => new MouseDoubleClick(e.Str("button"), e.Dbl("x"), e.Dbl("y")),
+            "set_reverse_clipboard_sync" => new SetReverseClipboardSync(e.Bool("enabled", true)),
             _                         => new Unknown(),
         };
     }
@@ -91,8 +93,10 @@ static class JsonExt
 {
     public static string  Str (this JsonElement e, string k) =>
         e.TryGetProperty(k, out var v) ? v.GetString() ?? "" : "";
-    public static bool    Bool(this JsonElement e, string k) =>
-        e.TryGetProperty(k, out var v) && v.GetBoolean();
+    public static bool    Bool(this JsonElement e, string k, bool defaultValue = false) =>
+        e.TryGetProperty(k, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? v.GetBoolean()
+            : defaultValue;
     public static double  Dbl (this JsonElement e, string k) =>
         e.TryGetProperty(k, out var v) ? v.GetDouble() : 0;
     public static int     Int (this JsonElement e, string k) =>

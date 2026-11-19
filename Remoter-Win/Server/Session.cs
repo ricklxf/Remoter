@@ -37,6 +37,19 @@ sealed class Session
 
     private CancellationTokenSource? _cts;
 
+    // Reverse clipboard sync (Windows host → client)
+    private readonly object _clipboardLock = new();
+    private System.Threading.Timer? _clipboardTimer;
+    private bool  _reverseClipboardEnabled = false;
+    private bool  _clipboardBaselineCaptured = false;
+    private uint  _lastClipboardSeq = 0;
+    private ulong _lastClipboardTextHash = 0;
+    private bool  _hasLastClipboardTextHash = false;
+    private ulong _lastClipboardImageHash = 0;
+    private bool  _hasLastClipboardImageHash = false;
+    private int   _clipboardPollRunning = 0;
+    private const int MaxReverseClipboardImageBytes = 4 * 1024 * 1024;
+
     // Adaptive quality control - 延迟优先配置
     private int    _currentFps = 60;  // 提高默认FPS到60，最大限度减少延迟
     private int    _currentQuality = 50;  // 降低质量到50，提高编码速度
@@ -129,6 +142,7 @@ sealed class Session
     public void Close()
     {
         _cts?.Cancel();
+        StopClipboardMonitor(flush: false);
         StopAudioStream();
         PrivacyScreen.SetEnabled(false);
 
@@ -279,12 +293,18 @@ sealed class Session
                 AppLog.Write($"[Input] Key {k.Code} down={k.Down}");
                 _input?.KeyEvent(k.Code, k.Down, k.Mods); break;
 
-            // One-directional: the controller's clipboard is the sole
-            // source of truth, this agent never pushes its own clipboard
-            // back (see the removed StartClipboard poll loop), so there's
-            // no echo-prevention bookkeeping needed here anymore — just apply it.
             case ClientMsg.ClipboardSet c:
-                SetClipboard(_id, c.Text); break;
+                lock (_clipboardLock)
+                {
+                    _lastClipboardTextHash = ComputeFnv1a64(c.Text);
+                    _hasLastClipboardTextHash = true;
+                }
+                SetClipboard(_id, c.Text);
+                lock (_clipboardLock)
+                {
+                    _lastClipboardSeq = GetClipboardSequenceNumber();
+                }
+                break;
 
             case ClientMsg.ClipboardSetImage ci:
                 if (!string.IsNullOrEmpty(ci.Data))
@@ -292,10 +312,28 @@ sealed class Session
                     try
                     {
                         var png = Convert.FromBase64String(ci.Data);
-                        SetClipboardImageFromPng(_id, png);
+                        if (SetClipboardImageFromPng(_id, png, dibHash =>
+                        {
+                            lock (_clipboardLock)
+                            {
+                                _lastClipboardImageHash = dibHash;
+                                _hasLastClipboardImageHash = true;
+                            }
+                        }))
+                        {
+                            lock (_clipboardLock)
+                            {
+                                _lastClipboardSeq = GetClipboardSequenceNumber();
+                            }
+                        }
                     }
                     catch { }
                 }
+                break;
+
+            case ClientMsg.SetReverseClipboardSync r:
+                if (r.Enabled) StartClipboardMonitor();
+                else StopClipboardMonitor(flush: true);
                 break;
 
             // ── File transfer ──────────────────────────────────────────
@@ -827,7 +865,7 @@ sealed class Session
         finally { CloseClipboard(); }
     }
 
-    private static bool SetClipboardImageFromPng(string sessionId, byte[] pngBytes)
+    private static bool SetClipboardImageFromPng(string sessionId, byte[] pngBytes, Action<ulong>? onDibHashReady = null)
     {
         try
         {
@@ -836,6 +874,7 @@ sealed class Session
             using var bmpMs  = new MemoryStream();
             bmp.Save(bmpMs, System.Drawing.Imaging.ImageFormat.Bmp);
             var dib = bmpMs.ToArray()[14..]; // strip 14-byte BMP file header
+            onDibHashReady?.Invoke(ComputeFnv1a64(dib));
 
             if (!TryOpenClipboardWithRetry())
             {
@@ -859,6 +898,279 @@ sealed class Session
         }
         catch { return false; }
     }
+
+    // ── Reverse clipboard sync (Windows host → client) ────────────────────
+
+    private void StartClipboardMonitor()
+    {
+        bool started = false;
+        bool needBaseline = false;
+        lock (_clipboardLock)
+        {
+            _reverseClipboardEnabled = true;
+            if (_clipboardTimer == null)
+            {
+                if (!_clipboardBaselineCaptured)
+                {
+                    _clipboardBaselineCaptured = true;
+                    needBaseline = true;
+                }
+                started = true;
+            }
+        }
+
+        if (!started) return;
+
+        if (needBaseline)
+        {
+            var seq = GetClipboardSequenceNumber();
+            TryReadClipboardSnapshot(out var baseText, out var baseDib);
+            lock (_clipboardLock)
+            {
+                _lastClipboardSeq = seq;
+                if (!string.IsNullOrEmpty(baseText))
+                {
+                    _lastClipboardTextHash = ComputeFnv1a64(baseText);
+                    _hasLastClipboardTextHash = true;
+                }
+                if (baseDib != null && baseDib.Length > 0)
+                {
+                    _lastClipboardImageHash = ComputeFnv1a64(baseDib);
+                    _hasLastClipboardImageHash = true;
+                }
+            }
+        }
+
+        lock (_clipboardLock)
+        {
+            if (_reverseClipboardEnabled && _clipboardTimer == null)
+            {
+                _clipboardTimer = new System.Threading.Timer(
+                    _ => CheckAndSendClipboardChanges(),
+                    null,
+                    dueTime: 500,
+                    period: 500);
+            }
+        }
+        ConnectionLogger.Shared.LogStep(_id, "clipboard_monitor_started");
+    }
+
+    private void StopClipboardMonitor(bool flush)
+    {
+        System.Threading.Timer? timerToDispose;
+        bool wasEnabled;
+        lock (_clipboardLock)
+        {
+            wasEnabled = _reverseClipboardEnabled;
+            timerToDispose = _clipboardTimer;
+        }
+
+        if (flush && wasEnabled)
+        {
+            CheckAndSendClipboardChanges();
+        }
+
+        lock (_clipboardLock)
+        {
+            _reverseClipboardEnabled = false;
+            timerToDispose = _clipboardTimer;
+            _clipboardTimer = null;
+        }
+
+        if (timerToDispose != null)
+        {
+            try { timerToDispose.Dispose(); } catch { }
+            ConnectionLogger.Shared.LogStep(_id, "clipboard_monitor_stopped");
+        }
+    }
+
+    private void CheckAndSendClipboardChanges()
+    {
+        if (!_authed) return;
+        if (Interlocked.CompareExchange(ref _clipboardPollRunning, 1, 0) != 0) return;
+        try
+        {
+            var seq = GetClipboardSequenceNumber();
+            lock (_clipboardLock)
+            {
+                if (!_reverseClipboardEnabled || seq == _lastClipboardSeq) return;
+            }
+
+            if (!TryReadClipboardSnapshot(out var text, out var dib))
+            {
+                // Transient OpenClipboard contention — leave _lastClipboardSeq unchanged so next tick retries.
+                return;
+            }
+
+            bool sendText = false;
+            bool sendImage = false;
+            lock (_clipboardLock)
+            {
+                if (!_reverseClipboardEnabled) return;
+                _lastClipboardSeq = seq;
+
+                if (!string.IsNullOrEmpty(text))
+                {
+                    var textHash = ComputeFnv1a64(text);
+                    if (!_hasLastClipboardTextHash || textHash != _lastClipboardTextHash)
+                    {
+                        _lastClipboardTextHash = textHash;
+                        _hasLastClipboardTextHash = true;
+                        sendText = true;
+                    }
+                }
+                else if (dib != null && dib.Length > 0)
+                {
+                    var dibHash = ComputeFnv1a64(dib);
+                    if (!_hasLastClipboardImageHash || dibHash != _lastClipboardImageHash)
+                    {
+                        _lastClipboardImageHash = dibHash;
+                        _hasLastClipboardImageHash = true;
+                        sendImage = true;
+                    }
+                }
+            }
+
+            if (sendText && text != null)
+            {
+                ConnectionLogger.Shared.LogStep(_id, "clipboard_reverse_sent", $"len={text.Length}");
+                Send(new { type = "clipboard_from_target", text });
+            }
+            else if (sendImage && dib != null)
+            {
+                var png = ConvertDibToPng(dib);
+                if (png != null && png.Length <= MaxReverseClipboardImageBytes)
+                {
+                    ConnectionLogger.Shared.LogStep(_id, "clipboard_reverse_sent", $"image bytes={png.Length}");
+                    Send(new { type = "clipboard_from_target", image = Convert.ToBase64String(png) });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Session] Reverse clipboard poll error: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _clipboardPollRunning, 0);
+        }
+    }
+
+    private static bool TryReadClipboardSnapshot(out string? text, out byte[]? dib)
+    {
+        text = null;
+        dib = null;
+
+        bool hasText = IsClipboardFormatAvailable(CF_UNICODETEXT);
+        bool hasDib  = !hasText && IsClipboardFormatAvailable(CF_DIB);
+        if (!hasText && !hasDib) return true;
+
+        if (!TryOpenClipboardWithRetry(attempts: 4, delayMs: 10)) return false;
+        try
+        {
+            if (hasText)
+            {
+                var h = GetClipboardData(CF_UNICODETEXT);
+                if (h != 0)
+                {
+                    var p = GlobalLock(h);
+                    if (p != 0)
+                    {
+                        try { text = Marshal.PtrToStringUni((nint)p); }
+                        finally { GlobalUnlock(h); }
+                    }
+                }
+            }
+            else if (hasDib)
+            {
+                var h = GetClipboardData(CF_DIB);
+                if (h != 0)
+                {
+                    var rawSize = GlobalSize(h);
+                    const nuint maxDibBytes = 32 * 1024 * 1024;
+                    if (rawSize > 40 && rawSize <= maxDibBytes)
+                    {
+                        int size = (int)rawSize;
+                        var p = GlobalLock(h);
+                        if (p != 0)
+                        {
+                            try
+                            {
+                                dib = new byte[size];
+                                Marshal.Copy((nint)p, dib, 0, size);
+                            }
+                            finally { GlobalUnlock(h); }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+
+    private static byte[]? ConvertDibToPng(byte[] dib)
+    {
+        if (dib.Length <= 40) return null;
+        try
+        {
+            uint biSize        = BitConverter.ToUInt32(dib, 0);
+            ushort biBitCount  = BitConverter.ToUInt16(dib, 14);
+            uint biCompression = BitConverter.ToUInt32(dib, 16);
+            uint biClrUsed     = BitConverter.ToUInt32(dib, 32);
+
+            uint colorTableBytes;
+            if (biClrUsed > 0)
+                colorTableBytes = biClrUsed * 4u;
+            else if (biBitCount <= 8)
+                colorTableBytes = (1u << biBitCount) * 4u;
+            else if (biCompression == 3u /* BI_BITFIELDS */ && biSize == 40u)
+                colorTableBytes = 12u;
+            else
+                colorTableBytes = 0u;
+
+            uint fileSize = (uint)(14 + dib.Length);
+            uint offBits  = 14u + biSize + colorTableBytes;
+            if (offBits > fileSize) offBits = 14u + biSize;
+
+            using var bmpMs = new MemoryStream(14 + dib.Length);
+            bmpMs.WriteByte((byte)'B');
+            bmpMs.WriteByte((byte)'M');
+            bmpMs.Write(BitConverter.GetBytes(fileSize), 0, 4);
+            bmpMs.Write(BitConverter.GetBytes(0u), 0, 4);
+            bmpMs.Write(BitConverter.GetBytes(offBits), 0, 4);
+            bmpMs.Write(dib, 0, dib.Length);
+            bmpMs.Position = 0;
+
+            using var bmp = new System.Drawing.Bitmap(bmpMs);
+            using var pngMs = new MemoryStream();
+            bmp.Save(pngMs, System.Drawing.Imaging.ImageFormat.Png);
+            return pngMs.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static ulong ComputeFnv1a64(ReadOnlySpan<byte> data)
+    {
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+        ulong hash = offsetBasis;
+        for (int i = 0; i < data.Length; i++)
+        {
+            hash ^= data[i];
+            hash *= prime;
+        }
+        return hash;
+    }
+
+    private static ulong ComputeFnv1a64(string text) =>
+        ComputeFnv1a64(Encoding.UTF8.GetBytes(text));
 
     // ── System commands ───────────────────────────────────────────────────
 
@@ -977,6 +1289,8 @@ sealed class Session
     [DllImport("user32.dll")] private static extern bool OpenClipboard(nint hWnd);
     [DllImport("user32.dll")] private static extern bool CloseClipboard();
     [DllImport("user32.dll")] private static extern bool EmptyClipboard();
+    [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
+    [DllImport("user32.dll")] private static extern bool IsClipboardFormatAvailable(uint format);
     [DllImport("user32.dll")] private static extern nuint GetClipboardData(uint uFormat);
     [DllImport("user32.dll")] private static extern nuint SetClipboardData(uint uFormat, nuint hMem);
     [DllImport("kernel32.dll")] private static extern nuint GlobalAlloc(uint uFlags, nuint dwBytes);

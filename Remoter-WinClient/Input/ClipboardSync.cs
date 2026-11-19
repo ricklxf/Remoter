@@ -161,6 +161,25 @@ public sealed class ClipboardSync : IDisposable
         }
     }
 
+    /// <summary>
+    /// Immediately inspects the local Windows clipboard and pushes any new text/image
+    /// to the remote host (e.g. on connect or window activation). Protected by dual FNV-1a
+    /// hash deduplication so previously synced or remote-injected content never echoes.
+    /// </summary>
+    public void SyncNow()
+    {
+        if (_disposed || !_enabled) return;
+        if (_uiInvoker.InvokeRequired)
+        {
+            if (!_uiInvoker.IsDisposed && _uiInvoker.IsHandleCreated)
+                _uiInvoker.BeginInvoke(SyncNow);
+            return;
+        }
+
+        _lastSequenceNumber = GetClipboardSequenceNumber();
+        ReadAndEmitLocalClipboard();
+    }
+
     private void OnClipboardUpdate()
     {
         if (_disposed || !_enabled) return;
@@ -169,6 +188,11 @@ public sealed class ClipboardSync : IDisposable
         if (seq == _lastSequenceNumber) return;
         _lastSequenceNumber = seq;
 
+        ReadAndEmitLocalClipboard();
+    }
+
+    private void ReadAndEmitLocalClipboard()
+    {
         try
         {
             if (Clipboard.ContainsText(TextDataFormat.UnicodeText))

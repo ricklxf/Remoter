@@ -13,7 +13,8 @@ namespace RemoterWinClient.UI;
 /// - WasapiAudioPlayer (ADTS AAC -> WASAPI)
 /// - RawInputManager (high-polling-rate mouse, Pointer Lock, smooth touchpad, Win/Alt keyboard)
 /// - ClipboardSync (bidirectional text/PNG with FNV-1a anti-loop)
-/// - FloatingToolbar (owned DWM-composited auto-hiding HUD &amp; control bar)
+/// - FloatingToolbar (owned DWM-composited auto-hiding control bar)
+/// - StatsHudOverlay (owned click-through translucent black bottom-right performance HUD)
 /// </summary>
 public sealed class DesktopForm : Form
 {
@@ -23,7 +24,9 @@ public sealed class DesktopForm : Form
     private ClientSettings _settings;
 
     private readonly VideoHostControl _videoHost;
+    private readonly Label _imeEchoLabel;
     private readonly FloatingToolbar _toolbar;
+    private readonly StatsHudOverlay _statsHud;
     private readonly RawInputManager _inputManager;
     private readonly ClipboardSync _clipboardSync;
 
@@ -61,6 +64,7 @@ public sealed class DesktopForm : Form
     private bool _audioOn;
     private bool _privacyOn;
     private bool _fullscreen;
+    private bool _statsHudVisible = true;
     private bool _disposed;
 
     // Saved window geometry for fullscreen toggle
@@ -109,6 +113,22 @@ public sealed class DesktopForm : Form
         };
         Controls.Add(_videoHost);
 
+        // ── Bottom-center IME composition echo pill (hidden when empty) ──
+        _imeEchoLabel = new Label
+        {
+            AutoSize = true,
+            Visible = false,
+            BackColor = Color.White,
+            ForeColor = Color.FromArgb(17, 17, 17),
+            Font = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular),
+            Padding = new Padding(8, 4, 8, 4),
+            BorderStyle = BorderStyle.FixedSingle,
+            TabStop = false,
+        };
+        _videoHost.Controls.Add(_imeEchoLabel);
+        _videoHost.ImeTextCommitted += text => _conn?.SendTextInput(text);
+        _videoHost.ImeCompositionChanged += UpdateImeEcho;
+
         // ── Input & Clipboard ──
         _inputManager = new RawInputManager(_videoHost);
         _inputManager.SetRemoteSize(_remoteWidth, _remoteHeight);
@@ -121,8 +141,9 @@ public sealed class DesktopForm : Form
         _clipboardSync.LocalTextChanged += text => _conn.SendClipboardText(text);
         _clipboardSync.LocalImageChanged += b64 => _conn.SendClipboardImageBase64(b64);
 
-        // ── FloatingToolbar ──
+        // ── FloatingToolbar & StatsHudOverlay ──
         _toolbar = new FloatingToolbar(this);
+        _statsHud = new StatsHudOverlay(this);
         WireToolbarEvents();
         SyncToolbarFromState();
 
@@ -150,6 +171,9 @@ public sealed class DesktopForm : Form
         _toolbar.Show();
         _toolbar.UpdatePosition();
 
+        _statsHud.SetHudVisible(_statsHudVisible);
+        _statsHud.UpdatePosition();
+
         // Sync initial settings with server
         if (_settings.QualityPreset == QualityPreset.Auto)
         {
@@ -173,7 +197,11 @@ public sealed class DesktopForm : Form
             _conn.SendLowLatency(true);
         }
         _conn.SetClipboardSyncEnabled(_settings.ClipboardSyncEnabled);
-        _conn.SetReverseClipboardActive(true);
+        _conn.SetReverseClipboardActive(_settings.ClipboardSyncEnabled);
+        if (_settings.ClipboardSyncEnabled)
+        {
+            _clipboardSync.SyncNow();
+        }
         _conn.SendRequestKeyframe();
 
         _videoHost.Focus();
@@ -582,6 +610,20 @@ public sealed class DesktopForm : Form
             _conn.SendSetAudio(enable);
         };
 
+        _toolbar.ClipboardToggled += enable =>
+        {
+            _settings.ClipboardSyncEnabled = enable;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _clipboardSync.Enabled = enable;
+            _conn.SetClipboardSyncEnabled(enable);
+            _conn.SetReverseClipboardActive(enable);
+            _toolbar.UpdateState(clipboardOn: enable);
+            if (enable)
+            {
+                _clipboardSync.SyncNow();
+            }
+        };
+
         _toolbar.PrivacyToggled += enable =>
         {
             _privacyOn = enable;
@@ -594,6 +636,13 @@ public sealed class DesktopForm : Form
         _toolbar.DisplaySelected += id =>
         {
             _conn.SendSetDisplay((uint)id);
+        };
+
+        _toolbar.StatsHudToggled += visible =>
+        {
+            _statsHudVisible = visible;
+            _toolbar.UpdateState(statsHudVisible: visible);
+            _statsHud.SetHudVisible(visible);
         };
 
         _toolbar.FullscreenToggled += ToggleFullscreen;
@@ -733,8 +782,9 @@ public sealed class DesktopForm : Form
             _ => "H.264",
         };
         bool hw = stats.Codec != VideoCodecType.Jpeg && _mfDecoder.IsHardware;
+        int decodeMs = stats.DecodeMs;
 
-        SafeBeginInvoke(() => _toolbar.UpdateHud(renderFps, mbps, stats.RttMs, codec, hw));
+        SafeBeginInvoke(() => _statsHud.UpdateStats(renderFps, mbps, stats.RttMs, codec, hw, decodeMs));
     }
 
     private void OnAuthSucceeded(string username, string token)
@@ -777,8 +827,35 @@ public sealed class DesktopForm : Form
         Volatile.Write(ref _pendingResizeH, height);
 
         SyncContentRect();
+        PositionImeEchoLabel();
         _toolbar?.UpdatePosition();
+        _statsHud?.UpdatePosition();
         _inputManager?.UpdateClipCursor();
+    }
+
+    private void UpdateImeEcho(string compText)
+    {
+        if (_disposed || _imeEchoLabel.IsDisposed) return;
+        if (string.IsNullOrEmpty(compText))
+        {
+            _imeEchoLabel.Visible = false;
+            _imeEchoLabel.Text = "";
+            return;
+        }
+        _imeEchoLabel.Text = compText;
+        _imeEchoLabel.Visible = true;
+        _imeEchoLabel.BringToFront();
+        PositionImeEchoLabel();
+    }
+
+    private void PositionImeEchoLabel()
+    {
+        if (_imeEchoLabel == null || _imeEchoLabel.IsDisposed || !_imeEchoLabel.Visible) return;
+        int w = _videoHost.ClientSize.Width;
+        int h = _videoHost.ClientSize.Height;
+        _imeEchoLabel.Location = new Point(
+            Math.Max(8, (w - _imeEchoLabel.Width) / 2),
+            Math.Max(8, h - _imeEchoLabel.Height - 28));
     }
 
     private void OnFilesDropped(string[] files)
@@ -796,6 +873,7 @@ public sealed class DesktopForm : Form
     {
         base.OnMove(e);
         _toolbar?.UpdatePosition();
+        _statsHud?.UpdatePosition();
         _inputManager?.UpdateClipCursor();
     }
 
@@ -803,6 +881,7 @@ public sealed class DesktopForm : Form
     {
         base.OnResize(e);
         _toolbar?.UpdatePosition();
+        _statsHud?.UpdatePosition();
         _inputManager?.UpdateClipCursor();
     }
 
@@ -810,7 +889,11 @@ public sealed class DesktopForm : Form
     {
         base.OnActivated(e);
         _inputManager?.SetWindowActive(true);
-        _conn?.SetReverseClipboardActive(true);
+        _conn?.SetReverseClipboardActive(_settings.ClipboardSyncEnabled);
+        if (_settings.ClipboardSyncEnabled)
+        {
+            _clipboardSync?.SyncNow();
+        }
     }
 
     protected override void OnDeactivate(EventArgs e)
@@ -844,6 +927,7 @@ public sealed class DesktopForm : Form
 
         _toolbar.UpdateState(fullscreen: _fullscreen);
         _toolbar.UpdatePosition();
+        _statsHud.UpdatePosition();
         _inputManager.UpdateClipCursor();
         _videoHost.Focus();
     }
@@ -902,9 +986,11 @@ public sealed class DesktopForm : Form
             bitrateAuto: _settings.AutoBitrate,
             codec: _settings.PreferredCodec == VideoCodecType.H265 ? "h265" : "h264",
             audioOn: _audioOn,
+            clipboardOn: _settings.ClipboardSyncEnabled,
             privacyOn: _privacyOn,
             pointerLocked: _inputManager.IsPointerLocked,
-            fullscreen: _fullscreen);
+            fullscreen: _fullscreen,
+            statsHudVisible: _statsHudVisible);
         SyncToolbarDisplays();
     }
 
@@ -1083,6 +1169,12 @@ public sealed class DesktopForm : Form
             {
                 _toolbar.Close();
                 _toolbar.Dispose();
+            }
+
+            if (!_statsHud.IsDisposed)
+            {
+                _statsHud.Close();
+                _statsHud.Dispose();
             }
 
             // Never block the WinForms UI thread on _renderLock or long thread joins;

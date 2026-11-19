@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Metal
 import MetalKit
 import CoreVideo
@@ -6,8 +7,9 @@ import QuartzCore
 import simd
 
 /// Zero-copy Metal video renderer (`MTKView` subclass) supporting NV12 (`IOSurface` / `CVMetalTextureCache`)
-/// and BGRA (`kCVPixelFormatType_32BGRA`) `CVPixelBuffer`s via inline-compiled MSL shaders.
-public final class MetalRendererView: MTKView, MTKViewDelegate {
+/// and BGRA (`kCVPixelFormatType_32BGRA`) `CVPixelBuffer`s via inline-compiled MSL shaders,
+/// plus native macOS `NSTextInputClient` local IME composition.
+public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClient {
 
     // MARK: - Public Properties
 
@@ -66,6 +68,23 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
 
     /// Optional input manager attached directly to this view for mouse/keyboard/scroll event forwarding.
     public weak var inputManager: InputManager?
+
+    /// Fired when local macOS IME commits composed text or non-ASCII characters (sent via `text_input`).
+    public var onImeTextCommitted: ((String) -> Void)?
+    /// Fired when local macOS IME pre-edit/marked composition string changes (empty string clears echo pill).
+    public var onImeCompositionChanged: ((String) -> Void)?
+    /// Optional screen-space anchor rect provider for the macOS IME candidate window.
+    public var imeCandidateAnchorRectProvider: (() -> NSRect?)?
+
+    // MARK: - Private IME State
+
+    private var markedTextStorage: String = ""
+    private var markedRangeStorage: NSRange = NSRange(location: NSNotFound, length: 0)
+    private var selectedRangeStorage: NSRange = NSRange(location: 0, length: 0)
+    private var imeHandledCurrentKeyDown: Bool = false
+    private var wasComposingBeforeKeyDown: Bool = false
+    private var currentKeyDownEvent: NSEvent?
+    private var imeSwallowedKeyCodes: Set<UInt16> = []
 
     // MARK: - Private Metal State
 
@@ -665,10 +684,38 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
     }
 
     public override func keyDown(with event: NSEvent) {
-        inputManager?.handleKeyDown(event)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let hasShortcutMod = flags.contains(.command) || flags.contains(.control)
+        let isViewOnly = inputManager?.isViewOnly ?? false
+        let isPointerLocked = inputManager?.isPointerLocked ?? false
+
+        if hasShortcutMod || isViewOnly || isPointerLocked {
+            inputManager?.handleKeyDown(event)
+            return
+        }
+
+        if !hasMarkedText() && Self.isNonTextControlKey(event.keyCode) {
+            inputManager?.handleKeyDown(event)
+            return
+        }
+
+        wasComposingBeforeKeyDown = hasMarkedText()
+        imeHandledCurrentKeyDown = false
+        currentKeyDownEvent = event
+        interpretKeyEvents([event])
+        currentKeyDownEvent = nil
+
+        if imeHandledCurrentKeyDown || hasMarkedText() || wasComposingBeforeKeyDown {
+            imeSwallowedKeyCodes.insert(event.keyCode)
+        } else {
+            inputManager?.handleKeyDown(event)
+        }
     }
 
     public override func keyUp(with event: NSEvent) {
+        if imeSwallowedKeyCodes.remove(event.keyCode) != nil || hasMarkedText() {
+            return
+        }
         inputManager?.handleKeyUp(event)
     }
 
@@ -682,5 +729,135 @@ public final class MetalRendererView: MTKView, MTKViewDelegate {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    public func cancelImeComposition() {
+        let hadMarked = !markedTextStorage.isEmpty
+        markedTextStorage = ""
+        markedRangeStorage = NSRange(location: NSNotFound, length: 0)
+        selectedRangeStorage = NSRange(location: 0, length: 0)
+        imeSwallowedKeyCodes.removeAll()
+        inputContext?.discardMarkedText()
+        if hadMarked {
+            onImeCompositionChanged?("")
+        }
+    }
+
+    // MARK: - NSTextInputClient (Controller-side Native IME)
+
+    public func insertText(_ string: Any, replacementRange: NSRange) {
+        let text: String
+        if let s = string as? String {
+            text = s
+        } else if let attr = string as? NSAttributedString {
+            text = attr.string
+        } else {
+            return
+        }
+
+        let hadMarked = !markedTextStorage.isEmpty
+        markedTextStorage = ""
+        markedRangeStorage = NSRange(location: NSNotFound, length: 0)
+        selectedRangeStorage = NSRange(location: 0, length: 0)
+        if hadMarked || wasComposingBeforeKeyDown {
+            onImeCompositionChanged?("")
+        }
+
+        let hasNonASCII = text.unicodeScalars.contains { $0.value > 0x7F }
+        let committedAsync = (currentKeyDownEvent == nil)
+        if committedAsync || wasComposingBeforeKeyDown || hadMarked || hasNonASCII || text.count > 1 {
+            imeHandledCurrentKeyDown = true
+            if !text.isEmpty {
+                onImeTextCommitted?(text)
+            }
+        }
+        // Single plain ASCII character while not composing: leave imeHandledCurrentKeyDown = false
+        // so keyDown forwards the exact physical NSEvent via InputManager.handleKeyDown.
+    }
+
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text: String
+        if let s = string as? String {
+            text = s
+        } else if let attr = string as? NSAttributedString {
+            text = attr.string
+        } else {
+            text = ""
+        }
+
+        markedTextStorage = text
+        let utf16Len = (text as NSString).length
+        markedRangeStorage = utf16Len > 0
+            ? NSRange(location: 0, length: utf16Len)
+            : NSRange(location: NSNotFound, length: 0)
+        selectedRangeStorage = selectedRange
+        imeHandledCurrentKeyDown = true
+        onImeCompositionChanged?(text)
+    }
+
+    public func unmarkText() {
+        let hadMarked = !markedTextStorage.isEmpty
+        markedTextStorage = ""
+        markedRangeStorage = NSRange(location: NSNotFound, length: 0)
+        selectedRangeStorage = NSRange(location: 0, length: 0)
+        if hadMarked {
+            onImeCompositionChanged?("")
+        }
+    }
+
+    public func selectedRange() -> NSRange {
+        selectedRangeStorage
+    }
+
+    public func markedRange() -> NSRange {
+        markedRangeStorage
+    }
+
+    public func hasMarkedText() -> Bool {
+        !markedTextStorage.isEmpty
+    }
+
+    public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        nil
+    }
+
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        []
+    }
+
+    public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        if let provided = imeCandidateAnchorRectProvider?(), provided != .zero {
+            return provided
+        }
+        guard let win = window else { return .zero }
+        let localRect = NSRect(x: bounds.midX, y: 52, width: 1, height: 20)
+        let winRect = convert(localRect, to: nil)
+        return win.convertToScreen(winRect)
+    }
+
+    public func characterIndex(for point: NSPoint) -> Int {
+        NSNotFound
+    }
+
+    public override func doCommand(by selector: Selector) {
+        if hasMarkedText() || wasComposingBeforeKeyDown {
+            imeHandledCurrentKeyDown = true
+        }
+    }
+
+    private static func isNonTextControlKey(_ keyCode: UInt16) -> Bool {
+        switch Int(keyCode) {
+        case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Tab, kVK_Escape,
+             kVK_Delete, kVK_ForwardDelete,
+             kVK_LeftArrow, kVK_RightArrow, kVK_DownArrow, kVK_UpArrow,
+             kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown, kVK_Help,
+             kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6,
+             kVK_F7, kVK_F8, kVK_F9, kVK_F10, kVK_F11, kVK_F12,
+             kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18,
+             kVK_F19, kVK_F20:
+            return true
+        default:
+            return false
+        }
     }
 }

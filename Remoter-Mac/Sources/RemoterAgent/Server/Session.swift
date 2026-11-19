@@ -1123,7 +1123,7 @@ final class Session {
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: currentCodec.rawValue, encrypted: crypto.isReady)
             startKeepalive()
-            startCursorMonitor()
+            // Remote cursor shape sync intentionally disabled so clients keep their native local cursor.
             sendJson([
                 "type":   "stream_started",
                 "width":  c.screenWidth,

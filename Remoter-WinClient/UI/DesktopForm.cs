@@ -707,7 +707,7 @@ public sealed class DesktopForm : Form
 
     private void OnCursorShapeReceived(CursorShapeInfo info)
     {
-        SafeBeginInvoke(() => ApplyRemoteCursor(info));
+        // Keep local controller's native Windows cursor — do not overlay remote cursor shapes.
     }
 
     private void OnClipboardReceived(ClipboardData data)

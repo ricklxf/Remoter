@@ -375,16 +375,7 @@ export function RemoteCanvas({
         }).catch(console.error)
       }
 
-      // Remote cursor *shape* rendered on the local pointer: the capture
-      // stream has the cursor hidden, position is already local — this just
-      // swaps the local arrow for whatever shape the remote system shows
-      // (text beam, resize arrows, …). Set directly on the DOM node instead
-      // of React state so a busy cursor flipping shapes doesn't re-render
-      // the component tree.
-      if (e.type === 'cursor_shape' && frameRef.current) {
-        frameRef.current.style.cursor =
-          `url(data:image/png;base64,${e.pngBase64}) ${e.hotX} ${e.hotY}, default`
-      }
+      // Keep local controller's native cursor — do not swap to remote cursor_shape PNG.
 
       if (e.type === 'media_stream') attachMediaStream(e.stream)
     }

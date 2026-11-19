@@ -377,10 +377,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             // Native Metal renderer always draws via Metal; acknowledged cleanly.
         }
 
-        connection.onCursorShape = { [weak self] info in
-            DispatchQueue.main.async {
-                self?.inputManager.applyRemoteCursor(info)
-            }
+        connection.onCursorShape = { _ in
+            // Intentionally keep the local controller's native cursor instead of
+            // replacing it with the remote machine's cursor shape.
         }
 
         connection.onClipboardReceived = { [weak self] data in

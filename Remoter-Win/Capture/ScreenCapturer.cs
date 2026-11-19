@@ -234,7 +234,6 @@ sealed class ScreenCapturer : IDisposable
         {
             using var g = Graphics.FromImage(_gdiBmp);
             g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
-            DrawCursorOnGraphics(g);
 
             var rect = new Rectangle(0, 0, Width, Height);
             var data = _gdiBmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
@@ -348,7 +347,6 @@ sealed class ScreenCapturer : IDisposable
         {
             using var g = Graphics.FromImage(_gdiBmp);
             g.CopyFromScreen(0, 0, 0, 0, new Size(Width, Height), CopyPixelOperation.SourceCopy);
-            DrawCursorOnGraphics(g);
             _jpegBuf.SetLength(0);
             _gdiBmp.Save(_jpegBuf, _jpegCodec, _jpegParams);
             return _jpegBuf.ToArray();

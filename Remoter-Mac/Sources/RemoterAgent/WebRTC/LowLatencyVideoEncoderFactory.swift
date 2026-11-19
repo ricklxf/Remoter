@@ -6,19 +6,19 @@ import QuartzCore
 import WebRTC
 
 /// Custom WebRTC video encoder factory wrapping `RTCDefaultVideoEncoderFactory`.
-/// Intercepts H.264 High Profile (`640c..` / `6400..`) to use `LowLatencyH264VideoEncoder`
-/// with VideoToolbox low-latency rate control, 1.5x burst DataRateLimits, zero frame delay,
-/// and explicit BT.709 Full Range color metadata; delegates all other codecs (VP9, AV1, etc.)
-/// to `RTCDefaultVideoEncoderFactory`.
+/// Intercepts ALL H.264 profiles (High `640c..`/`6400..`, Main `4d..`, Baseline `42..`)
+/// to use `LowLatencyH264VideoEncoder` with VideoToolbox low-latency rate control,
+/// 1.5x burst DataRateLimits, zero frame delay, and explicit BT.709 Full Range color metadata;
+/// delegates all other codecs (VP9, AV1, etc.) to `RTCDefaultVideoEncoderFactory`.
 final class LowLatencyVideoEncoderFactory: NSObject, RTCVideoEncoderFactory {
     private let defaultFactory = RTCDefaultVideoEncoderFactory()
 
     func createEncoder(_ info: RTCVideoCodecInfo) -> RTCVideoEncoder? {
-        if Self.isH264HighProfile(info) {
+        if info.name.uppercased() == "H264" {
             ConnectionLogger.shared.logStep(
                 sessionId: "webrtc",
                 step: "encoder_factory_create",
-                detail: "custom=LowLatencyH264VideoEncoder profile=\(info.parameters["profile-level-id"] ?? "?")"
+                detail: "custom=LowLatencyH264VideoEncoder profile=\(info.parameters["profile-level-id"] ?? "default")"
             )
             return LowLatencyH264VideoEncoder(codecInfo: info)
         }
@@ -28,8 +28,9 @@ final class LowLatencyVideoEncoderFactory: NSObject, RTCVideoEncoderFactory {
     func supportedCodecs() -> [RTCVideoCodecInfo] {
         let defaults = defaultFactory.supportedCodecs()
         let highH264 = defaults.filter { Self.isH264HighProfile($0) }
-        let others = defaults.filter { !Self.isH264HighProfile($0) }
-        return highH264 + others
+        let otherH264 = defaults.filter { $0.name.uppercased() == "H264" && !Self.isH264HighProfile($0) }
+        let others = defaults.filter { $0.name.uppercased() != "H264" }
+        return highH264 + otherH264 + others
     }
 
     static func isH264HighProfile(_ info: RTCVideoCodecInfo) -> Bool {
@@ -247,7 +248,8 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+
+        let profileTag = configureProfileLevel(s)
 
         // Explicit BT.709 color metadata (preserves Full Range from input CVPixelBuffer)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
@@ -288,9 +290,33 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         ConnectionLogger.shared.logStep(
             sessionId: "webrtc",
             step: "vt_rtp_encoder_ready",
-            detail: "h264_high \(w)x\(h) \(fps)fps \(bitrateBps/1000)kbps hw=\((usingHW as? Bool) ?? false)"
+            detail: "\(profileTag) \(w)x\(h) \(fps)fps \(bitrateBps/1000)kbps hw=\((usingHW as? Bool) ?? false)"
         )
         return true
+    }
+
+    private func configureProfileLevel(_ session: VTCompressionSession) -> String {
+        let id = codecInfo.parameters["profile-level-id"]?.lowercased() ?? ""
+        if id.hasPrefix("42e0") {
+            let status = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                              value: kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel)
+            if status == noErr { return "h264_constrained_baseline" }
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_H264_Baseline_AutoLevel)
+            return "h264_baseline"
+        } else if id.hasPrefix("42") {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_H264_Baseline_AutoLevel)
+            return "h264_baseline"
+        } else if id.hasPrefix("4d") {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_H264_Main_AutoLevel)
+            return "h264_main"
+        } else {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                 value: kVTProfileLevel_H264_High_AutoLevel)
+            return "h264_high"
+        }
     }
 
     private func applyRateControl(_ session: VTCompressionSession, bitrateBps: Int, fps: Int) {

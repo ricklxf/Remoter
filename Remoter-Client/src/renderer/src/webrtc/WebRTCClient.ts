@@ -210,26 +210,29 @@ export class WebRTCClient {
         const fmtp = (codec.sdpFmtpLine ?? '').toLowerCase()
 
         if (mime === 'video/h265' || mime === 'video/hevc') {
-          return preferH265 ? 0 : 1
+          return preferH265 ? 0 : 3
         }
         if (mime === 'video/h264') {
           if (fmtp.includes('profile-level-id=640')) {
             return preferH265 ? 1 : 0
           }
-          return 4
+          if (fmtp.includes('profile-level-id=4d')) {
+            return preferH265 ? 2 : 1
+          }
+          return preferH265 ? 3 : 2
         }
-        if (mime === 'video/av1') return 2
-        if (mime === 'video/vp9') return 3
-        if (mime === 'video/vp8') return 6
+        if (mime === 'video/vp9') return 4
+        if (mime === 'video/av1') return 5
+        if (mime === 'video/vp8') return 7
         if (
           mime === 'video/rtx' ||
           mime === 'video/red' ||
           mime === 'video/ulpfec' ||
           mime.startsWith('video/flexfec')
         ) {
-          return 7
+          return 8
         }
-        return 5
+        return 6
       }
 
       const sorted = [...codecs].sort((a, b) => rank(a) - rank(b))
@@ -237,7 +240,7 @@ export class WebRTCClient {
       console.log(
         '[WebRTC] codec preferences applied:',
         sorted
-          .filter((c) => rank(c) < 7)
+          .filter((c) => rank(c) < 8)
           .slice(0, 5)
           .map((c) => `${c.mimeType}${c.sdpFmtpLine ? `(${c.sdpFmtpLine})` : ''}`)
           .join(', ')

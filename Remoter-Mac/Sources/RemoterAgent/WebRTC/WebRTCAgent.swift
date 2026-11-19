@@ -147,7 +147,14 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     var tunnelCapActive = false {
         didSet { if oldValue != tunnelCapActive { applyMaxBitrate() } }
     }
-    private var floorBps: Int { lanFloorAllowed ? Self.lanFloorBps : Self.tunnelFloorBps }
+    /// Detected from the nominated ICE candidate pair (`local=host`, `remote!=relay`) with either
+    /// a private RFC1918 remote IP or sustained sub-15ms zero-loss direct P2P RTT:
+    /// Web browsers hide their local IP from JS via mDNS (and libwebrtc omits IP on `prflx`),
+    /// so `lanFloorAllowed` can be false even on the same physical LAN.
+    private var isDirectP2P = false
+    private var isDirectPrivateLan = false
+    private var effectiveLanAllowed: Bool { lanFloorAllowed || isDirectPrivateLan }
+    private var floorBps: Int { effectiveLanAllowed ? Self.lanFloorBps : Self.tunnelFloorBps }
     private var minBitrateFloorActive = false
 
     // MARK: - 信令处理
@@ -170,8 +177,11 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         }
         self.pc = p
 
-        p.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] error in
-            if let e = error { print("[WebRTC] setRemoteDescription error: \(e)"); return }
+        // libwebrtc selects the *sender* encode codec from the remote Offer's m=video
+        // payload order, not just the local Answer. Reorder the incoming Offer so even
+        // older/unpatched clients immediately negotiate hardware H.264.
+        let reorderedOffer = preferCodecInSDP(sdp, preferred: preferredCodec, logStep: "offer_codec_order")
+        let proceedAfterOffer: () -> Void = { [weak self] in
             guard let self else { return }
             // Attach the video track after the remote offer is in place so
             // it pairs with the client's recvonly video transceiver (an
@@ -179,6 +189,21 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             // an unpaired transceiver — harmless, DataChannel path kicks in).
             self.setupVideoTrack(pc: p)
             self.createAnswer(pc: p)
+        }
+        p.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: reorderedOffer)) { error in
+            if let e = error {
+                ConnectionLogger.shared.logStep(
+                    sessionId: "webrtc",
+                    step: "set_remote_desc_fallback",
+                    detail: "err=\(e.localizedDescription)"
+                )
+                p.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { fallbackErr in
+                    if let fe = fallbackErr { print("[WebRTC] setRemoteDescription error: \(fe)"); return }
+                    proceedAfterOffer()
+                }
+                return
+            }
+            proceedAfterOffer()
         }
     }
 
@@ -233,7 +258,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
     private func applyEncodingParams() {
         guard let sender = videoSender else { return }
-        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, tunnelCapActive ? Self.tunnelCapBps : Int.max)
+        let applyTunnelCap = tunnelCapActive && !isDirectPrivateLan
+        let bps = min(requestedMaxBps, lossCapBps ?? Int.max, applyTunnelCap ? Self.tunnelCapBps : Int.max)
         let params = sender.parameters
         for enc in params.encodings {
             if bps != Int.max {
@@ -267,9 +293,29 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private var requestedMaxFps = 120
     private var lossCapBps: Int?
     private var lossCapSetAt: CFAbsoluteTime = 0
+    private var zeroLossStreak = 0
+    private static let lossCapClearStreakRequired = 20  // 10s of 0% loss at 0.5s poll
 
-    private func evaluateLossCap(lossFraction: Double, targetBps: Int?) {
-        guard lossFraction >= Self.lossCapTrigger, let targetBps else { return }
+    private func evaluateLossCap(lossFraction: Double, targetBps: Int?, rttMs: Double?) {
+        if lossFraction < Self.lossCapTrigger {
+            if lossCapBps != nil {
+                if lossFraction == 0, let rttMs, rttMs <= Self.lanRttThresholdMs {
+                    zeroLossStreak += 1
+                    if zeroLossStreak >= Self.lossCapClearStreakRequired {
+                        lossCapBps = nil
+                        zeroLossStreak = 0
+                        applyMaxBitrate()
+                        ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "loss_cap",
+                            detail: "cleared rttMs=\(String(format: "%.1f", rttMs))")
+                    }
+                } else {
+                    zeroLossStreak = 0
+                }
+            }
+            return
+        }
+        zeroLossStreak = 0
+        guard let targetBps else { return }
         let now = CFAbsoluteTimeGetCurrent()
         // One step per congestion episode — let the new cap take effect and
         // the loss reports catch up before judging again.
@@ -362,6 +408,10 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         statsTimer = nil
         highRttStreak = 0
         lowRttStreak = 0
+        zeroLossStreak = 0
+        lossCapBps = nil
+        isDirectP2P = false
+        isDirectPrivateLan = false
         minBitrateFloorActive = false
         pc?.close()
         pc = nil
@@ -436,7 +486,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
                 detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off") loss=\(String(format: "%.3f", lossFraction))")
             self.evaluateMinBitrateFloor(rttMs: rttMs, rttSamples: rttSamples, lossFraction: lossFraction)
-            self.evaluateLossCap(lossFraction: lossFraction, targetBps: targetBps)
+            self.evaluateLossCap(lossFraction: lossFraction, targetBps: targetBps, rttMs: rttMs)
         }
     }
 
@@ -466,11 +516,24 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         } else if rttMs <= Self.lanRttThresholdMs, lossCapBps == nil,
                   CFAbsoluteTimeGetCurrent() - floorRevokedAt >= Self.rearmCooldownSec {
             lowRttStreak += 1
-            if lowRttStreak >= Self.lanRttStreakRequired, !minBitrateFloorActive {
-                minBitrateFloorActive = true
-                setMinBitrate(floorBps)
-                ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
-                    detail: "on bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
+            if lowRttStreak >= Self.lanRttStreakRequired {
+                // Direct P2P (local=host, remote!=relay) with sustained <=15ms RTT and 0% loss
+                // is a real LAN link even when browser mDNS / prflx hides the remote IP.
+                if isDirectP2P, !isDirectPrivateLan, rttMs <= 15.0, lossFraction == 0 {
+                    isDirectPrivateLan = true
+                    applyMaxBitrate()
+                    if minBitrateFloorActive {
+                        setMinBitrate(floorBps)
+                    }
+                    ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "direct_lan_promoted",
+                        detail: "bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
+                }
+                if !minBitrateFloorActive {
+                    minBitrateFloorActive = true
+                    setMinBitrate(floorBps)
+                    ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "min_bitrate_floor",
+                        detail: "on bps=\(floorBps) rttMs=\(String(format: "%.1f", rttMs))")
+                }
             }
         } else {
             lowRttStreak = 0
@@ -505,8 +568,9 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     }
 
     /// Reorders `m=video` payload types to prioritize `preferred` codec (defaulting to
-    /// H.264 High Profile `640c..`/`6400..`) while de-prioritizing VP8 and H.264 Constrained Baseline.
-    private func preferCodecInSDP(_ sdp: String, preferred: String) -> String {
+    /// H.264 High Profile `640c..`/`6400..`, then other H.264 profiles ahead of software
+    /// VP9/AV1/VP8).
+    private func preferCodecInSDP(_ sdp: String, preferred: String, logStep: String = "answer_codec_order") -> String {
         let lineSep = sdp.contains("\r\n") ? "\r\n" : "\n"
         var lines = sdp.components(separatedBy: lineSep)
 
@@ -561,9 +625,9 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             guard rtpmap[pt] == "h264", let p = fmtp[pt] else { return false }
             return p.contains("profile-level-id=640c") || p.contains("profile-level-id=6400")
         }
-        let isH264Baseline: (String) -> Bool = { pt in
+        let isH264Main: (String) -> Bool = { pt in
             guard rtpmap[pt] == "h264", let p = fmtp[pt] else { return false }
-            return p.contains("profile-level-id=42e0") || p.contains("profile-level-id=4200")
+            return p.contains("profile-level-id=4d")
         }
 
         func priority(for pt: String) -> Int {
@@ -572,36 +636,49 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 return 90
             }
             if codec == "vp8" { return 80 }
-            if isH264Baseline(pt) { return 70 }
 
             switch pref {
             case "h265", "hevc":
                 if codec == "h265" || codec == "hevc" { return 0 }
                 if isH264High(pt) { return 10 }
-                if codec == "av1" || codec == "vp9" { return 20 }
-                if codec == "h264" { return 30 }
+                if isH264Main(pt) { return 14 }
+                if codec == "h264" { return 15 }
+                if codec == "vp9" { return 30 }
+                if codec == "av1" { return 40 }
                 return 50
             case "av1":
                 if codec == "av1" { return 0 }
                 if isH264High(pt) { return 10 }
-                if codec == "vp9" || codec == "h265" || codec == "hevc" { return 20 }
-                if codec == "h264" { return 30 }
+                if isH264Main(pt) { return 14 }
+                if codec == "h264" { return 15 }
+                if codec == "vp9" || codec == "h265" || codec == "hevc" { return 25 }
                 return 50
             case "vp9":
                 if codec == "vp9" { return 0 }
                 if isH264High(pt) { return 10 }
-                if codec == "av1" || codec == "h265" || codec == "hevc" { return 20 }
-                if codec == "h264" { return 30 }
+                if isH264Main(pt) { return 14 }
+                if codec == "h264" { return 15 }
+                if codec == "h265" || codec == "hevc" { return 25 }
+                if codec == "av1" { return 35 }
                 return 50
             case "h264":
+                // ALL hardware H.264 profiles (High -> Main -> Constrained Baseline)
+                // MUST rank ahead of software AV1/VP9/VP8 so clients that only offer
+                // Baseline (e.g. Windows Chrome 42e01f) never fall back to CPU AV1.
                 if isH264High(pt) { return 0 }
-                if codec == "h264" { return 10 }
-                if codec == "h265" || codec == "hevc" || codec == "av1" || codec == "vp9" { return 20 }
+                if isH264Main(pt) { return 4 }
+                if codec == "h264" { return 5 }
+                if codec == "h265" || codec == "hevc" { return 15 }
+                if codec == "vp9" { return 30 }
+                if codec == "av1" { return 40 }
                 return 50
             default:
                 if codec == pref { return 0 }
                 if isH264High(pt) { return 10 }
-                if codec == "h264" { return 20 }
+                if isH264Main(pt) { return 14 }
+                if codec == "h264" { return 15 }
+                if codec == "vp9" { return 30 }
+                if codec == "av1" { return 40 }
                 return 50
             }
         }
@@ -631,7 +708,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         if let firstPT = ordered.first {
             ConnectionLogger.shared.logStep(
                 sessionId: "webrtc",
-                step: "answer_codec_order",
+                step: logStep,
                 detail: "preferred=\(pref) top=\(rtpmap[firstPT] ?? "?")(pt=\(firstPT)) fmtp=\(fmtp[firstPT] ?? "")"
             )
         }
@@ -679,18 +756,48 @@ extension WebRTCAgent: RTCPeerConnectionDelegate {
     // being unobservable for this process). Query once right after ICE
     // connects.
     private func logSelectedCandidatePair(_ pc: RTCPeerConnection) {
-        pc.statistics { report in
+        pc.statistics { [weak self] report in
+            guard let self else { return }
             for stat in report.statistics.values where stat.type == "candidate-pair" {
                 guard (stat.values["state"] as? String) == "succeeded",
                       (stat.values["nominated"] as? Bool) == true else { continue }
                 let localId  = stat.values["localCandidateId"]  as? String
                 let remoteId = stat.values["remoteCandidateId"] as? String
-                let localType  = localId.flatMap  { report.statistics[$0]?.values["candidateType"] as? String } ?? "?"
-                let remoteType = remoteId.flatMap { report.statistics[$0]?.values["candidateType"] as? String } ?? "?"
+                let localStat  = localId.flatMap { report.statistics[$0] }
+                let remoteStat = remoteId.flatMap { report.statistics[$0] }
+                let localType  = localStat?.values["candidateType"] as? String ?? "?"
+                let remoteType = remoteStat?.values["candidateType"] as? String ?? "?"
+                let remoteIP   = (remoteStat?.values["ip"] as? String)
+                    ?? (remoteStat?.values["address"] as? String)
+                    ?? (remoteStat?.values["ipAddress"] as? String)
+                    ?? ""
+                let directP2P = (localType == "host" && remoteType != "relay")
+                let directPrivate = directP2P && Self.isPrivateLanIP(remoteIP)
+                self.isDirectP2P = directP2P
+                if directPrivate != self.isDirectPrivateLan {
+                    self.isDirectPrivateLan = directPrivate
+                    self.applyMaxBitrate()
+                    if self.minBitrateFloorActive {
+                        self.setMinBitrate(self.floorBps)
+                    }
+                }
                 ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "candidate_pair",
-                    detail: "local=\(localType) remote=\(remoteType)")
+                    detail: "local=\(localType) remote=\(remoteType) remoteIP=\(remoteIP.isEmpty ? "?" : remoteIP) directP2P=\(directP2P) directLan=\(directPrivate)")
             }
         }
+    }
+
+    private static func isPrivateLanIP(_ ip: String) -> Bool {
+        if ip.hasPrefix("192.168.") || ip.hasPrefix("10.") || ip.hasPrefix("127.") { return true }
+        if ip.hasPrefix("172.") {
+            let parts = ip.split(separator: ".")
+            if parts.count >= 2, let second = Int(parts[1]), (16...31).contains(second) {
+                return true
+            }
+        }
+        let lower = ip.lowercased()
+        if lower.hasPrefix("fe80:") || lower.hasPrefix("fc") || lower.hasPrefix("fd") { return true }
+        return false
     }
 
     func peerConnection(_ pc: RTCPeerConnection, didChange _: RTCIceGatheringState) {}

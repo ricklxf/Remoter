@@ -295,10 +295,13 @@ public sealed class RemoterConnection : IDisposable
             }
             catch (Exception ex)
             {
-                lastReason = ex.Message;
+                string site = ex.TargetSite != null
+                    ? $" [{ex.TargetSite.DeclaringType?.Name}.{ex.TargetSite.Name}]"
+                    : "";
+                lastReason = ex.Message + site;
                 if (!_wasStreaming || _reconnectCount == 0)
                 {
-                    ErrorOccurred?.Invoke(ex.Message);
+                    ErrorOccurred?.Invoke(lastReason);
                 }
             }
 

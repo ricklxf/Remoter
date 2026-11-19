@@ -128,7 +128,7 @@ public sealed class DesktopForm : Form
 
         InitializeVideoPipeline();
 
-        _toolbar.Show(this);
+        _toolbar.Show();
         _toolbar.UpdatePosition();
 
         // Sync initial settings with server
@@ -157,9 +157,16 @@ public sealed class DesktopForm : Form
 
             if (_streamInfo.Codec != VideoCodecType.Jpeg)
             {
-                _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
-                _activeDecoderCodec = _streamInfo.Codec;
-                _mfInitialized = true;
+                try
+                {
+                    _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, _renderer.Device);
+                    _activeDecoderCodec = _streamInfo.Codec;
+                    _mfInitialized = true;
+                }
+                catch
+                {
+                    _mfInitialized = false;
+                }
             }
         }
 
@@ -627,8 +634,9 @@ public sealed class DesktopForm : Form
 
     private void SyncToolbarDisplays()
     {
-        var list = _streamInfo.Displays
-            .Select(d => ((int)d.Id, d.Name, d.Width, d.Height))
+        var displays = _streamInfo.Displays ?? Array.Empty<DisplayInfo>();
+        var list = displays
+            .Select(d => ((int)d.Id, d.Name ?? "", d.Width, d.Height))
             .ToList();
         _toolbar.SetDisplays(list, (int)_streamInfo.ActiveDisplayId);
     }

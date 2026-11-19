@@ -5,22 +5,22 @@ using System.Windows.Forms;
 namespace RemoterWinClient.UI;
 
 /// <summary>
-/// Shared native Windows 10/11 dark-mode palette and DWM titlebar helper.
+/// Shared native Windows 10/11 clean light-mode (white) palette and DWM titlebar helper.
 /// </summary>
 public static class DarkTheme
 {
-    public static readonly Color WindowBg     = Color.FromArgb(18, 20, 25);
-    public static readonly Color SurfaceBg    = Color.FromArgb(26, 30, 38);
-    public static readonly Color InputBg      = Color.FromArgb(34, 40, 50);
-    public static readonly Color HoverBg      = Color.FromArgb(44, 52, 65);
-    public static readonly Color BorderColor  = Color.FromArgb(52, 60, 74);
-    public static readonly Color Accent       = Color.FromArgb(15, 184, 171); // Remoter teal (#0fb8ab)
-    public static readonly Color AccentHover  = Color.FromArgb(20, 204, 190);
-    public static readonly Color Danger       = Color.FromArgb(224, 72, 82);
-    public static readonly Color DangerHover  = Color.FromArgb(240, 88, 98);
-    public static readonly Color TextPrimary  = Color.FromArgb(234, 239, 246);
-    public static readonly Color TextMuted    = Color.FromArgb(142, 152, 168);
-    public static readonly Color VideoBg      = Color.FromArgb(10, 12, 16);
+    public static readonly Color WindowBg     = Color.FromArgb(245, 247, 250); // #F5F7FA soft off-white canvas
+    public static readonly Color SurfaceBg    = Color.White;                   // #FFFFFF crisp white cards
+    public static readonly Color InputBg      = Color.White;                   // #FFFFFF clean inputs
+    public static readonly Color HoverBg      = Color.FromArgb(236, 241, 247); // #ECF1F7 subtle hover
+    public static readonly Color BorderColor  = Color.FromArgb(216, 223, 232); // #D8DFE8 crisp border
+    public static readonly Color Accent       = Color.FromArgb(13, 148, 136);  // #0D9488 Remoter teal
+    public static readonly Color AccentHover  = Color.FromArgb(15, 118, 110);  // #0F766E
+    public static readonly Color Danger       = Color.FromArgb(220, 38, 38);   // #DC2626
+    public static readonly Color DangerHover  = Color.FromArgb(185, 28, 28);   // #B91C1C
+    public static readonly Color TextPrimary  = Color.FromArgb(24, 30, 41);    // #181E29 deep slate
+    public static readonly Color TextMuted    = Color.FromArgb(100, 116, 139); // #64748B muted slate
+    public static readonly Color VideoBg      = Color.FromArgb(15, 18, 24);    // Dark letterbox behind remote video
 
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
@@ -29,12 +29,12 @@ public static class DarkTheme
     private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
 
     /// <summary>
-    /// Enables Windows 10/11 immersive dark title bar on the given window handle.
+    /// Ensures Windows 10/11 uses the native light (white) title bar on the given window handle.
     /// </summary>
     public static void EnableDarkTitleBar(nint hwnd)
     {
         if (hwnd == nint.Zero) return;
-        int dark = 1;
+        int dark = 0;
         if (DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int)) != 0)
         {
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref dark, sizeof(int));
@@ -48,7 +48,7 @@ public static class DarkTheme
         if (primary)
         {
             btn.BackColor = Accent;
-            btn.ForeColor = Color.FromArgb(12, 18, 22);
+            btn.ForeColor = Color.White;
             btn.FlatAppearance.BorderSize = 0;
             btn.FlatAppearance.MouseOverBackColor = AccentHover;
         }

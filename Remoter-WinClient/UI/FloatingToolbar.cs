@@ -81,8 +81,8 @@ public sealed class FloatingToolbar : Form
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
-        BackColor = Color.FromArgb(20, 24, 31);
-        Opacity = 0.94;
+        BackColor = Color.White;
+        Opacity = 0.96;
         DoubleBuffered = true;
 
         _autoHideTimer = new System.Windows.Forms.Timer { Interval = 3000 };
@@ -100,7 +100,7 @@ public sealed class FloatingToolbar : Form
             Text = "▼",
             Dock = DockStyle.Fill,
             FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(28, 34, 44),
+            BackColor = Color.White,
             ForeColor = DarkTheme.TextMuted,
             Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
             Cursor = Cursors.Hand,
@@ -120,7 +120,7 @@ public sealed class FloatingToolbar : Form
             WrapContents = false,
             AutoSize = false,
             Padding = new Padding(8, 5, 8, 4),
-            BackColor = Color.FromArgb(22, 26, 34),
+            BackColor = Color.FromArgb(250, 251, 253),
             Visible = false,
         };
         _barPanel.Paint += (_, e) =>
@@ -139,8 +139,8 @@ public sealed class FloatingToolbar : Form
             Margin = new Padding(2, 6, 6, 0),
         };
 
-        _codecBadge = CreateBadge("H.264", Color.FromArgb(30, 56, 78), Color.FromArgb(110, 200, 255));
-        _decoderBadge = CreateBadge("HW", Color.FromArgb(22, 64, 58), DarkTheme.Accent);
+        _codecBadge = CreateBadge("H.264", Color.FromArgb(224, 242, 254), Color.FromArgb(3, 105, 161));
+        _decoderBadge = CreateBadge("HW", Color.FromArgb(204, 251, 241), DarkTheme.Accent);
 
         // Context menus
         _qualityMenu = CreateDarkMenu();
@@ -462,7 +462,7 @@ public sealed class FloatingToolbar : Form
     {
         if (active)
         {
-            btn.BackColor = Color.FromArgb(18, 72, 68);
+            btn.BackColor = Color.FromArgb(204, 251, 241);
             btn.ForeColor = DarkTheme.Accent;
             btn.FlatAppearance.BorderColor = DarkTheme.Accent;
         }

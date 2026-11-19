@@ -143,7 +143,7 @@ public sealed class ConnectForm : Form
         _statusLabel = new Label
         {
             Location = new Point(20, 342),
-            Size = new Size(330, 40),
+            Size = new Size(330, 46),
             ForeColor = DarkTheme.TextMuted,
             Font = new Font("Segoe UI", 8.5f),
             Text = "",
@@ -152,9 +152,9 @@ public sealed class ConnectForm : Form
         var versionLabel = new Label
         {
             Text = $"v{AppVersion.Current} · .NET 10 Native",
-            Location = new Point(20, 392),
+            Location = new Point(20, 394),
             AutoSize = true,
-            ForeColor = Color.FromArgb(100, 110, 126),
+            ForeColor = DarkTheme.TextMuted,
             Font = new Font("Segoe UI", 8f),
         };
 
@@ -475,19 +475,29 @@ public sealed class ConnectForm : Form
 
             SetConnectingState(false, "");
 
-            var desktopForm = new DesktopForm(conn, connectParams, streamInfo);
-            desktopForm.FormClosed += (_, _) =>
+            DesktopForm? desktopForm = null;
+            try
             {
-                if (!IsDisposed)
+                desktopForm = new DesktopForm(conn, connectParams, streamInfo);
+                desktopForm.FormClosed += (_, _) =>
                 {
-                    LoadSavedDevices();
-                    Show();
-                    Activate();
-                }
-            };
+                    if (!IsDisposed)
+                    {
+                        LoadSavedDevices();
+                        Show();
+                        Activate();
+                    }
+                };
 
-            Hide();
-            desktopForm.Show();
+                desktopForm.Show();
+                Hide();
+            }
+            catch
+            {
+                try { desktopForm?.Dispose(); } catch { }
+                if (!Visible && !IsDisposed) Show();
+                throw;
+            }
         }
         catch (Exception ex)
         {
@@ -495,7 +505,11 @@ public sealed class ConnectForm : Form
             conn.ErrorOccurred -= OnError;
             conn.Disconnected -= OnDisconnected;
             conn.Dispose();
-            SetConnectingState(false, $"连接失败: {ex.Message}", isError: true);
+            TryWriteErrorLog(ex);
+            string site = ex.TargetSite != null
+                ? $" [{ex.TargetSite.DeclaringType?.Name}.{ex.TargetSite.Name}]"
+                : "";
+            SetConnectingState(false, $"连接失败: {ex.Message}{site}", isError: true);
         }
         finally
         {
@@ -545,6 +559,20 @@ public sealed class ConnectForm : Form
         BorderStyle = BorderStyle.FixedSingle,
         Font = new Font("Segoe UI", 9.5f),
     };
+
+    private static void TryWriteErrorLog(Exception ex)
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RemoterWinClient");
+            Directory.CreateDirectory(dir);
+            string logPath = Path.Combine(dir, "last_error.log");
+            File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}]\r\n{ex}\r\n");
+        }
+        catch { }
+    }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {

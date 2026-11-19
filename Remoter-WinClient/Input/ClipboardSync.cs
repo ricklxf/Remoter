@@ -18,7 +18,7 @@ public sealed class ClipboardSync : IDisposable
     private const int WM_CLIPBOARDUPDATE = 0x031D;
     private const int MaxImageBytes = 10 * 1024 * 1024; // 10 MB safety cap
 
-    private readonly ClipboardListenerWindow _window;
+    private readonly ClipboardListenerWindow? _window;
     private readonly Control _uiInvoker;
     private bool _enabled = true;
     private bool _disposed;
@@ -56,7 +56,14 @@ public sealed class ClipboardSync : IDisposable
     {
         _uiInvoker = uiInvoker ?? throw new ArgumentNullException(nameof(uiInvoker));
         _lastSequenceNumber = GetClipboardSequenceNumber();
-        _window = new ClipboardListenerWindow(OnClipboardUpdate);
+        try
+        {
+            _window = new ClipboardListenerWindow(OnClipboardUpdate);
+        }
+        catch
+        {
+            _window = null;
+        }
     }
 
     /// <summary>
@@ -226,7 +233,7 @@ public sealed class ClipboardSync : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _window.Dispose();
+        _window?.Dispose();
     }
 
     private sealed class ClipboardListenerWindow : NativeWindow, IDisposable

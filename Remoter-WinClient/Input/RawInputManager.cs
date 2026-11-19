@@ -632,11 +632,18 @@ public sealed class RawInputManager : IDisposable
 
     private void InstallWinKeyHook()
     {
-        _kbHookProc = LowLevelKeyboardCallback;
-        using var curProcess = Process.GetCurrentProcess();
-        using var curModule = curProcess.MainModule;
-        nint hMod = curModule != null ? GetModuleHandleW(curModule.ModuleName) : nint.Zero;
-        _kbHookHandle = SetWindowsHookExW(WH_KEYBOARD_LL, _kbHookProc, hMod, 0);
+        try
+        {
+            _kbHookProc = LowLevelKeyboardCallback;
+            using var curProcess = Process.GetCurrentProcess();
+            using var curModule = curProcess.MainModule;
+            nint hMod = curModule != null ? GetModuleHandleW(curModule.ModuleName) : nint.Zero;
+            _kbHookHandle = SetWindowsHookExW(WH_KEYBOARD_LL, _kbHookProc, hMod, 0);
+        }
+        catch
+        {
+            _kbHookHandle = nint.Zero;
+        }
     }
 
     private nint LowLevelKeyboardCallback(int nCode, nint wParam, nint lParam)

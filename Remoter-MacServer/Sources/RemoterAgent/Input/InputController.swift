@@ -115,7 +115,12 @@ final class InputController {
         // Without an explicit click count, some apps' tracking areas/gesture
         // recognizers ignore the synthetic down/up as not a "real" click.
         e.setIntegerValueField(.mouseEventClickState, value: 1)
-        timedPost(e, tap: .cgSessionEventTap)
+        // Left clicks go to .cghidEventTap so Keybot's Ctrl+click → Cmd+click
+        // rule (at .cgSessionEventTap) sees remote clicks too.
+        let tap: CGEventTapLocation = (type == .leftMouseDown || type == .leftMouseUp)
+            ? .cghidEventTap
+            : .cgSessionEventTap
+        timedPost(e, tap: tap)
     }
 
     func mouseDoubleClick(button: String, x: Double, y: Double) {
@@ -227,6 +232,17 @@ final class InputController {
     // keys ourselves, same as how a real CapsLock+Shift combo behaves.
     private var virtualCapsLockOn = false
 
+    private static let modifierKeyFlags: [CGKeyCode: CGEventFlags] = [
+        54: .maskCommand,   // MetaRight
+        55: .maskCommand,   // MetaLeft
+        56: .maskShift,     // ShiftLeft
+        58: .maskAlternate, // AltLeft
+        59: .maskControl,   // ControlLeft
+        60: .maskShift,     // ShiftRight
+        61: .maskAlternate, // AltRight
+        62: .maskControl,   // ControlRight
+    ]
+
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
         if code == "CapsLock" {
             if down { virtualCapsLockOn.toggle() }
@@ -257,8 +273,20 @@ final class InputController {
             }
         }
         if shiftActive { flags.insert(.maskShift) }
+        // Modifier keys must be posted as .flagsChanged with consistent flag
+        // state so KeybotEventTap.handleFlags tracks press/release cleanly.
+        if let modFlag = Self.modifierKeyFlags[keyCode] {
+            e.type = .flagsChanged
+            if down {
+                flags.insert(modFlag)
+            } else {
+                flags.remove(modFlag)
+            }
+        }
         e.flags = flags
-        timedPost(e, tap: .cgAnnotatedSessionEventTap)
+        // Post at .cghidEventTap so remote keys flow through .cgSessionEventTap
+        // (InputLocker passes via injectedTag, then KeybotEventTap remaps rules).
+        timedPost(e, tap: .cghidEventTap)
 
         if down { pressedKeys.insert(keyCode) } else { pressedKeys.remove(keyCode) }
     }
@@ -292,8 +320,11 @@ final class InputController {
         let src = CGEventSource(stateID: .hidSystemState)
         for keyCode in pressedKeys {
             guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false) else { continue }
+            if Self.modifierKeyFlags[keyCode] != nil {
+                e.type = .flagsChanged
+            }
             e.flags = []
-            timedPost(e, tap: .cgAnnotatedSessionEventTap)
+            timedPost(e, tap: .cghidEventTap)
         }
         pressedKeys.removeAll()
     }

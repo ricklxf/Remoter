@@ -128,6 +128,10 @@ public sealed class DesktopForm : Form
         _videoHost.Controls.Add(_imeEchoLabel);
         _videoHost.ImeTextCommitted += text => _conn?.SendTextInput(text);
         _videoHost.ImeCompositionChanged += UpdateImeEcho;
+        _videoHost.ImeEchoBoundsProvider = () =>
+            (!_disposed && !_imeEchoLabel.IsDisposed && _imeEchoLabel.Visible)
+                ? (Rectangle?)_imeEchoLabel.Bounds
+                : null;
 
         // ── Input & Clipboard ──
         _inputManager = new RawInputManager(_videoHost);
@@ -831,6 +835,10 @@ public sealed class DesktopForm : Form
 
         SyncContentRect();
         PositionImeEchoLabel();
+        if (_videoHost.IsImeComposing)
+        {
+            _videoHost.PositionImeWindow();
+        }
         _toolbar?.UpdatePosition();
         _statsHud?.UpdatePosition();
         _inputManager?.UpdateClipCursor();
@@ -856,9 +864,12 @@ public sealed class DesktopForm : Form
         if (_imeEchoLabel == null || _imeEchoLabel.IsDisposed || !_imeEchoLabel.Visible) return;
         int w = _videoHost.ClientSize.Width;
         int h = _videoHost.ClientSize.Height;
+        double scale = Math.Max(1.0, (_videoHost.IsHandleCreated ? _videoHost.DeviceDpi : DeviceDpi) / 96.0);
+        int margin = (int)Math.Round(8 * scale);
+        int bottomClearance = (int)Math.Round(120 * scale);
         _imeEchoLabel.Location = new Point(
-            Math.Max(8, (w - _imeEchoLabel.Width) / 2),
-            Math.Max(8, h - _imeEchoLabel.Height - 28));
+            Math.Max(margin, (w - _imeEchoLabel.Width) / 2),
+            Math.Max(margin, h - _imeEchoLabel.Height - bottomClearance));
     }
 
     private void OnFilesDropped(string[] files)

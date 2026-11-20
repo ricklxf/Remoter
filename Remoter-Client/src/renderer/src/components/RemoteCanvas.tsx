@@ -4,7 +4,7 @@ import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
 import { StreamInfo, ScaleMode, SharpnessLevel } from '../types'
-import { useImeOffset, setImeOffset, resolutionKey } from '../utils/imeOffset'
+import { useImeOffset, setImeOffset, resolutionKey, MIN_IME_BOTTOM } from '../utils/imeOffset'
 
 interface Props {
   conn: Connection
@@ -78,6 +78,11 @@ export function RemoteCanvas({
   // couldn't work across, say, a 1080p session and a 2K one.
   const imeResKey = resolutionKey(streamInfo.width, streamInfo.height)
   const imeOffset = useImeOffset(imeResKey)
+  // Guard against old localStorage entries (e.g. y: 0 from the previous default)
+  // or dragging too close to the bottom edge, which leaves no room below the
+  // anchor textarea and forces the OS candidate bar to flip upward onto the
+  // echo pill.
+  const effectiveImeY = Math.max(MIN_IME_BOTTOM, imeOffset.y)
   // A real IME composition ends the instant the OS sees a mousedown
   // anywhere outside the composing element — confirmed live: dragging never
   // took effect while an actual composition was in progress, because the
@@ -98,12 +103,13 @@ export function RemoteCanvas({
   function onEchoMouseDown(e: React.MouseEvent): void {
     e.preventDefault()
     e.stopPropagation()
-    const start = { x: e.clientX, y: e.clientY, origX: imeOffset.x, origY: imeOffset.y }
+    const start = { x: e.clientX, y: e.clientY, origX: imeOffset.x, origY: effectiveImeY }
     const onMove = (ev: MouseEvent): void => {
       ev.preventDefault()
       ev.stopPropagation()
       // bottom grows upward on screen, clientY grows downward — invert.
-      setImeOffset(imeResKey, { x: start.origX + (ev.clientX - start.x), y: start.origY - (ev.clientY - start.y) })
+      const nextY = Math.max(MIN_IME_BOTTOM, start.origY - (ev.clientY - start.y))
+      setImeOffset(imeResKey, { x: start.origX + (ev.clientX - start.x), y: nextY })
     }
     const onUp = (ev: MouseEvent): void => {
       ev.preventDefault()
@@ -472,7 +478,7 @@ export function RemoteCanvas({
             // regardless of wrapping) but wide enough that the whole
             // composition always fits on a single internal line, plus
             // `wrap="off"` as a belt-and-suspenders guard against wrapping.
-            position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: imeOffset.y,
+            position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY,
             width: 400, height: 20, padding: 0, border: 'none',
             opacity: 0, pointerEvents: 'none', resize: 'none',
             overflow: 'hidden', zIndex: -1, whiteSpace: 'pre',
@@ -480,12 +486,13 @@ export function RemoteCanvas({
         />
         {/* Read-only echo of the composition text above — doesn't touch the
             textarea's own box so it can't disturb the candidate window's
-            position. Sized to fit its content instead of a fixed width so
-            short or long compositions both look right. Draggable: this is
-            also the handle for calibrating imeOffset (see onEchoMouseDown) —
-            it and the invisible textarea above share the same offset, just
-            4px apart, so dragging this visibly moves the real candidate
-            window's anchor too.
+            position. Placed 8px above the 20px-tall textarea (effectiveImeY + 28)
+            so the echo pill and the OS candidate window (anchored below the
+            textarea) never overlap. Sized to fit its content instead of a fixed
+            width so short or long compositions both look right. Draggable: this
+            is also the handle for calibrating imeOffset (see onEchoMouseDown) —
+            it and the invisible textarea above share the same offset, so
+            dragging this visibly moves the real candidate window's anchor too.
             onMouseDownCapture, not onMouseDown: InputHandler has its own
             native 'mousedown' listener on the frame div (bubble phase) that
             forwards every click to the remote as a real click-through. A
@@ -499,7 +506,7 @@ export function RemoteCanvas({
           <div
             onMouseDownCapture={onEchoMouseDown}
             style={{
-              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: imeOffset.y + 4,
+              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY + 28,
               // A short composition (e.g. one or two pinyin letters) sized
               // this box down to a sliver a few dozen px wide — easy to miss
               // by a couple pixels while dragging, which sends that click

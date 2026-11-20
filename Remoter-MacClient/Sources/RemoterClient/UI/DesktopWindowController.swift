@@ -39,6 +39,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     // Floating IME composition echo pill (bottom-center, matching Web RemoteCanvas.tsx)
     private let imeEchoCard = Theme.makeCard(background: Theme.elevated.withAlphaComponent(0.95), cornerRadius: 8)
     private let imeEchoLabel = Theme.makeLabel("", size: 14, weight: .medium, color: Theme.textPrimary)
+    private var imeEchoBottomConstraint: NSLayoutConstraint?
 
     // Session state
     private static let qualityPresetDefaultsKey = "remoter_quality_preset"
@@ -241,6 +242,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         imeEchoCard.isHidden = true
         container.addSubview(imeEchoCard)
 
+        let bottomConstraint = imeEchoCard.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -140)
+        self.imeEchoBottomConstraint = bottomConstraint
+
         NSLayoutConstraint.activate([
             imeEchoLabel.leadingAnchor.constraint(equalTo: imeEchoCard.leadingAnchor, constant: 14),
             imeEchoLabel.trailingAnchor.constraint(equalTo: imeEchoCard.trailingAnchor, constant: -14),
@@ -248,8 +252,22 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             imeEchoLabel.bottomAnchor.constraint(equalTo: imeEchoCard.bottomAnchor, constant: -6),
 
             imeEchoCard.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            imeEchoCard.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -64),
+            bottomConstraint,
         ])
+    }
+
+    private func updateImeEchoBottomMargin() {
+        var bottomMargin: CGFloat = 140
+        if let win = window, let contentView = win.contentView,
+           let screen = win.screen ?? NSScreen.main {
+            let contentBottomWin = contentView.convert(NSRect(x: 0, y: 0, width: 1, height: 1), to: nil)
+            let contentBottomScreenY = win.convertToScreen(contentBottomWin).minY
+            let minRequiredScreenY = screen.visibleFrame.minY + 120
+            let neededMargin = minRequiredScreenY - contentBottomScreenY
+            let maxMargin = max(140, contentView.bounds.height - 60)
+            bottomMargin = min(max(140, neededMargin), maxMargin)
+        }
+        imeEchoBottomConstraint?.constant = -bottomMargin
     }
 
     private func updateImeEcho(_ text: String) {
@@ -259,6 +277,8 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         } else {
             imeEchoLabel.stringValue = text
             imeEchoCard.isHidden = false
+            updateImeEchoBottomMargin()
+            window?.contentView?.layoutSubtreeIfNeeded()
         }
     }
 
@@ -270,18 +290,25 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             self?.connection.sendTextInput(text)
         }
         rendererView.onImeCompositionChanged = { [weak self] text in
-            DispatchQueue.main.async {
+            if Thread.isMainThread {
                 self?.updateImeEcho(text)
+            } else {
+                DispatchQueue.main.async {
+                    self?.updateImeEcho(text)
+                }
             }
         }
         rendererView.imeCandidateAnchorRectProvider = { [weak self] in
             guard let self, let win = self.window else { return nil }
             if !self.imeEchoCard.isHidden {
+                win.contentView?.layoutSubtreeIfNeeded()
                 let winRect = self.imeEchoCard.convert(self.imeEchoCard.bounds, to: nil)
-                return win.convertToScreen(winRect)
+                let cardScreenRect = win.convertToScreen(winRect)
+                return NSRect(x: cardScreenRect.minX, y: cardScreenRect.minY - 6, width: 1, height: 1)
             }
             let viewBounds = self.canvasContainer.bounds
-            let anchorLocal = NSRect(x: viewBounds.midX, y: 64, width: 1, height: 22)
+            let bottomMargin = abs(self.imeEchoBottomConstraint?.constant ?? -140)
+            let anchorLocal = NSRect(x: viewBounds.midX, y: max(0, bottomMargin - 6), width: 1, height: 1)
             let winRect = self.canvasContainer.convert(anchorLocal, to: nil)
             return win.convertToScreen(winRect)
         }

@@ -67,15 +67,39 @@ final class InputSourceForcer {
 
     private func forceEnglish() {
         guard active else { return }
-        guard Self.currentInputSourceID() != forcedSourceID else { return }
-        guard let source = Self.findInputSource(id: forcedSourceID) else {
+        guard let target = Self.findASCIISource(preferredID: forcedSourceID) else {
             ConnectionLogger.shared.logStep(sessionId: "input", step: "input_source_force_failed",
-                detail: "\(forcedSourceID) not installed")
+                detail: "\(forcedSourceID) and ASCII-capable fallback not installed")
             return
         }
-        let status = TISSelectInputSource(source)
+        guard Self.currentInputSourceID() != target.id else { return }
+        let status = TISSelectInputSource(target.source)
         ConnectionLogger.shared.logStep(sessionId: "input", step: "input_source_force",
-            detail: "status=\(status)")
+            detail: "source=\(target.id) status=\(status)")
+    }
+
+    private static func findASCIISource(preferredID: String) -> (source: TISInputSource, id: String)? {
+        if let preferred = findInputSource(id: preferredID) {
+            return (preferred, preferredID)
+        }
+        if let ascii = TISCopyCurrentASCIICapableKeyboardInputSource()?.takeRetainedValue(),
+           let id = inputSourceID(ascii) {
+            return (ascii, id)
+        }
+        let filter: [CFString: Any] = [
+            kTISPropertyInputSourceCategory: kTISCategoryKeyboardInputSource as Any,
+            kTISPropertyInputSourceIsASCIICapable: kCFBooleanTrue as Any,
+            kTISPropertyInputSourceIsSelectCapable: kCFBooleanTrue as Any,
+            kTISPropertyInputSourceIsEnabled: kCFBooleanTrue as Any,
+        ]
+        if let list = TISCreateInputSourceList(filter as CFDictionary, false)?.takeRetainedValue() as? [TISInputSource] {
+            for source in list {
+                if let id = inputSourceID(source) {
+                    return (source, id)
+                }
+            }
+        }
+        return nil
     }
 
     private static func currentInputSourceID() -> String? {

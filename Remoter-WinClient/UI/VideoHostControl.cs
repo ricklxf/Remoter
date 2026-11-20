@@ -54,6 +54,13 @@ public sealed class VideoHostControl : Control
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool IsImeComposing { get; private set; }
 
+    /// <summary>
+    /// Optional provider returning the IME composition echo label's bounds in this control's client coordinates
+    /// when visible, so the OS IME candidate window anchors cleanly below it.
+    /// </summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Func<Rectangle?>? ImeEchoBoundsProvider { get; set; }
+
     /// <summary>Fired on WM_INPUT with raw HRAWINPUT (lParam).</summary>
     public event Action<nint>? RawInputReceived;
 
@@ -222,9 +229,9 @@ public sealed class VideoHostControl : Control
 
                 if ((flags & GCS_COMPSTR) != 0)
                 {
-                    PositionImeWindow();
                     string comp = ReadImeString(GCS_COMPSTR);
                     ImeCompositionChanged?.Invoke(comp);
+                    PositionImeWindow();
                 }
 
                 if ((flags & GCS_RESULTSTR) != 0)
@@ -338,15 +345,33 @@ public sealed class VideoHostControl : Control
         }
     }
 
-    private void PositionImeWindow()
+    public void PositionImeWindow()
     {
         if (!IsHandleCreated) return;
         nint hImc = ImmGetContext(Handle);
         if (hImc == nint.Zero) return;
         try
         {
-            int x = Math.Max(16, ClientSize.Width / 2 - 60);
-            int y = Math.Max(16, ClientSize.Height - 72);
+            double scale = Math.Max(1.0, DeviceDpi / 96.0);
+            int minPad = (int)Math.Round(16 * scale);
+            int gap = (int)Math.Round(6 * scale);
+            int bottomClearance = (int)Math.Round(120 * scale);
+            int maxY = Math.Max(minPad, ClientSize.Height - minPad);
+
+            int x;
+            int y;
+            Rectangle? echoBounds = ImeEchoBoundsProvider?.Invoke();
+            if (echoBounds is Rectangle rect && rect.Width > 0 && rect.Height > 0)
+            {
+                x = Math.Max(minPad, rect.Left);
+                y = Math.Clamp(rect.Bottom + gap, minPad, maxY);
+            }
+            else
+            {
+                x = Math.Max(minPad, ClientSize.Width / 2 - (int)Math.Round(60 * scale));
+                y = Math.Clamp(ClientSize.Height - bottomClearance + gap, minPad, maxY);
+            }
+
             var pt = new POINT { X = x, Y = y };
             var compForm = new COMPOSITIONFORM
             {

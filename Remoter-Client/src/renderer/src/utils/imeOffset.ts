@@ -7,9 +7,11 @@ export interface ImeOffset {
 
 const KEY = 'remoter-ime-offset'
 const CHANGE_EVENT = 'remoter-ime-offset-change'
-// Matches the values the IME anchor was hardcoded to before this became
-// user-adjustable — keeps existing installs looking the same until dragged.
-const DEFAULT: ImeOffset = { x: -120, y: 0 }
+// Keep 120px of clearance below the IME anchor textarea by default so the OS
+// candidate window always has room to open downward instead of flipping upward
+// onto the composition echo pill on uncalibrated resolutions.
+export const MIN_IME_BOTTOM = 80
+const DEFAULT: ImeOffset = { x: -120, y: 120 }
 
 type OffsetMap = Record<string, ImeOffset>
 

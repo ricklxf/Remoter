@@ -304,11 +304,11 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                 win.contentView?.layoutSubtreeIfNeeded()
                 let winRect = self.imeEchoCard.convert(self.imeEchoCard.bounds, to: nil)
                 let cardScreenRect = win.convertToScreen(winRect)
-                return NSRect(x: cardScreenRect.minX, y: cardScreenRect.minY - 6, width: 1, height: 1)
+                return NSRect(x: cardScreenRect.minX, y: cardScreenRect.minY, width: 1, height: 1)
             }
             let viewBounds = self.canvasContainer.bounds
             let bottomMargin = abs(self.imeEchoBottomConstraint?.constant ?? -140)
-            let anchorLocal = NSRect(x: viewBounds.midX, y: max(0, bottomMargin - 6), width: 1, height: 1)
+            let anchorLocal = NSRect(x: viewBounds.midX, y: bottomMargin, width: 1, height: 1)
             let winRect = self.canvasContainer.convert(anchorLocal, to: nil)
             return win.convertToScreen(winRect)
         }

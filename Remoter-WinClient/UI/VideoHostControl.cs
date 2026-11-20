@@ -354,7 +354,7 @@ public sealed class VideoHostControl : Control
         {
             double scale = Math.Max(1.0, DeviceDpi / 96.0);
             int minPad = (int)Math.Round(16 * scale);
-            int gap = (int)Math.Round(6 * scale);
+            int gap = (int)Math.Round(2 * scale);
             int bottomClearance = (int)Math.Round(120 * scale);
             int maxY = Math.Max(minPad, ClientSize.Height - minPad);
 

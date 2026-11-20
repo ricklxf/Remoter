@@ -473,26 +473,29 @@ export function RemoteCanvas({
             // 10-character composition means the caret sits on "line 10".
             // The OS almost certainly positions the candidate window off
             // that caret's row, so the window's position kept climbing/
-            // jumping as the composition got longer. Keep the box tall
-            // enough to render (1px would collapse the caret vertically
-            // regardless of wrapping) but wide enough that the whole
-            // composition always fits on a single internal line, plus
-            // `wrap="off"` as a belt-and-suspenders guard against wrapping.
+            // jumping as the composition got longer. Keep the box wide
+            // enough that the whole composition always fits on a single
+            // internal line (plus `wrap="off"` as a belt-and-suspenders
+            // guard), and collapse its height to a 2px thin anchor line so
+            // the echo pill right above it sits snug against the OS
+            // candidate window below with no blank gap.
             position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY,
-            width: 400, height: 20, padding: 0, border: 'none',
+            width: 400, height: 2, padding: 0, border: 0,
+            lineHeight: '2px', fontSize: 1,
             opacity: 0, pointerEvents: 'none', resize: 'none',
             overflow: 'hidden', zIndex: -1, whiteSpace: 'pre',
           }}
         />
         {/* Read-only echo of the composition text above — doesn't touch the
             textarea's own box so it can't disturb the candidate window's
-            position. Placed 8px above the 20px-tall textarea (effectiveImeY + 28)
-            so the echo pill and the OS candidate window (anchored below the
-            textarea) never overlap. Sized to fit its content instead of a fixed
-            width so short or long compositions both look right. Draggable: this
-            is also the handle for calibrating imeOffset (see onEchoMouseDown) —
-            it and the invisible textarea above share the same offset, so
-            dragging this visibly moves the real candidate window's anchor too.
+            position. Placed snug right above the 2px-tall anchor textarea
+            (effectiveImeY + 4) so the echo pill and the OS candidate window
+            (anchored below the textarea) sit ~2-4px apart without overlapping.
+            Sized to fit its content instead of a fixed width so short or long
+            compositions both look right. Draggable: this is also the handle
+            for calibrating imeOffset (see onEchoMouseDown) — it and the
+            invisible textarea above share the same offset, so dragging this
+            visibly moves the real candidate window's anchor too.
             onMouseDownCapture, not onMouseDown: InputHandler has its own
             native 'mousedown' listener on the frame div (bubble phase) that
             forwards every click to the remote as a real click-through. A
@@ -506,7 +509,7 @@ export function RemoteCanvas({
           <div
             onMouseDownCapture={onEchoMouseDown}
             style={{
-              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY + 28,
+              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY + 4,
               // A short composition (e.g. one or two pinyin letters) sized
               // this box down to a sliver a few dozen px wide — easy to miss
               // by a couple pixels while dragging, which sends that click

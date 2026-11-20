@@ -123,8 +123,10 @@ final class InputLocker {
             return Unmanaged.passUnretained(event)
         }
 
-        // Our own injected input always passes through untouched.
-        if event.getIntegerValueField(.eventSourceUserData) == Self.injectedTag {
+        // Our own injected input and Keybot's remapped/healed synthetic events
+        // always pass through untouched.
+        let userData = event.getIntegerValueField(.eventSourceUserData)
+        if userData == Self.injectedTag || userData == KeybotEventTap.syntheticMarker {
             return Unmanaged.passUnretained(event)
         }
 

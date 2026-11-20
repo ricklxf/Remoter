@@ -90,6 +90,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
         )
         ConnectionLogger.shared.logPermission(event: trusted ? "accessibility_granted" : "accessibility_denied")
+        if trusted && KeybotEventTap.shared.isEnabled && !KeybotEventTap.shared.isRunning {
+            KeybotEventTap.shared.start()
+        }
+        refresh()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        KeybotEventTap.shared.stop()
+        InputSourceForcer.shared.end()
+        InputLocker.shared.setLocked(false)
     }
 
     // MARK: - Menu build
@@ -229,6 +239,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(axItem)
         }
 
+        // ── 键位映射 (Keybot) ───────────────────────────────────
+        menu.addItem(.separator())
+        let keybotToggle = NSMenuItem(title: "键位映射",
+                                      action: #selector(toggleKeybot(_:)),
+                                      keyEquivalent: "")
+        keybotToggle.target = self
+        keybotToggle.tag = MenuTag.keybotToggle.rawValue
+        keybotToggle.state = KeybotEventTap.shared.isEnabled ? .on : .off
+        menu.addItem(keybotToggle)
+
+        let keybotPrefs = NSMenuItem(title: "键位映射设置…",
+                                     action: #selector(openKeybotPreferences),
+                                     keyEquivalent: "")
+        keybotPrefs.target = self
+        menu.addItem(keybotPrefs)
+
         menu.addItem(.separator())
         let logItem = NSMenuItem(title: "在 Finder 中显示日志",
                                  action: #selector(showLogInFinder),
@@ -319,6 +345,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // let the user click *inside* the open menu.
     func menuWillOpen(_ menu: NSMenu) {
         InputLocker.shared.setSuspended(true)
+        menu.item(withTag: MenuTag.keybotToggle.rawValue)?.state =
+            KeybotEventTap.shared.isEnabled ? .on : .off
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -333,6 +361,15 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // handled by that same callback, not by anything here.
     @objc private func unlockInput() {
         InputLocker.shared.setLocked(false)
+    }
+
+    @objc private func toggleKeybot(_ sender: NSMenuItem) {
+        KeybotEventTap.shared.setEnabled(!KeybotEventTap.shared.isEnabled)
+        refresh()
+    }
+
+    @objc private func openKeybotPreferences() {
+        KeybotPreferencesWindowController.shared.show()
     }
 
     @objc private func copyMenuValue(_ sender: NSMenuItem) {
@@ -402,6 +439,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private enum MenuTag: Int {
-        case pin = 1, session = 2
+        case pin = 1, session = 2, keybotToggle = 3
     }
 }

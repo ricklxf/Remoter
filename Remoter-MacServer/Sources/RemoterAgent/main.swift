@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ApplicationServices
 
 // MARK: - 命令行参数
 
@@ -308,6 +309,33 @@ MainActor.assumeIsolated {
 
 NSApplication.shared.delegate = menuBar
 
+// Start integrated Keybot event tap on the main run loop if enabled and
+// Accessibility is granted; otherwise retry every 2s until permission is granted.
+var keybotRetryTimer: DispatchSourceTimer?
+if KeybotEventTap.shared.isEnabled {
+    if AXIsProcessTrusted() {
+        KeybotEventTap.shared.start()
+    } else {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .seconds(2), repeating: .seconds(2))
+        timer.setEventHandler {
+            guard KeybotEventTap.shared.isEnabled else {
+                keybotRetryTimer?.cancel()
+                keybotRetryTimer = nil
+                return
+            }
+            if AXIsProcessTrusted() {
+                if KeybotEventTap.shared.start() {
+                    keybotRetryTimer?.cancel()
+                    keybotRetryTimer = nil
+                }
+            }
+        }
+        timer.resume()
+        keybotRetryTimer = timer
+    }
+}
+
 // `pkill`/Ctrl+C 发送的是 SIGTERM，不会走 AppKit 的正常退出回调
 // （applicationWillTerminate），InputSourceForcer.begin() 强制的输入法
 // 因此永远等不到 end() 恢复，进程死后被控端系统输入法就永久卡在英文。
@@ -318,6 +346,9 @@ for sig in [SIGTERM, SIGINT] {
     signal(sig, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     source.setEventHandler {
+        keybotRetryTimer?.cancel()
+        keybotRetryTimer = nil
+        KeybotEventTap.shared.stop()
         InputSourceForcer.shared.end()
         InputLocker.shared.setLocked(false)
         exit(0)

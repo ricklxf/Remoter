@@ -1,2 +1,2 @@
 namespace RemoterWin;
-static class AppVersion { public const string Current = "2.0.136"; }
+static class AppVersion { public const string Current = "2.0.137"; }

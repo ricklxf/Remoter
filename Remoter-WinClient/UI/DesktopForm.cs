@@ -782,9 +782,12 @@ public sealed class DesktopForm : Form
             _ => "H.264",
         };
         bool hw = stats.Codec != VideoCodecType.Jpeg && _mfDecoder.IsHardware;
-        int decodeMs = stats.DecodeMs;
+        double decodeMs = (stats.Codec != VideoCodecType.Jpeg && _mfDecoder.LastDecodeMs > 0)
+            ? _mfDecoder.LastDecodeMs
+            : stats.DecodeMs;
+        string transport = _connectParams.Mode == ConnectMode.Relay ? "Relay" : stats.Transport;
 
-        SafeBeginInvoke(() => _statsHud.UpdateStats(renderFps, mbps, stats.RttMs, codec, hw, decodeMs));
+        SafeBeginInvoke(() => _statsHud.UpdateStats(renderFps, mbps, stats.RttMs, codec, hw, decodeMs, transport));
     }
 
     private void OnAuthSucceeded(string username, string token)

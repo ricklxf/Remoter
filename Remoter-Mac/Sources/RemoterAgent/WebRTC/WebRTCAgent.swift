@@ -81,6 +81,23 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // never fights a manual cap. A path that can't carry 1Mbps can't carry
     // a 1080p desktop either.
     private static let baseFloorBps: Int = 1_000_000
+    // UU-style severe congestion relief floor (UU 1080p lowest tier 40% = 400kbps):
+    // when RTT spikes (e.g. >250ms) or loss >= 8%, temporarily release the 1Mbps floor
+    // down to 350kbps AND cap RTP fps to 24fps so GCC can drain the congested queue
+    // instead of pumping 57fps into a 1.5s tunnel and triggering a 7.5s PLI freeze storm.
+    private static let congestionFloorBps: Int = 350_000
+    private static let congestionMaxFps: Int = 24
+    private static let congestionImmediateRttMs: Double = 250.0
+    private static let congestionImmediateLoss: Double = 0.08
+    private static let congestionSustainedRttMs: Double = 150.0
+    private static let congestionSustainedLoss: Double = 0.05
+    private static let congestionEnterStreakRequired: Int = 2   // 1.0s at 0.5s poll (fast enter)
+    private static let congestionClearRttMs: Double = 60.0
+    private static let congestionClearLoss: Double = 0.02
+    private static let congestionClearStreakRequired: Int = 6   // 3.0s at 0.5s poll (slow exit)
+    private var congestionGuardActive = false
+    private var congestionEnterStreak = 0
+    private var congestionClearStreak = 0
     // Raised from 3.0/8.0 after a confirmed same-switch wired LAN (user
     // verified both machines wired, same network, repeatedly) showed a
     // live session sitting at a *steady* 8.0ms RTT for its whole duration —
@@ -282,13 +299,14 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         guard let sender = videoSender else { return }
         let applyTunnelCap = tunnelCapActive && !isDirectPrivateLan
         let bps = min(requestedMaxBps, lossCapBps ?? Int.max, applyTunnelCap ? Self.tunnelCapBps : Int.max)
+        let effectiveFps = congestionGuardActive ? min(requestedMaxFps, Self.congestionMaxFps) : requestedMaxFps
         let params = sender.parameters
         for enc in params.encodings {
             if bps != Int.max {
                 enc.maxBitrateBps = NSNumber(value: bps)
                 if let m = enc.minBitrateBps?.intValue, m > bps { enc.minBitrateBps = NSNumber(value: bps) }
             }
-            enc.maxFramerate = NSNumber(value: requestedMaxFps)
+            enc.maxFramerate = NSNumber(value: effectiveFps)
         }
         sender.parameters = params
     }
@@ -309,7 +327,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // this connection (a renegotiation starts clean).
     private static let lossCapTrigger = 0.06
     private static let lossCapFactor = 0.6
-    private static let lossCapMinBps = 5_000_000
+    private static let lossCapMinBps = 1_500_000
     private static let lossCapHoldSec = 10.0
     private static let lossCapRecoveryLossThreshold = 0.02
     private static let lossCapRecoveryRttThresholdMs = 30.0
@@ -375,11 +393,12 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// the meantime. nil falls back to baseFloorBps, never to no floor at all.
     func setMinBitrate(_ bps: Int?) {
         guard let sender = videoSender else { return }
+        let defaultFloor = congestionGuardActive ? Self.congestionFloorBps : Self.baseFloorBps
         let params = sender.parameters
         for enc in params.encodings {
             // Never above the encoding's own cap — min > max is rejected.
             let cap = enc.maxBitrateBps?.intValue ?? Int.max
-            enc.minBitrateBps = NSNumber(value: min(bps ?? Self.baseFloorBps, cap))
+            enc.minBitrateBps = NSNumber(value: min(bps ?? defaultFloor, cap))
         }
         sender.parameters = params
     }
@@ -453,6 +472,9 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         wifiFloorElevated = false
         activeFloorBps = 0
         minBitrateFloorActive = false
+        congestionGuardActive = false
+        congestionEnterStreak = 0
+        congestionClearStreak = 0
         pc?.close()
         pc = nil
         videoChannel = nil
@@ -526,7 +548,59 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
                 detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off") loss=\(String(format: "%.3f", lossFraction))")
             self.evaluateMinBitrateFloor(rttMs: rttMs, rttSamples: rttSamples, lossFraction: lossFraction)
+            self.evaluateCongestionGuard(rttMs: rttMs, lossFraction: lossFraction)
             self.evaluateLossCap(lossFraction: lossFraction, targetBps: targetBps, rttMs: rttMs)
+        }
+    }
+
+    /// UU-style asymmetric hysteresis congestion guard (enter fast, exit slow):
+    /// when a tunnel/Wi-Fi hop spikes into severe loss or queueing delay, cap RTP fps to 24
+    /// and relax the base bitrate floor to 350kbps so GCC can drain the queue and prevent
+    /// multi-second PLI freeze storms; restore full fps once the link is clean for 3 seconds.
+    private func evaluateCongestionGuard(rttMs: Double?, lossFraction: Double) {
+        let rtt = rttMs ?? -1
+        let immediateHit = (rtt >= Self.congestionImmediateRttMs) || (lossFraction >= Self.congestionImmediateLoss)
+        let sustainedHit = (rtt >= Self.congestionSustainedRttMs) || (lossFraction >= Self.congestionSustainedLoss)
+
+        if !congestionGuardActive {
+            if immediateHit {
+                congestionEnterStreak = 0
+                congestionClearStreak = 0
+                congestionGuardActive = true
+                applyEncodingParams()
+                if !minBitrateFloorActive { setMinBitrate(nil) }
+                ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "congestion_guard",
+                    detail: "on reason=immediate fps=\(min(requestedMaxFps, Self.congestionMaxFps)) floor=\(Self.congestionFloorBps) rttMs=\(String(format: "%.1f", rtt)) loss=\(String(format: "%.3f", lossFraction))")
+            } else if sustainedHit {
+                congestionEnterStreak += 1
+                if congestionEnterStreak >= Self.congestionEnterStreakRequired {
+                    congestionEnterStreak = 0
+                    congestionClearStreak = 0
+                    congestionGuardActive = true
+                    applyEncodingParams()
+                    if !minBitrateFloorActive { setMinBitrate(nil) }
+                    ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "congestion_guard",
+                        detail: "on reason=sustained fps=\(min(requestedMaxFps, Self.congestionMaxFps)) floor=\(Self.congestionFloorBps) rttMs=\(String(format: "%.1f", rtt)) loss=\(String(format: "%.3f", lossFraction))")
+                }
+            } else {
+                congestionEnterStreak = 0
+            }
+        } else {
+            let clean = (rtt >= 0 && rtt <= Self.congestionClearRttMs) && (lossFraction < Self.congestionClearLoss)
+            if clean {
+                congestionClearStreak += 1
+                if congestionClearStreak >= Self.congestionClearStreakRequired {
+                    congestionClearStreak = 0
+                    congestionEnterStreak = 0
+                    congestionGuardActive = false
+                    applyEncodingParams()
+                    if !minBitrateFloorActive { setMinBitrate(nil) }
+                    ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "congestion_guard",
+                        detail: "off fps=\(requestedMaxFps) floor=\(Self.baseFloorBps) rttMs=\(String(format: "%.1f", rtt)) loss=\(String(format: "%.3f", lossFraction))")
+                }
+            } else {
+                congestionClearStreak = 0
+            }
         }
     }
 

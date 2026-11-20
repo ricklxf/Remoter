@@ -32,6 +32,10 @@ files:
 
 win:
   executableName: Remoter
+  # Skip rcedit-x64.exe (EndUpdateResourceW) to permanently avoid Windows Defender /
+  # OneDrive file-lock "Fatal error: Unable to commit changes" during update.bat.
+  # Runtime window & taskbar icons still load build/icon.ico from extraResources.
+  signAndEditExecutable: false
   target:
     - target: nsis
       arch: [x64]

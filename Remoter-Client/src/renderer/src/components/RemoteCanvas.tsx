@@ -488,9 +488,9 @@ export function RemoteCanvas({
         />
         {/* Read-only echo of the composition text above — doesn't touch the
             textarea's own box so it can't disturb the candidate window's
-            position. Placed snug right above the 2px-tall anchor textarea
-            (effectiveImeY + 4) so the echo pill and the OS candidate window
-            (anchored below the textarea) sit ~2-4px apart without overlapping.
+            position. The OS candidate bar opens UPWARD from the textarea anchor
+            (macOS) and is ~40px tall. The echo pill must sit above the candidate
+            bar: effectiveImeY + candidateBarHeight(≈40) + gap(≈8) ≈ +50px.
             Sized to fit its content instead of a fixed width so short or long
             compositions both look right. Draggable: this is also the handle
             for calibrating imeOffset (see onEchoMouseDown) — it and the
@@ -509,7 +509,7 @@ export function RemoteCanvas({
           <div
             onMouseDownCapture={onEchoMouseDown}
             style={{
-              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY + 4,
+              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY + 50,
               // A short composition (e.g. one or two pinyin letters) sized
               // this box down to a sliver a few dozen px wide — easy to miss
               // by a couple pixels while dragging, which sends that click

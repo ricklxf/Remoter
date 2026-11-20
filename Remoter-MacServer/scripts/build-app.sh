@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # Remoter-Mac/
+PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # Remoter-MacServer/
 OUT_DIR="$PKG_DIR/build"
 APP_DIR="$OUT_DIR/RemoterAgent.app"
 MACOS_DIR="$APP_DIR/Contents/MacOS"
@@ -132,7 +132,7 @@ fi
 
 # ── 生成/嵌入 TLS 自签证书（HTTPS/WSS）──────────────────────────────────
 # WebCodecs(H.264 解码) 需要安全上下文(HTTPS)；自签证书首次访问需手动信任。
-# 证书持久保存在 Remoter-Mac/certs/，存在则复用 → 只需信任一次。
+# 证书持久保存在 Remoter-MacServer/certs/，存在则复用 → 只需信任一次。
 CERT_DIR="$PKG_DIR/certs"
 
 if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then

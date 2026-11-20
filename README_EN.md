@@ -35,16 +35,16 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 ```
 
 Output:
-- Mac: `Remoter-Mac/build/RemoterAgent.app`
-- Win: `Remoter-Win/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe` (with `web/` directory)
+- Mac: `Remoter-MacServer/build/RemoterAgent.app`
+- Win: `Remoter-WinServer/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe` (with `web/` directory)
 
 ---
 
 ## Architecture
 
 ```
-Remoter-Mac/        Mac agent       Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
-Remoter-Win/        Windows agent   C# .NET 8 · DXGI Desktop Duplication · SendInput
+Remoter-MacServer/        Mac agent       Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
+Remoter-WinServer/        Windows agent   C# .NET 8 · DXGI Desktop Duplication · SendInput
                     No WebRTC yet — video still goes over WebSocket
 Remoter-Client/     Controller      Electron + React + TypeScript
                     Same codebase builds as a pure web app (no install needed)
@@ -73,12 +73,12 @@ Requires Swift 5.9+ (Xcode Command Line Tools or full Xcode):
 ```bash
 xcode-select --install   # first time only
 
-cd Remoter-Mac
+cd Remoter-MacServer
 bash scripts/build-app.sh            # debug build
 bash scripts/build-app.sh --release  # release build (smaller & faster)
 ```
 
-Output: `Remoter-Mac/build/RemoterAgent.app`
+Output: `Remoter-MacServer/build/RemoterAgent.app`
 
 ### Authentication
 
@@ -100,8 +100,8 @@ The app prompts for both automatically on first launch.
 ### Launch
 
 ```bash
-open Remoter-Mac/build/RemoterAgent.app                      # random PIN
-open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # fixed PIN
+open Remoter-MacServer/build/RemoterAgent.app                      # random PIN
+open Remoter-MacServer/build/RemoterAgent.app --args --pin 123456  # fixed PIN
 ```
 
 A `⬇` icon appears in the menu bar. Click it to see the **PIN**, **LAN WebSocket address**, and (if web client is embedded) the **web client URL**.
@@ -151,7 +151,7 @@ Screen capture uses **DXGI Desktop Duplication API** (GPU-side, < 2ms/frame). In
 Requires .NET 8 SDK:
 
 ```bash
-cd Remoter-Win
+cd Remoter-WinServer
 dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true --self-contained
 ```
 
@@ -233,7 +233,7 @@ Install the same VPN client on both machines and connect with the virtual IP —
 
 ```bash
 brew install cloudflare/cloudflare/cloudflared
-bash Remoter-Mac/scripts/cloudflare-tunnel.sh
+bash Remoter-MacServer/scripts/cloudflare-tunnel.sh
 ```
 
 The script prints `https://xxx.trycloudflare.com` — replace `https://` with `wss://` and paste it into the controller.

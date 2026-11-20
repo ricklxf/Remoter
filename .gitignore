@@ -11,8 +11,8 @@ out/
 *.swp
 Packages/
 .swiftpm/
-Remoter-Mac/build/
-Remoter-Mac/certs/
+Remoter-MacServer/build/
+Remoter-MacServer/certs/
 Remoter-MacClient/build/
 
 # Electron / Web build

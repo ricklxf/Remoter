@@ -4,7 +4,7 @@ chcp 65001 > nul
 REM Pull latest code from GitHub
 REM Usage: double-click to update this checkout before running build.bat
 
-echo ===== Pull Remoter-Win =====
+echo ===== Pull Remoter-WinServer =====
 echo.
 
 cd /d "%~dp0"

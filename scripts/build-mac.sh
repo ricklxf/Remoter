@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── Step 0: 同步版本号 ────────────────────────────────────────────────────
 VERSION=$(node -p "require('$ROOT/Remoter-Client/package.json').version")
-echo "let kAppVersion = \"$VERSION\"" > "$ROOT/Remoter-Mac/Sources/RemoterAgent/AppVersion.swift"
+echo "let kAppVersion = \"$VERSION\"" > "$ROOT/Remoter-MacServer/Sources/RemoterAgent/AppVersion.swift"
 echo "  ✓ AppVersion.swift → $VERSION"
 
 # ── Step 1: Web 客户端 ─────────────────────────────────────────────────────
@@ -31,10 +31,10 @@ echo "  ✓ Web client → Remoter-Server/public/"
 # ── Step 2: Mac app（build-app.sh 会自动嵌入 Remoter-Server/public/）────────
 echo ""
 echo "▶ [2/2] Building Mac app…"
-cd "$ROOT/Remoter-Mac"
+cd "$ROOT/Remoter-MacServer"
 bash scripts/build-app.sh "$@"
 
 echo ""
 echo "✅ All done."
-echo "   App  : Remoter-Mac/build/RemoterAgent.app"
+echo "   App  : Remoter-MacServer/build/RemoterAgent.app"
 echo "   Web  : embedded → http://<LAN-IP>:7788"

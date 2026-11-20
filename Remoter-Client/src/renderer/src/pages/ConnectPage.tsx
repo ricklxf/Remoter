@@ -11,7 +11,7 @@ interface Props {
 }
 
 // Agent now always serves over TLS (self-signed cert embedded at build time —
-// see Remoter-Mac/scripts/build-app.sh), so any direct connection must be wss://.
+// see Remoter-MacServer/scripts/build-app.sh), so any direct connection must be wss://.
 // Plain ws:// gets the TLS handshake closed before it ever completes (looks
 // like "Connection closed before receiving a handshake response" in devtools).
 function upgradeToWss(url: string): string {

@@ -4,7 +4,7 @@ chcp 65001 > nul
 REM Restart Script
 REM Kill old process and start new one
 
-echo ===== Restart Remoter-Win =====
+echo ===== Restart Remoter-WinServer =====
 echo.
 
 REM Kill old process

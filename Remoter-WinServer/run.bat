@@ -2,10 +2,10 @@
 chcp 65001 > nul
 setlocal EnableExtensions EnableDelayedExpansion
 
-REM Remoter-Win Startup Script
+REM Remoter-WinServer Startup Script
 REM Start program and keep running, kill process when closed
 
-echo ===== Remoter-Win Startup Script =====
+echo ===== Remoter-WinServer Startup Script =====
 echo.
 
 REM Check admin rights

@@ -9,7 +9,7 @@
     <RootNamespace>RemoterWinClient</RootNamespace>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <ApplicationIcon>..\Remoter-Win\Remoter.ico</ApplicationIcon>
+    <ApplicationIcon>..\Remoter-WinServer\Remoter.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,7 +22,7 @@
 
   <!-- Copy Remoter.ico to output for runtime window/taskbar icon -->
   <ItemGroup>
-    <None Include="..\Remoter-Win\Remoter.ico" Link="Remoter.ico">
+    <None Include="..\Remoter-WinServer\Remoter.ico" Link="Remoter.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo Push Remoter-Win to GitHub
+echo Push Remoter-WinServer to GitHub
 echo ========================================
 echo.
 
@@ -17,9 +17,9 @@ pause
 git remote add origin https://github.com/ricklxf/Remoter.git
 
 echo.
-echo Step 3: Create Remoter-Win directory in the repo
+echo Step 3: Create Remoter-WinServer directory in the repo
 echo Note: This will push the current code to a new branch
-echo You may need to manually create the Remoter-Win folder on GitHub
+echo You may need to manually create the Remoter-WinServer folder on GitHub
 echo.
 pause
 

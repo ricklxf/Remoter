@@ -1,4 +1,4 @@
-# build-win.ps1 — 一键构建：Web 客户端 + Win 被控端（含嵌入 web 资源）
+﻿# build-win.ps1 — 一键构建：Web 客户端 + Win 被控端（含嵌入 web 资源）
 #
 # 用法（在项目根目录运行）：
 #   powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
@@ -13,7 +13,7 @@ $root = Split-Path $PSScriptRoot   # scripts/ 的父目录，即项目根
 # ── Step 0: 同步版本号 ────────────────────────────────────────────────────
 $version = (Get-Content "$root\Remoter-Client\package.json" | ConvertFrom-Json).version
 "namespace RemoterWin;`nstatic class AppVersion { public const string Current = `"$version`"; }" |
-    Set-Content "$root\Remoter-Win\AppVersion.cs"
+    Set-Content "$root\Remoter-WinServer\AppVersion.cs"
 Write-Host "  ✓ AppVersion.cs → $version" -ForegroundColor Green
 
 # ── Step 1: Web 客户端 ─────────────────────────────────────────────────────
@@ -29,9 +29,9 @@ Write-Host "  ✓ Web client → Remoter-Server\public\" -ForegroundColor Green
 # ── Step 2: Win agent ──────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "▶ [2/3] Building Win agent…" -ForegroundColor Cyan
-Set-Location "$root\Remoter-Win"
+Set-Location "$root\Remoter-WinServer"
 dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true --self-contained
-$publishDir = "$root\Remoter-Win\bin\Release\net8.0-windows\win-x64\publish"
+$publishDir = "$root\Remoter-WinServer\bin\Release\net8.0-windows\win-x64\publish"
 Write-Host "  ✓ Exe → $publishDir\RemoterWin.exe" -ForegroundColor Green
 
 # ── Step 3: 嵌入 web 资源 ─────────────────────────────────────────────────

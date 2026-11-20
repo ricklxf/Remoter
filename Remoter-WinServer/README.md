@@ -1,4 +1,4 @@
-# Remoter-Win
+# Remoter-WinServer
 
 Windows远程桌面控制服务，基于WebSocket协议实现低延迟屏幕共享和输入控制。
 
@@ -29,7 +29,7 @@ Windows远程桌面控制服务，基于WebSocket协议实现低延迟屏幕共�
 
 ```powershell
 # 克隆或进入项目目录
-cd d:\code\Remoter-Win
+cd d:\code\Remoter-WinServer
 
 # Release模式编译（推荐）
 dotnet build --configuration Release
@@ -52,7 +52,7 @@ dotnet build --configuration Debug
 编译后的文件位于以下目录：
 
 ```
-Remoter-Win/
+Remoter-WinServer/
 ├── bin/
 │   ├── Release/
 │   │   └── net8.0-windows/
@@ -84,7 +84,7 @@ dotnet publish --configuration Release --self-contained true --runtime win-x64
 
 ```powershell
 # 进入编译输出目录
-cd d:\code\Remoter-Win\bin\Release\net8.0-windows
+cd d:\code\Remoter-WinServer\bin\Release\net8.0-windows
 
 # 运行程序
 .\RemoterWin.exe
@@ -148,7 +148,7 @@ ws://<服务器IP>:7788
 ## 项目结构
 
 ```
-Remoter-Win/
+Remoter-WinServer/
 ├── Admin/              # 管理接口
 ├── Auth/               # 认证相关
 ├── Capture/            # 屏幕捕获

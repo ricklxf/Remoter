@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# 双击运行：编译并打包 RemoterAgent.app，自动重启正在跑的旧实例
+# 双击运行：拉取最新代码 + 编译打包 + 重启，一步到位
 set -e
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-echo "===== Build Remoter-Mac ====="
+echo "===== Update Remoter-MacServer (pull + build) ====="
+echo ""
+echo "[1/2] Pulling latest changes..."
+git pull
+echo ""
+
+echo "[2/2] Building..."
 echo ""
 bash scripts/build-app.sh
 echo ""
@@ -15,6 +21,6 @@ open build/RemoterAgent.app
 echo "       OK: 已启动新版本"
 echo ""
 
-echo "===== Build Complete ====="
+echo "===== Update Complete ====="
 echo ""
 read -p "按 Enter 关闭窗口..."

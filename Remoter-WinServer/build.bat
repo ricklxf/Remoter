@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 > nul
 ::build_start
-REM Remoter-Win Build Script
-REM Usage: Compile Remoter-Win project with UI
-echo ===== Remoter-Win Build Script =====
+REM Remoter-WinServer Build Script
+REM Usage: Compile Remoter-WinServer project with UI
+echo ===== Remoter-WinServer Build Script =====
 echo.
 
 REM AppVersion.cs is synced at commit time (pre-commit hook, alongside
@@ -73,7 +73,7 @@ echo.
 
 REM Copy web directory to output — pulls from Remoter-Server/public, the
 REM single source of truth produced by `npm run build:web` in Remoter-Client.
-REM (Used to vendor a stale hand-copied snapshot in Remoter-Win\web — that
+REM (Used to vendor a stale hand-copied snapshot in Remoter-WinServer\web — that
 REM drifted out of sync with every client-side fix; removed.)
 echo [6/7] Copying web directory...
 set "outputDir=%~dp0bin\Release\net8.0-windows"

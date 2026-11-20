@@ -2,7 +2,7 @@
 
 ## 问题说明
 
-`Remoter-Win` 本身不包含 Web 客户端文件，需要单独构建 `Remoter-Client` 项目来生成 `web` 目录。
+`Remoter-WinServer` 本身不包含 Web 客户端文件，需要单独构建 `Remoter-Client` 项目来生成 `web` 目录。
 
 ## 前提条件
 
@@ -46,24 +46,24 @@ npm run build:web
 
 构建完成后，web 文件会在 `D:\code\Remoter\Remoter-Server\public\` 目录。
 
-复制到 Remoter-Win:
+复制到 Remoter-WinServer:
 ```bash
 # 创建 web 目录
-mkdir D:\code\Remoter-Win\web
+mkdir D:\code\Remoter-WinServer\web
 
 # 复制文件
-xcopy /E /Y "D:\code\Remoter\Remoter-Server\public\*" "D:\code\Remoter-Win\web\"
+xcopy /E /Y "D:\code\Remoter\Remoter-Server\public\*" "D:\code\Remoter-WinServer\web\"
 ```
 
 ## 验证
 
-构建成功后，应该看到 `D:\code\Remoter-Win\web\` 目录包含以下文件:
+构建成功后，应该看到 `D:\code\Remoter-WinServer\web\` 目录包含以下文件:
 - index.html
 - 其他 JS/CSS 文件
 
 ## 测试
 
-1. 编译 Remoter-Win: `build.bat`
+1. 编译 Remoter-WinServer: `build.bat`
 2. 启动程序: `run.bat`
 3. 访问 Web 界面: http://localhost:7788
 
@@ -78,7 +78,7 @@ npm install
 
 ### Q: 构建后 web 目录还是无法访问?
 A: 检查:
-1. `web` 目录是否在 `Remoter-Win` 根目录
+1. `web` 目录是否在 `Remoter-WinServer` 根目录
 2. 程序是否正常启动（查看 remoter.log）
 3. 防火墙是否阻止端口 7788
 
@@ -86,7 +86,7 @@ A: 检查:
 A: 可以指定其他端口:
 ```bash
 # 手动启动程序并指定端口
-D:\code\Remoter-Win\bin\Release\net8.0-windows\RemoterWin.exe --port 8080
+D:\code\Remoter-WinServer\bin\Release\net8.0-windows\RemoterWin.exe --port 8080
 ```
 然后访问 http://localhost:8080
 
@@ -96,9 +96,9 @@ D:\code\Remoter-Win\bin\Release\net8.0-windows\RemoterWin.exe --port 8080
 Remoter (完整项目)
 ├── Remoter-Client    # 控制端 (Electron + React)
 │   └── npm run build:web  # 构建 Web 版本
-├── Remoter-Win       # Windows 被控端 (当前目录)
+├── Remoter-WinServer       # Windows 被控端 (当前目录)
 │   └── web\          # Web 客户端文件 (需要构建后才有)
-├── Remoter-Mac       # Mac 被控端
+├── Remoter-MacServer       # Mac 被控端
 └── Remoter-Server    # 中继服务器
     └── public\       # Web 构建输出目录
 ```

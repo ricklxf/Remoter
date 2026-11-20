@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-echo "===== Pull Remoter-Mac ====="
+echo "===== Pull Remoter-MacServer ====="
 echo ""
 git pull
 echo ""

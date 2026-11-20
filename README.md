@@ -35,16 +35,16 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 ```
 
 产物：
-- Mac：`Remoter-Mac/build/RemoterAgent.app`
-- Win：`Remoter-Win/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe`（含 `web/` 子目录）
+- Mac：`Remoter-MacServer/build/RemoterAgent.app`
+- Win：`Remoter-WinServer/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe`（含 `web/` 子目录）
 
 ---
 
 ## 架构
 
 ```
-Remoter-Mac/        Mac 被控端     Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
-Remoter-Win/        Windows 被控端  C# .NET 8 · DXGI Desktop Duplication · SendInput
+Remoter-MacServer/        Mac 被控端     Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
+Remoter-WinServer/        Windows 被控端  C# .NET 8 · DXGI Desktop Duplication · SendInput
                     暂无 WebRTC 实现，视频走 WebSocket 传输
 Remoter-Client/     控制端          Electron + React + TypeScript
                     同一套代码也能构建为纯网页版（无需安装）
@@ -73,12 +73,12 @@ Remoter-Server/     公网中继服务器   Node.js WebSocket（可选）
 ```bash
 xcode-select --install   # 仅首次
 
-cd Remoter-Mac
+cd Remoter-MacServer
 bash scripts/build-app.sh            # debug 包
 bash scripts/build-app.sh --release  # release 包（更小更快）
 ```
 
-产物：`Remoter-Mac/build/RemoterAgent.app`
+产物：`Remoter-MacServer/build/RemoterAgent.app`
 
 > **内嵌 Web 客户端（可选）**：先构建 Web 客户端（见下方），`build-app.sh` 会自动将产物打包进 bundle，启动后在端口 7799 提供服务。
 
@@ -102,8 +102,8 @@ bash scripts/build-app.sh --release  # release 包（更小更快）
 ### 启动
 
 ```bash
-open Remoter-Mac/build/RemoterAgent.app                      # 随机生成 PIN
-open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
+open Remoter-MacServer/build/RemoterAgent.app                      # 随机生成 PIN
+open Remoter-MacServer/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 ```
 
 启动后菜单栏出现 `⬇` 图标，点击可查看 **PIN 码**、**局域网 WebSocket 地址**，以及（内嵌了 Web 客户端时）**Web 客户端地址**。
@@ -153,11 +153,11 @@ open Remoter-Mac/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 需要 .NET 8 SDK：
 
 ```bash
-cd Remoter-Win
+cd Remoter-WinServer
 dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true --self-contained
 ```
 
-产物：`Remoter-Win/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe`（单文件，无需安装运行时）
+产物：`Remoter-WinServer/bin/Release/net8.0-windows/win-x64/publish/RemoterWin.exe`（单文件，无需安装运行时）
 
 ### 启动
 
@@ -235,7 +235,7 @@ cd Remoter-Client && npm run build:web   # 输出到 Remoter-Server/public/
 
 ```bash
 brew install cloudflare/cloudflare/cloudflared
-bash Remoter-Mac/scripts/cloudflare-tunnel.sh
+bash Remoter-MacServer/scripts/cloudflare-tunnel.sh
 ```
 
 脚本输出 `https://xxx.trycloudflare.com`，把 `https://` 换成 `wss://` 填入控制端即可。

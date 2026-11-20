@@ -1,17 +1,17 @@
-# Sync Remoter-Win to GitHub Repository
+# Sync Remoter-WinServer to GitHub Repository
 # Repository: https://github.com/ricklxf/Remoter
-# Target Folder: Remoter-Win
+# Target Folder: Remoter-WinServer
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Sync Remoter-Win to GitHub" -ForegroundColor Cyan
+Write-Host "Sync Remoter-WinServer to GitHub" -ForegroundColor Cyan
 Write-Host "Repository: https://github.com/ricklxf/Remoter" -ForegroundColor Cyan
-Write-Host "Target Folder: Remoter-Win" -ForegroundColor Cyan
+Write-Host "Target Folder: Remoter-WinServer" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Configuration
 $repoUrl = "https://github.com/ricklxf/Remoter.git"
-$targetFolder = "Remoter-Win"
+$targetFolder = "Remoter-WinServer"
 $tempDir = Join-Path $env:TEMP "remoter_github_sync"
 $currentDir = Get-Location
 
@@ -48,7 +48,7 @@ catch {
 }
 
 Write-Host ""
-Write-Host "Step 2: Copy Remoter-Win files" -ForegroundColor Yellow
+Write-Host "Step 2: Copy Remoter-WinServer files" -ForegroundColor Yellow
 Write-Host ""
 
 # Create target folder if not exists
@@ -99,7 +99,7 @@ else {
     
     # Commit
     Write-Host "Committing changes..." -ForegroundColor Gray
-    $commitMsg = "Add/Update Remoter-Win: Windows remote desktop service"
+    $commitMsg = "Add/Update Remoter-WinServer: Windows remote desktop service"
     git commit -m $commitMsg
     
     Write-Host "✓ Changes committed" -ForegroundColor Green
@@ -138,7 +138,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "  1. Check the repository on GitHub" -ForegroundColor Yellow
-Write-Host "  2. Verify Remoter-Win folder is created" -ForegroundColor Yellow
+Write-Host "  2. Verify Remoter-WinServer folder is created" -ForegroundColor Yellow
 Write-Host "  3. Other folders should NOT be affected" -ForegroundColor Yellow
 Write-Host ""
 

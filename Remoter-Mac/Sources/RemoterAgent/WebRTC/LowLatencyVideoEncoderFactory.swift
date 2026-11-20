@@ -267,11 +267,10 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
 
         let profileTag = configureProfileLevel(s)
 
-        // Explicit BT.709 primaries/matrix + sRGB transfer (matches SCStreamConfiguration.colorSpaceName = .sRGB
-        // and VideoRange 420v, preventing sRGB/BT.709 gamma wash-out in Chromium/Electron & DXVA decoders)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_TransferFunction, value: kCVImageBufferTransferFunction_sRGB)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_YCbCrMatrix, value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
+        // Match UU Remote (libstreamer.dylib): do NOT set ColorPrimaries/TransferFunction/YCbCrMatrix
+        // on VTCompressionSession for SDR. Setting TransferFunction=sRGB on 420v frames tagged ITU_R_709_2
+        // by ScreenCaptureKit forces VideoToolbox to run an implicit gamma-lifting pixel transfer
+        // (Y 64->71, 128->138), washing out / whitening both WebRTC (Electron) and native clients.
 
         applyRateControl(s, bitrateBps: bitrateBps, fps: fps)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 10.0))

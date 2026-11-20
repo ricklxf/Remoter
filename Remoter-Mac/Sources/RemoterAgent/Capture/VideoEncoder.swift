@@ -213,23 +213,19 @@ final class VideoEncoder {
     }
 
     private func configureColorMetadata(_ session: VTCompressionSession, hdr: Bool) {
-        if hdr {
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ColorPrimaries,
-                                 value: kCVImageBufferColorPrimaries_ITU_R_2020)
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_TransferFunction,
-                                 value: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_YCbCrMatrix,
-                                 value: kCVImageBufferYCbCrMatrix_ITU_R_2020)
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_HDRMetadataInsertionMode,
-                                 value: kVTHDRMetadataInsertionMode_Auto)
-        } else {
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ColorPrimaries,
-                                 value: kCVImageBufferColorPrimaries_ITU_R_709_2)
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_TransferFunction,
-                                 value: kCVImageBufferTransferFunction_sRGB)
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_YCbCrMatrix,
-                                 value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
-        }
+        // Match UU Remote (libstreamer.dylib): do NOT override ColorPrimaries/TransferFunction/YCbCrMatrix
+        // on VTCompressionSession in SDR mode. Setting TransferFunction=sRGB when ScreenCaptureKit tags
+        // 420v frames as ITU_R_709_2 triggers an implicit VTPixelTransfer gamma lift (Y 64->71, 128->138)
+        // that washes out / whitens the entire image across Electron and Windows clients.
+        guard hdr else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ColorPrimaries,
+                             value: kCVImageBufferColorPrimaries_ITU_R_2020)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_TransferFunction,
+                             value: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_YCbCrMatrix,
+                             value: kCVImageBufferYCbCrMatrix_ITU_R_2020)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_HDRMetadataInsertionMode,
+                             value: kVTHDRMetadataInsertionMode_Auto)
     }
 
     /// Encodes a clean, high-quality refinement frame for static-frame sharpening

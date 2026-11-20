@@ -6,18 +6,19 @@
 
 个人远程桌面工具，支持从任意设备远程控制 Mac 或 Windows。
 
+- **四端覆盖 & 原生零拷贝渲染**：除 Electron / 纯网页端外，提供零浏览器开销的 macOS 纯原生端（Swift/AppKit + VideoToolbox + Metal 零拷贝）与 Windows 纯原生端（.NET 10 + D3D11 + MediaFoundation + WASAPI + RawInput），支持 CAS 锐化与弱网快进慢出降帧保护
 - **RTP 媒体轨道传输**：屏幕帧直接喂给 libwebrtc 的 `RTCVideoSource`，原生编码 + GCC 拥塞控制 + NACK/PLI 丢包重传/关键帧请求 + 抖动缓冲，自动协商 UDP 传输，取代早期手写的 DataChannel 分片方案（Mac 端）
 - **端到端加密**：P-256 ECDH + AES-256-GCM，零明文传输
 - **局域网直连**：延迟 < 20ms
 - **跨网络**：支持 WireGuard / VPN 穿透，或自建中继服务器
-- **音频转发**：系统声音 AAC-LC 编码转发，客户端 WebCodecs 解码播放（默认关闭，控制菜单手动开启）
-- **远端光标形状同步**：光标位置本地零延迟渲染，形状轮询同步（文本光标、调整大小箭头等）
-- **中文输入法（IME）透传**：本地输入法正常组词选字，只有确定的文字才发送到远端注入
+- **音频转发**：系统声音 AAC-LC 编码转发，客户端硬件/WebCodecs 解码播放（默认关闭，控制菜单手动开启）
+- **远端光标形状同步**：控制时自动隐藏被控端光标，本地零延迟渲染，形状轮询同步（文本光标、调整大小箭头等）
+- **中文输入法（IME）透传**：四端（Web / Electron / Mac / Win）均支持本地输入法组词回显与紧贴候选框对齐，只有确定的文字才发送到远端注入
 - **多显示器**：可选择远程哪块屏幕
-- **延迟分解统计**：编码 / 网络 / 解码三段耗时分别展示
+- **性能与延迟浮窗**：四端统一仿 UU 风格右下角多行半透明黑色性能浮窗（40% 透明黑底、点击穿透），实时展示帧率、码率、网络 RTT 与解码耗时
 - **断线自动重协商**：WebRTC ICE 断开后自动重建，不需要重连整个会话
 - **文件传输**：双向发送文件，保存到目标机 `~/Downloads`
-- **剪贴板同步**：双向文本 + 图片自动同步（≤4MB PNG）
+- **剪贴板同步**：四端双向文本 + 图片自动同步（≤4MB PNG）
 - **多标签页**：同时管理多个远程会话，Tab 悬停显示实时延迟 / 帧率 / 连接时长
 - **主题切换**：跟随系统 / 浅色 / 深色，实时生效
 
@@ -43,12 +44,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 ## 架构
 
 ```
-Remoter-MacServer/        Mac 被控端     Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
-Remoter-WinServer/        Windows 被控端  C# .NET 8 · DXGI Desktop Duplication · SendInput
-                    暂无 WebRTC 实现，视频走 WebSocket 传输
-Remoter-Client/     控制端          Electron + React + TypeScript
-                    同一套代码也能构建为纯网页版（无需安装）
-Remoter-Server/     公网中继服务器   Node.js WebSocket（可选）
+Remoter-MacServer/  Mac 被控端      Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
+Remoter-WinServer/  Windows 被控端  C# .NET 8 · DXGI Desktop Duplication · SendInput
+                                    暂无 WebRTC 实现，视频走 WebSocket 传输
+Remoter-Client/     通用控制端      Electron + React + TypeScript
+                                    同一套代码也能构建为纯网页版（无需安装）
+Remoter-MacClient/  Mac 纯原生端    Swift / AppKit · Metal · VideoToolbox · AudioToolbox（零外部 SPM 依赖）
+Remoter-WinClient/  Win 纯原生端    C# .NET 10 · D3D11 + DXGI 1.2 · MediaFoundation · WASAPI · RawInput
+Remoter-Server/     公网中继服务器  Node.js WebSocket + Web 客户端托管（可选）
 ```
 
 **端口一览**
@@ -178,7 +181,7 @@ RemoterWin.exe --port 7789         # 指定端口
 
 ## 控制端
 
-有两种形式，使用**同一套 React 代码**：
+提供四种形态：基于同一套 React 代码的 **Electron / Web 端**，以及零浏览器开销的 **macOS / Windows 纯原生客户端**。四端共享统一的右下角仿 UU 多行半透明黑色性能浮窗、本地 IME 组词回显与紧贴候选框对齐、双向剪贴板同步与远端光标隐藏。
 
 ### A. Electron 桌面客户端（Windows / macOS）
 
@@ -204,6 +207,34 @@ cd Remoter-Client && npm run build:web   # 输出到 Remoter-Server/public/
 ```
 
 三种托管方式：内嵌 Mac app、内嵌 Win exe、通过中继服务器公网托管。详见下方「自建中继服务器」。
+
+### C. macOS 纯原生客户端（`Remoter-MacClient`）
+
+**系统要求：** macOS 14 Sonoma+，Swift 5.9+（仅需 CommandLineTools，零外部 SPM 依赖）
+
+基于 **Swift / AppKit + VideoToolbox 硬件解码 + Metal 零拷贝渲染 + AudioToolbox / AVAudioEngine** 构建，支持 H.264 / H.265、CAS 锐化、4:4:4/HDR 协议、原生触控板高精度滚动、游戏鼠标指针锁定（`⌃⌥↩`）与本地 IME 组词上屏。详见 [Remoter-MacClient/README.md](Remoter-MacClient/README.md)。
+
+```bash
+cd Remoter-MacClient
+swift test                            # 编译并运行单元测试
+./scripts/build-app.sh --release      # 打包 Release 原生 .app（输出至 build/RemoterClient.app）
+./scripts/build-app.sh --release --install  # 编译并安装到 /Applications
+```
+
+也可直接双击目录内的 `build.command` / `update.command` 一键构建或拉取更新并启动。
+
+### D. Windows 纯原生客户端（`Remoter-WinClient`）
+
+**系统要求：** Windows 10/11 x64，.NET 10 SDK（`net10.0-windows`）
+
+基于 **C# .NET 10 + Direct3D 11 / DXGI 1.2 Flip-Model 渲染 + Media Foundation 视频/音频解码 + WASAPI + Win32 RawInput** 构建，支持零拷贝 GPU 着色器渲染、CAS 锐化、高回报率游戏鼠标（`Ctrl+Alt+Enter`）、触控板细粒度滚动与本地 IME 组词上屏。详见 [Remoter-WinClient/README.md](Remoter-WinClient/README.md)。
+
+```powershell
+cd Remoter-WinClient
+# 方式一：双击 build.bat（自动编译、发布单文件至 publish\ 并启动）或 update.bat（拉取代码并构建）
+# 方式二：命令行手动发布
+dotnet publish -c Release -r win-x64 --self-contained
+```
 
 ### 连接步骤
 

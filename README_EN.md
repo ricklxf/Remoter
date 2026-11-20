@@ -6,18 +6,19 @@
 
 A personal remote desktop tool for controlling Mac or Windows from any device.
 
+- **Four clients & zero-copy native rendering** — alongside Electron / Web, includes zero-browser-overhead pure native clients for macOS (Swift/AppKit + VideoToolbox + Metal zero-copy) and Windows (.NET 10 + D3D11 + MediaFoundation + WASAPI + RawInput), with CAS sharpening and weak-network frame-drop protection
 - **RTP media-track transport** — captured frames feed directly into libwebrtc's `RTCVideoSource`: native encoding + GCC congestion control + NACK/PLI retransmit/keyframe requests + jitter buffer, auto-negotiated over UDP, replacing the earlier hand-rolled DataChannel chunking scheme (Mac agent)
 - **End-to-end encryption** — P-256 ECDH + AES-256-GCM, zero plaintext
 - **LAN direct connect** — latency < 20ms
 - **Cross-network** — WireGuard / VPN tunnel or self-hosted relay server
-- **Audio forwarding** — system audio encoded as AAC-LC, decoded and played via WebCodecs on the client (off by default, toggle in the control menu)
-- **Remote cursor shape sync** — cursor position renders locally with zero latency; shape (text beam, resize arrows, etc.) is polled and synced separately
-- **Chinese IME pass-through** — local input method composes/selects candidates normally; only the final committed text is sent to the remote for injection
+- **Audio forwarding** — system audio encoded as AAC-LC, decoded and played via native hardware / WebCodecs on the client (off by default, toggle in the control menu)
+- **Remote cursor shape sync** — remote cursor auto-hides during control while the local cursor renders with zero latency; shape (text beam, resize arrows, etc.) is polled and synced separately
+- **Chinese IME pass-through** — all four clients (Web / Electron / Mac / Win) support local IME composition echo with snug candidate-bar alignment; only the final committed text is sent to the remote for injection
 - **Multi-display** — pick which remote screen to view
-- **Latency breakdown** — encode / network / decode timings shown separately
+- **Performance & latency HUD** — unified UU-style bottom-right multi-line translucent black stats HUD (40% black background, click-through) across all four clients showing live FPS, bitrate, RTT, and decode latency
 - **Automatic reconnection** — WebRTC ICE renegotiates automatically on disconnect, no need to restart the whole session
 - **File transfer** — bidirectional, saved to `~/Downloads` on the target machine
-- **Clipboard sync** — bidirectional text + image auto-sync (≤4MB PNG)
+- **Clipboard sync** — bidirectional text + image auto-sync across all four clients (≤4MB PNG)
 - **Multi-tab** — manage multiple remote sessions; hover a tab to see live latency / fps / connection duration
 - **Theme** — follows system / light / dark, applied instantly
 
@@ -43,12 +44,14 @@ Output:
 ## Architecture
 
 ```
-Remoter-MacServer/        Mac agent       Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
-Remoter-WinServer/        Windows agent   C# .NET 8 · DXGI Desktop Duplication · SendInput
-                    No WebRTC yet — video still goes over WebSocket
-Remoter-Client/     Controller      Electron + React + TypeScript
-                    Same codebase builds as a pure web app (no install needed)
-Remoter-Server/     Relay server    Node.js WebSocket (optional)
+Remoter-MacServer/  Mac agent         Swift · ScreenCaptureKit · WebRTC (RTP) · Network.framework
+Remoter-WinServer/  Windows agent     C# .NET 8 · DXGI Desktop Duplication · SendInput
+                                      No WebRTC yet — video still goes over WebSocket
+Remoter-Client/     Web/Electron      Electron + React + TypeScript
+                                      Same codebase builds as a pure web app (no install needed)
+Remoter-MacClient/  macOS native      Swift / AppKit · Metal · VideoToolbox · AudioToolbox (zero external SPM deps)
+Remoter-WinClient/  Windows native    C# .NET 10 · D3D11 + DXGI 1.2 · MediaFoundation · WASAPI · RawInput
+Remoter-Server/     Relay server      Node.js WebSocket + web client hosting (optional)
 ```
 
 **Ports**
@@ -176,7 +179,7 @@ Open `http://localhost:{port+2}/` (default `http://localhost:7790/`) to:
 
 ## Controller
 
-Two forms, built from the **same React codebase**:
+Available in four forms: **Electron / Web** from a shared React codebase, plus zero-browser-overhead pure native clients for **macOS** and **Windows**. All four clients share the unified UU-style bottom-right multi-line translucent black performance HUD, local IME composition echo with snug candidate alignment, remote cursor hiding, and bidirectional clipboard sync.
 
 ### A. Electron desktop client (Windows / macOS)
 
@@ -202,6 +205,34 @@ cd Remoter-Client && npm run build:web   # outputs to Remoter-Server/public/
 ```
 
 Three hosting options: embed in Mac app, embed in Win exe, or host via relay server.
+
+### C. macOS Pure Native Client (`Remoter-MacClient`)
+
+**Requirements:** macOS 14 Sonoma+, Swift 5.9+ (CommandLineTools only, zero external SPM dependencies)
+
+Built with **Swift / AppKit + VideoToolbox hardware decoding + Metal zero-copy rendering + AudioToolbox / AVAudioEngine**. Supports H.264 / H.265, CAS sharpening, 4:4:4/HDR protocol, precision trackpad scrolling, game-mouse pointer lock (`⌃⌥↩`), and local IME composition echo. See [Remoter-MacClient/README.md](Remoter-MacClient/README.md) for details.
+
+```bash
+cd Remoter-MacClient
+swift test                                  # build and run unit tests
+./scripts/build-app.sh --release            # build Release .app (outputs to build/RemoterClient.app)
+./scripts/build-app.sh --release --install  # build Release and install to /Applications
+```
+
+You can also double-click `build.command` or `update.command` to build/update and launch in one step.
+
+### D. Windows Pure Native Client (`Remoter-WinClient`)
+
+**Requirements:** Windows 10/11 x64, .NET 10 SDK (`net10.0-windows`)
+
+Built with **C# .NET 10 + Direct3D 11 / DXGI 1.2 Flip-Model + Media Foundation video/audio decoding + WASAPI + Win32 RawInput**. Supports zero-copy GPU shader rendering, CAS sharpening, high-polling-rate game mouse (`Ctrl+Alt+Enter`), fine-grained touchpad scrolling, and local IME composition echo. See [Remoter-WinClient/README.md](Remoter-WinClient/README.md) for details.
+
+```powershell
+cd Remoter-WinClient
+# Option 1: double-click build.bat (build, publish to publish\, and launch) or update.bat (git pull + build)
+# Option 2: publish from CLI
+dotnet publish -c Release -r win-x64 --self-contained
+```
 
 ### How to Connect
 

@@ -8,7 +8,8 @@
   - `Theme.swift`：暗色视觉规范（`#121419` / `#1A1E26` / `#252A36` / `#0FB8AB` 青绿强调色）。
   - `ConnectWindowController.swift`：左侧已保存设备列表（支持双击快速连接与删除），右侧支持 **直连 (Direct)** 与 **中继 (Relay)** 模式、TLS 开关、PIN / 账号密码认证。
   - `DesktopWindowController.swift`：原生全屏远程桌面窗口，支持拖拽本地文件到画布直接上传、断线重连提示浮层与非阻塞底部 Toast 通知。
-  - `FloatingToolbarPanel.swift`：顶部居中无边框悬浮工具栏（默认折叠为半透明胶囊 `▼ FPS · Mbps · RTT ms`，悬停/点击展开，3 秒无操作自动收起），提供实时 Telemetry HUD、多显示器切换、画质菜单（分辨率 / 缩放模式 / 帧率 / 码率 / H.264 & H.265 / 强制关键帧 / Ctrl+Alt+Del / 锁屏）、音频与音量调节、隐私屏、游戏鼠标、Mac↔Win 键位互换、剪贴板同步与文件传输。
+  - `FloatingToolbarPanel.swift`：顶部居中无边框悬浮工具栏（默认折叠为半透明胶囊，悬停/点击展开，3 秒无操作自动收起），提供多显示器切换、画质菜单（极简预设 / 分辨率 / 缩放模式 / 帧率 / 码率 / H.264 & H.265 / CAS 锐化 / 4:4:4 & HDR / 强制关键帧 / Ctrl+Alt+Del / 锁屏）、音频与音量调节、隐私屏、游戏鼠标、Mac↔Win 键位互换、剪贴板同步、性能浮窗开关与文件传输。
+  - `StatsHudOverlayView.swift`：右下角仿 UU 风格多行半透明黑色性能浮窗（40% 透明黑底、`hitTest -> nil` 完全点击穿透、不受浅色模式透底影响），实时显示帧率、码率、网络延迟与解码耗时。
   - `FileTransferSheet.swift`：远端目录浏览器与双向分块文件传输面板，支持双击进入目录/下载、多文件上传与实时传输进度。
 - **硬件视频解码与 Metal 渲染 (`Video/`)**：
   - `VideoDecoder.swift`：`VTDecompressionSession` 硬件解码 H.264 / H.265（Annex-B → AVCC/HVCC → NV12 `IOSurface`），支持流中 SPS/PPS/VPS 切换与 JPEG 回退解码。

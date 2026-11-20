@@ -110,6 +110,8 @@ export class VideoRenderer {
   private _toneMap = false
   private texWidth = 0
   private texHeight = 0
+  private videoTexWidth = 0
+  private videoTexHeight = 0
   private hasTexture = false
   private pendingWidth = 0
   private pendingHeight = 0
@@ -239,6 +241,8 @@ export class VideoRenderer {
     this.hasTexture = false
     this.texWidth = 0
     this.texHeight = 0
+    this.videoTexWidth = 0
+    this.videoTexHeight = 0
   }
 
   // MARK: - WebGL2 Internals
@@ -335,7 +339,13 @@ export class VideoRenderer {
 
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    if (!this.hasTexture || this.videoTexWidth !== srcW || this.videoTexHeight !== srcH) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      this.videoTexWidth = srcW
+      this.videoTexHeight = srcH
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    }
 
     this.texWidth = srcW
     this.texHeight = srcH

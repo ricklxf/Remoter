@@ -1042,7 +1042,16 @@ final class Session {
                     ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
                         step: "video_transport", detail: "websocket")
                 }
-                guard self.wsSendSem.wait(timeout: .now()) == .success else { return }
+                guard self.wsSendSem.wait(timeout: .now()) == .success else {
+                    self.backpressureDrops += 1
+                    let now = Date()
+                    if now.timeIntervalSince(self.lastForcedKeyframeAt) > 1.0 {
+                        self.lastForcedKeyframeAt = now
+                        self.keyframesForced += 1
+                        self.encoder?.forceKeyframe()
+                    }
+                    return
+                }
                 let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
                 let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
                 self.connection.sendBinaryVideo(pkt) {

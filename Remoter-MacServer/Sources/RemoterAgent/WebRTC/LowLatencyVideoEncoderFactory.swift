@@ -68,9 +68,23 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
     private var width: Int32 = 0
     private var height: Int32 = 0
     private var currentBitrateBps: Int = 4_000_000
-    private var currentFps: Int = 60
+    private var maxFps: Int = 60
+    private var appliedBitrateBps: Int = 0
+    private var appliedExpectedFps: Int = 0
+    private var appliedPrioritizeSpeed: Bool = true
+    private var lastRateControlApplyTime: CFTimeInterval = 0
+    private var recentFrameTimes: [CFTimeInterval] = []
+    private var lastFrameTime: CFTimeInterval = 0
     private var codecMode: RTCVideoCodecMode = .screensharing
     private var isReleased = false
+
+    // UU-style dynamic ExpectedFrameRate rate-control constants
+    private static let fpsWindowSeconds: CFTimeInterval = 0.6
+    private static let rapidUpshiftWindowSeconds: CFTimeInterval = 0.06
+    private static let rapidUpshiftFrameCount: Int = 3
+    private static let idleWakeupIntervalSeconds: CFTimeInterval = 0.10
+    private static let minDynamicExpectedFps: Int = 10
+    private static let rateControlThrottleSeconds: CFTimeInterval = 0.10
 
     // WebRTC video codec return codes
     private static let codecOK: Int = 0
@@ -102,7 +116,9 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         let fps = max(1, Int(settings.maxFramerate > 0 ? settings.maxFramerate : 60))
         codecMode = settings.mode
         currentBitrateBps = startBps
-        currentFps = fps
+        maxFps = fps
+        recentFrameTimes.removeAll(keepingCapacity: true)
+        lastFrameTime = 0
         let oldSession = session
         session = nil
         stateLock.unlock()
@@ -120,6 +136,8 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         let s = session
         session = nil
         callback = nil
+        recentFrameTimes.removeAll()
+        lastFrameTime = 0
         stateLock.unlock()
 
         if let s {
@@ -144,7 +162,7 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         }
         let needsRecreate = (session == nil || width != frameW || height != frameH)
         let targetBps = currentBitrateBps
-        let targetFps = currentFps
+        let targetFps = maxFps
         stateLock.unlock()
 
         if needsRecreate {
@@ -153,13 +171,86 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
             }
         }
 
+        let now = CACurrentMediaTime()
+        var pendingExpectedFps: Int?
+        var pendingPrioritizeSpeed: Bool?
+
         stateLock.lock()
         guard let activeSession = session, !isReleased else {
             stateLock.unlock()
             return Self.codecError
         }
         let activeMode = codecMode
+
+        // Update sliding 0.6s frame-arrival window for UU-style dynamic ExpectedFrameRate
+        let frameInterval = lastFrameTime > 0 ? (now - lastFrameTime) : 1.0
+        lastFrameTime = now
+        recentFrameTimes.append(now)
+        let cutoff = now - Self.fpsWindowSeconds
+        if let firstValidIdx = recentFrameTimes.firstIndex(where: { $0 >= cutoff }) {
+            if firstValidIdx > 0 {
+                recentFrameTimes.removeFirst(firstValidIdx)
+            }
+        } else {
+            recentFrameTimes.removeAll(keepingCapacity: true)
+        }
+
+        let isRapidMotion = recentFrameTimes.count >= Self.rapidUpshiftFrameCount
+            && (now - recentFrameTimes[recentFrameTimes.count - Self.rapidUpshiftFrameCount]) <= Self.rapidUpshiftWindowSeconds
+        let isIdleWakeup = frameInterval > Self.idleWakeupIntervalSeconds
+
+        let desiredExpectedFps: Int
+        if isRapidMotion {
+            desiredExpectedFps = maxFps
+        } else {
+            let observedFps = Double(recentFrameTimes.count) / Self.fpsWindowSeconds
+            let floorFps = min(Self.minDynamicExpectedFps, maxFps)
+            desiredExpectedFps = max(floorFps, min(maxFps, Int(ceil(observedFps * 1.25))))
+        }
+
+        let fpsDelta = abs(desiredExpectedFps - appliedExpectedFps)
+        let fpsRatioChange = appliedExpectedFps > 0 ? (Double(fpsDelta) / Double(appliedExpectedFps)) : 1.0
+        let significantFpsChange = (fpsDelta >= 5 || fpsRatioChange >= 0.20)
+        let urgentFpsChange = (isRapidMotion && desiredExpectedFps > appliedExpectedFps)
+            || (isIdleWakeup && desiredExpectedFps < appliedExpectedFps && significantFpsChange)
+
+        if desiredExpectedFps != appliedExpectedFps &&
+            (urgentFpsChange || (significantFpsChange && (now - lastRateControlApplyTime >= Self.rateControlThrottleSeconds))) {
+            appliedExpectedFps = desiredExpectedFps
+            lastRateControlApplyTime = now
+            pendingExpectedFps = desiredExpectedFps
+        }
+
+        // Sharp idle-wakeup / refinement frames: disable speed-over-quality on idle wakeup,
+        // and restore it once continuous rapid motion resumes.
+        let desiredPrioritizeSpeed: Bool
+        if isIdleWakeup {
+            desiredPrioritizeSpeed = false
+        } else if isRapidMotion {
+            desiredPrioritizeSpeed = true
+        } else {
+            desiredPrioritizeSpeed = appliedPrioritizeSpeed
+        }
+        if desiredPrioritizeSpeed != appliedPrioritizeSpeed {
+            appliedPrioritizeSpeed = desiredPrioritizeSpeed
+            pendingPrioritizeSpeed = desiredPrioritizeSpeed
+        }
         stateLock.unlock()
+
+        if let expectedFps = pendingExpectedFps {
+            VTSessionSetProperty(
+                activeSession,
+                key: kVTCompressionPropertyKey_ExpectedFrameRate,
+                value: NSNumber(value: expectedFps)
+            )
+        }
+        if let prioritizeSpeed = pendingPrioritizeSpeed {
+            VTSessionSetProperty(
+                activeSession,
+                key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                value: prioritizeSpeed ? kCFBooleanTrue : kCFBooleanFalse
+            )
+        }
 
         guard let pixelBuffer = extractPixelBuffer(from: frame, targetWidth: frameW, targetHeight: frameH) else {
             return Self.codecError
@@ -203,16 +294,45 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
     func setBitrate(_ bitrateKbit: UInt32, framerate: UInt32) -> Int32 {
         let bps = max(100_000, Int(bitrateKbit) * 1000)
         let fps = max(1, Int(framerate))
+        let now = CACurrentMediaTime()
 
         stateLock.lock()
         currentBitrateBps = bps
-        currentFps = fps
-        let activeSession = session
+        maxFps = fps
+        guard let activeSession = session, !isReleased else {
+            stateLock.unlock()
+            return Int32(Self.codecOK)
+        }
+
+        // Preserve dynamic ExpectedFrameRate while keeping it clamped to the new ceiling
+        let desiredExpectedFps = appliedExpectedFps > 0 ? min(appliedExpectedFps, fps) : fps
+        let bpsChanged = (bps != appliedBitrateBps)
+        let fpsChanged = (desiredExpectedFps != appliedExpectedFps)
+
+        if !bpsChanged && !fpsChanged {
+            stateLock.unlock()
+            return Int32(Self.codecOK)
+        }
+
+        // Throttle minor non-urgent bitrate tweaks to avoid VTSessionSetProperty contention
+        let bpsDeltaRatio = appliedBitrateBps > 0
+            ? Double(abs(bps - appliedBitrateBps)) / Double(appliedBitrateBps)
+            : 1.0
+        if !fpsChanged && bpsDeltaRatio < 0.10 && (now - lastRateControlApplyTime < Self.rateControlThrottleSeconds) {
+            stateLock.unlock()
+            return Int32(Self.codecOK)
+        }
+
+        if bpsChanged { appliedBitrateBps = bps }
+        if fpsChanged { appliedExpectedFps = desiredExpectedFps }
+        lastRateControlApplyTime = now
         stateLock.unlock()
 
-        if let activeSession {
-            applyRateControl(activeSession, bitrateBps: bps, fps: fps)
-        }
+        applyRateControl(
+            activeSession,
+            bitrateBps: bpsChanged ? bps : nil,
+            fps: fpsChanged ? desiredExpectedFps : nil
+        )
         return Int32(Self.codecOK)
     }
 
@@ -290,6 +410,12 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         session = s
         width = w
         height = h
+        appliedBitrateBps = bitrateBps
+        appliedExpectedFps = fps
+        appliedPrioritizeSpeed = true
+        lastRateControlApplyTime = CACurrentMediaTime()
+        recentFrameTimes.removeAll(keepingCapacity: true)
+        lastFrameTime = 0
         stateLock.unlock()
 
         if let oldSession {
@@ -335,14 +461,18 @@ final class LowLatencyH264VideoEncoder: NSObject, RTCVideoEncoder {
         }
     }
 
-    private func applyRateControl(_ session: VTCompressionSession, bitrateBps: Int, fps: Int) {
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: bitrateBps))
-        // 2.0x burst headroom over a 0.5s window so sudden full-screen scrolling gets instant
-        // burst bits without QP spiking into blurry text.
-        let burstByteLimit = Int64(Double(bitrateBps) * 2.0 * 0.5 / 8.0)
-        let dataRateLimits: [Any] = [burstByteLimit, 0.5]
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: fps))
+    private func applyRateControl(_ session: VTCompressionSession, bitrateBps: Int?, fps: Int?) {
+        if let bitrateBps {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: bitrateBps))
+            // Match UU's 1.0s x 1.5x burst bucket so single-frame full-screen transitions
+            // (e.g. browser tab switches) get 50% more burst headroom without VBV clipping.
+            let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
+            let dataRateLimits: [Any] = [burstByteLimit, 1.0]
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
+        }
+        if let fps {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: fps))
+        }
     }
 
     // MARK: - Private: PixelBuffer Extraction

@@ -124,73 +124,79 @@ public final class VideoDecoder: @unchecked Sendable {
     // MARK: - H.264 / H.265 Annex-B Decoding
 
     private func decodeAnnexB(_ packet: VideoFramePacket, isHEVC: Bool, startTime: CFAbsoluteTime) {
-        let nalus = splitAnnexBNALUs(packet.data)
-        guard !nalus.isEmpty else { return }
+        let naluRanges = splitAnnexBNALURanges(packet.data)
+        guard !naluRanges.isEmpty else { return }
 
-        var avccData = Data()
-        avccData.reserveCapacity(packet.data.count + 16)
+        var sliceRanges: [Range<Int>] = []
+        sliceRanges.reserveCapacity(naluRanges.count)
+        var totalAVCCLength = 0
         var paramSetsChanged = false
         var hasVideoSlice = false
 
-        for nalu in nalus {
-            guard !nalu.isEmpty else { continue }
+        packet.data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
 
-            if !isHEVC {
-                let naluType = nalu[0] & 0x1F
-                switch naluType {
-                case 7: // SPS
-                    if spsData != nalu {
-                        spsData = nalu
-                        paramSetsChanged = true
+            for range in naluRanges {
+                let naluLen = range.count
+                guard naluLen > 0 else { continue }
+                let naluPtr = base.advanced(by: range.lowerBound)
+                let firstByte = naluPtr[0]
+
+                if !isHEVC {
+                    let naluType = firstByte & 0x1F
+                    switch naluType {
+                    case 7: // SPS
+                        if !Self.dataEquals(spsData, bytes: naluPtr, count: naluLen) {
+                            spsData = Data(bytes: naluPtr, count: naluLen)
+                            paramSetsChanged = true
+                        }
+                        continue
+                    case 8: // PPS
+                        if !Self.dataEquals(ppsData, bytes: naluPtr, count: naluLen) {
+                            ppsData = Data(bytes: naluPtr, count: naluLen)
+                            paramSetsChanged = true
+                        }
+                        continue
+                    case 6, 9: // SEI, AUD — skip for minimal latency
+                        continue
+                    case 1, 5: // Non-IDR or IDR slice
+                        hasVideoSlice = true
+                    default:
+                        break
                     }
-                    continue
-                case 8: // PPS
-                    if ppsData != nalu {
-                        ppsData = nalu
-                        paramSetsChanged = true
+                } else {
+                    let naluType = (firstByte >> 1) & 0x3F
+                    switch naluType {
+                    case 32: // VPS
+                        if !Self.dataEquals(vpsData, bytes: naluPtr, count: naluLen) {
+                            vpsData = Data(bytes: naluPtr, count: naluLen)
+                            paramSetsChanged = true
+                        }
+                        continue
+                    case 33: // SPS
+                        if !Self.dataEquals(spsData, bytes: naluPtr, count: naluLen) {
+                            spsData = Data(bytes: naluPtr, count: naluLen)
+                            paramSetsChanged = true
+                        }
+                        continue
+                    case 34: // PPS
+                        if !Self.dataEquals(ppsData, bytes: naluPtr, count: naluLen) {
+                            ppsData = Data(bytes: naluPtr, count: naluLen)
+                            paramSetsChanged = true
+                        }
+                        continue
+                    case 35, 39, 40: // AUD, Prefix/Suffix SEI
+                        continue
+                    case 0...21: // VCL slice NALUs
+                        hasVideoSlice = true
+                    default:
+                        break
                     }
-                    continue
-                case 6, 9: // SEI, AUD — skip for minimal latency
-                    continue
-                case 1, 5: // Non-IDR or IDR slice
-                    hasVideoSlice = true
-                default:
-                    break
                 }
-            } else {
-                let naluType = (nalu[0] >> 1) & 0x3F
-                switch naluType {
-                case 32: // VPS
-                    if vpsData != nalu {
-                        vpsData = nalu
-                        paramSetsChanged = true
-                    }
-                    continue
-                case 33: // SPS
-                    if spsData != nalu {
-                        spsData = nalu
-                        paramSetsChanged = true
-                    }
-                    continue
-                case 34: // PPS
-                    if ppsData != nalu {
-                        ppsData = nalu
-                        paramSetsChanged = true
-                    }
-                    continue
-                case 35, 39, 40: // AUD, Prefix/Suffix SEI
-                    continue
-                case 0...21: // VCL slice NALUs
-                    hasVideoSlice = true
-                default:
-                    break
-                }
+
+                sliceRanges.append(range)
+                totalAVCCLength += 4 + naluLen
             }
-
-            // Write 4-byte big-endian length prefix (AVCC / HVCC format)
-            var lengthBE = UInt32(nalu.count).bigEndian
-            withUnsafeBytes(of: &lengthBE) { avccData.append(contentsOf: $0) }
-            avccData.append(nalu)
         }
 
         // Update format description if first time or parameter sets changed mid-stream
@@ -208,9 +214,16 @@ public final class VideoDecoder: @unchecked Sendable {
             return
         }
 
-        guard hasVideoSlice && !avccData.isEmpty else { return }
+        guard hasVideoSlice && totalAVCCLength > 0 else { return }
 
-        decodeSliceBuffer(avccData, formatDescription: formatDesc, ptsMs: packet.ptsMs, startTime: startTime)
+        decodeSliceRanges(
+            sourceData: packet.data,
+            ranges: sliceRanges,
+            totalLength: totalAVCCLength,
+            formatDescription: formatDesc,
+            ptsMs: packet.ptsMs,
+            startTime: startTime
+        )
     }
 
     private func updateFormatDescription(isHEVC: Bool) {
@@ -332,26 +345,53 @@ public final class VideoDecoder: @unchecked Sendable {
         decompressionSession = created
     }
 
-    private func decodeSliceBuffer(
-        _ data: Data,
+    private func decodeSliceRanges(
+        sourceData: Data,
+        ranges: [Range<Int>],
+        totalLength: Int,
         formatDescription: CMVideoFormatDescription,
         ptsMs: UInt32,
         startTime: CFAbsoluteTime
     ) {
-        guard let session = decompressionSession else { return }
+        guard let session = decompressionSession, totalLength > 0 else { return }
 
-        guard let rawMemory = Darwin.malloc(data.count) else { return }
-        data.copyBytes(to: rawMemory.assumingMemoryBound(to: UInt8.self), count: data.count)
+        // Single allocation owned by CMBlockBuffer (freed via kCFAllocatorMalloc).
+        // Writes 4-byte length-prefixed AVCC/HVCC slices directly from packet.data in one copy.
+        guard let rawMemory = Darwin.malloc(totalLength) else { return }
+
+        let copied = sourceData.withUnsafeBytes { raw -> Bool in
+            guard let srcBase = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return false
+            }
+            var dst = rawMemory.assumingMemoryBound(to: UInt8.self)
+            for range in ranges {
+                let naluLen = range.count
+                let len32 = UInt32(naluLen)
+                dst[0] = UInt8((len32 >> 24) & 0xFF)
+                dst[1] = UInt8((len32 >> 16) & 0xFF)
+                dst[2] = UInt8((len32 >> 8) & 0xFF)
+                dst[3] = UInt8(len32 & 0xFF)
+                dst = dst.advanced(by: 4)
+                Darwin.memcpy(dst, srcBase.advanced(by: range.lowerBound), naluLen)
+                dst = dst.advanced(by: naluLen)
+            }
+            return true
+        }
+
+        guard copied else {
+            Darwin.free(rawMemory)
+            return
+        }
 
         var blockBuffer: CMBlockBuffer?
         let blockStatus = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault,
             memoryBlock: rawMemory,
-            blockLength: data.count,
+            blockLength: totalLength,
             blockAllocator: kCFAllocatorMalloc,
             customBlockSource: nil,
             offsetToData: 0,
-            dataLength: data.count,
+            dataLength: totalLength,
             flags: 0,
             blockBufferOut: &blockBuffer
         )
@@ -366,7 +406,7 @@ public final class VideoDecoder: @unchecked Sendable {
             presentationTimeStamp: CMTime(value: CMTimeValue(ptsMs), timescale: 1000),
             decodeTimeStamp: .invalid
         )
-        var sampleSize = data.count
+        var sampleSize = totalLength
         var sampleBuffer: CMSampleBuffer?
 
         let sampleStatus = CMSampleBufferCreateReady(
@@ -492,14 +532,21 @@ public final class VideoDecoder: @unchecked Sendable {
 
     // MARK: - Annex-B Start Code Parser
 
-    private func splitAnnexBNALUs(_ data: Data) -> [Data] {
+    private static func dataEquals(_ existing: Data?, bytes: UnsafePointer<UInt8>, count: Int) -> Bool {
+        guard let existing, existing.count == count else { return false }
+        return existing.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return count == 0 }
+            return Darwin.memcmp(base, bytes, count) == 0
+        }
+    }
+
+    private func splitAnnexBNALURanges(_ data: Data) -> [Range<Int>] {
         let count = data.count
         guard count >= 4 else { return [] }
 
-        return data.withUnsafeBytes { raw -> [Data] in
+        return data.withUnsafeBytes { raw -> [Range<Int>] in
             guard let ptr = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return [] }
 
-            var nalus: [Data] = []
             var starts: [(dataStart: Int, codeLen: Int)] = []
             var i = 0
 
@@ -520,6 +567,8 @@ public final class VideoDecoder: @unchecked Sendable {
 
             guard !starts.isEmpty else { return [] }
 
+            var ranges: [Range<Int>] = []
+            ranges.reserveCapacity(starts.count)
             for idx in 0..<starts.count {
                 let start = starts[idx].dataStart
                 let end: Int
@@ -529,11 +578,11 @@ public final class VideoDecoder: @unchecked Sendable {
                     end = count
                 }
                 if end > start {
-                    nalus.append(Data(bytes: ptr.advanced(by: start), count: end - start))
+                    ranges.append(start..<end)
                 }
             }
 
-            return nalus
+            return ranges
         }
     }
 }

@@ -115,6 +115,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
     private let bufferLock = NSLock()
     private var currentPixelBuffer: CVPixelBuffer?
     private var _videoSize: CGSize = .zero
+    private var hasPendingDraw: Bool = false
 
     private static let mslSource = """
     #include <metal_stdlib>
@@ -311,9 +312,8 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         }
         self.clearColor = MTLClearColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1.0)
-        self.isPaused = false
-        self.enableSetNeedsDisplay = false
-        self.preferredFramesPerSecond = 60
+        self.isPaused = true
+        self.enableSetNeedsDisplay = true
         self.framebufferOnly = true
 
         self.commandQueue = device.makeCommandQueue()
@@ -352,17 +352,31 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         let newSize = CGSize(width: w, height: h)
 
         var sizeChanged = false
+        var shouldScheduleDraw = false
         bufferLock.lock()
         currentPixelBuffer = pixelBuffer
         if w > 0, h > 0, _videoSize != newSize {
             _videoSize = newSize
             sizeChanged = true
         }
+        if !hasPendingDraw {
+            hasPendingDraw = true
+            shouldScheduleDraw = true
+        }
         bufferLock.unlock()
 
-        if sizeChanged {
+        if sizeChanged || shouldScheduleDraw {
             DispatchQueue.main.async { [weak self] in
-                self?.onVideoSizeChanged?(newSize)
+                guard let self else { return }
+                if sizeChanged {
+                    self.onVideoSizeChanged?(newSize)
+                }
+                if shouldScheduleDraw {
+                    self.bufferLock.lock()
+                    self.hasPendingDraw = false
+                    self.bufferLock.unlock()
+                    self.needsDisplay = true
+                }
             }
         }
     }
@@ -372,7 +386,26 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         bufferLock.lock()
         currentPixelBuffer = nil
         _videoSize = .zero
+        let shouldSchedule = !hasPendingDraw
+        if shouldSchedule {
+            hasPendingDraw = true
+        }
         bufferLock.unlock()
+
+        if Thread.isMainThread {
+            bufferLock.lock()
+            hasPendingDraw = false
+            bufferLock.unlock()
+            needsDisplay = true
+        } else if shouldSchedule {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.bufferLock.lock()
+                self.hasPendingDraw = false
+                self.bufferLock.unlock()
+                self.needsDisplay = true
+            }
+        }
     }
 
     /// Maps a point in view-local coordinates (AppKit bottom-left origin) to normalized remote coordinates
@@ -429,7 +462,9 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
 
     // MARK: - MTKViewDelegate
 
-    public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        needsDisplay = true
+    }
 
     public func draw(in view: MTKView) {
         bufferLock.lock()

@@ -65,8 +65,8 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
     private var streamOutput: StreamOutput?
     // Static-frame refinement state (accessed exclusively on captureQueue)
     private var latestPixelBuffer: CVPixelBuffer?
-    private var staticFrameWorkItem: DispatchWorkItem?
-    private let staticFrameDelaySeconds: TimeInterval = 0.15
+    private var staticFrameWorkItems: [DispatchWorkItem] = []
+    private let staticFrameDelaysSeconds: [TimeInterval] = [0.06, 0.18]
     // .userInteractive, not .userInitiated — the comment on handle() below
     // (and on onFrame above) already documents that background CPU
     // contention on this Mac shows up directly as capture-side fps
@@ -262,7 +262,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         config.colorMatrix = hdr ? kCVImageBufferYCbCrMatrix_ITU_R_2020 : kCVImageBufferYCbCrMatrix_ITU_R_709_2
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(fps, 1)))
-        config.queueDepth = max(3, min(5, fps / 30 + 1))
+        config.queueDepth = max(6, min(8, fps / 20 + 3))
         config.capturesAudio = true
         config.sampleRate = 48000
         config.channelCount = 2
@@ -342,10 +342,16 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         }
     }
 
+    private func cancelStaticRefinement() {
+        for item in staticFrameWorkItems {
+            item.cancel()
+        }
+        staticFrameWorkItems.removeAll(keepingCapacity: true)
+    }
+
     func stop() async {
         captureQueue.async { [weak self] in
-            self?.staticFrameWorkItem?.cancel()
-            self?.staticFrameWorkItem = nil
+            self?.cancelStaticRefinement()
             self?.latestPixelBuffer = nil
         }
         if let s = stream {
@@ -387,8 +393,7 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
         // Cancel any pending static-frame refinement because new motion arrived.
-        staticFrameWorkItem?.cancel()
-        staticFrameWorkItem = nil
+        cancelStaticRefinement()
 
         // Must run synchronously, still on captureQueue (called from
         // SCStreamOutput, off the main thread — see StreamOutput below), not
@@ -408,24 +413,30 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         onFrame?(pixelBuffer, screenWidth, screenHeight)
         let encMs = (CFAbsoluteTimeGetCurrent() - te) * 1000
 
-        // Schedule a one-shot static-frame refinement callback after 150ms of
-        // stillness following active motion.
+        // Schedule two-stage static-frame refinement (60ms + 180ms) after motion
+        // settles so any residual blur converges rapidly.
         if onStaticFrameReady != nil {
             latestPixelBuffer = pixelBuffer
-            var workItem: DispatchWorkItem?
-            let item = DispatchWorkItem { [weak self] in
-                guard let self,
-                      let currentItem = workItem,
-                      !currentItem.isCancelled,
-                      self.staticFrameWorkItem === currentItem,
-                      let buf = self.latestPixelBuffer else { return }
-                self.latestPixelBuffer = nil
-                self.staticFrameWorkItem = nil
-                self.onStaticFrameReady?(buf)
+            let totalStages = staticFrameDelaysSeconds.count
+            for (stageIndex, delay) in staticFrameDelaysSeconds.enumerated() {
+                let isFinalStage = (stageIndex == totalStages - 1)
+                var workItem: DispatchWorkItem?
+                let item = DispatchWorkItem { [weak self] in
+                    guard let self,
+                          let currentItem = workItem,
+                          !currentItem.isCancelled,
+                          let idx = self.staticFrameWorkItems.firstIndex(where: { $0 === currentItem }),
+                          let buf = self.latestPixelBuffer else { return }
+                    self.staticFrameWorkItems.remove(at: idx)
+                    if isFinalStage {
+                        self.latestPixelBuffer = nil
+                    }
+                    self.onStaticFrameReady?(buf)
+                }
+                workItem = item
+                staticFrameWorkItems.append(item)
+                captureQueue.asyncAfter(deadline: .now() + delay, execute: item)
             }
-            workItem = item
-            staticFrameWorkItem = item
-            captureQueue.asyncAfter(deadline: .now() + staticFrameDelaySeconds, execute: item)
         } else {
             latestPixelBuffer = nil
         }

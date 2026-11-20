@@ -40,7 +40,7 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
   const [sharpness, setSharpness] = useState<SharpnessLevel>(() => {
     const saved = localStorage.getItem('remoter_sharpness')
     if (saved === 'off' || saved === 'low' || saved === 'medium' || saved === 'high') return saved
-    return 'low'
+    return 'off'
   })
   const [chromaMode, setChromaMode] = useState<ChromaMode>('420')
   const [hdrOn, setHdrOn] = useState(false)

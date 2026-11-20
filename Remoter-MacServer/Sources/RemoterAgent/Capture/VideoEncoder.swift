@@ -2,6 +2,7 @@ import Foundation
 import CoreMedia
 import CoreVideo
 import VideoToolbox
+import QuartzCore
 
 enum StreamCodec: String {
     case h264
@@ -16,9 +17,26 @@ final class VideoEncoder {
     private var session: VTCompressionSession?
     private var codec: StreamCodec = .h264
     private var frameIndex: Int64 = 0
+    private var lastPtsNs: Int64 = 0
     private var forceKeyframeNext = false
     private var currentBitrateBps: Int = 8_000_000
-    private var isRefinementBoostActive = false
+    private var maxFps: Int = 60
+
+    // Cached VT properties to avoid redundant synchronous VTSessionSetProperty calls
+    private var appliedBitrateBps: Int = 0
+    private var appliedExpectedFps: Int = 0
+    private var appliedPrioritizeSpeed: Bool = true
+    private var lastRateControlApplyTime: CFTimeInterval = 0
+    private var recentFrameTimes: [CFTimeInterval] = []
+    private var lastFrameTime: CFTimeInterval = 0
+
+    // UU-style dynamic ExpectedFrameRate rate-control constants
+    private static let fpsWindowSeconds: CFTimeInterval = 0.6
+    private static let rapidUpshiftWindowSeconds: CFTimeInterval = 0.06
+    private static let rapidUpshiftFrameCount: Int = 3
+    private static let idleWakeupIntervalSeconds: CFTimeInterval = 0.10
+    private static let minDynamicExpectedFps: Int = 10
+    private static let rateControlThrottleSeconds: CFTimeInterval = 0.10
 
     // True per-frame encode latency (submit → VT completion callback), for
     // the client's latency-breakdown panel. The perf_5s "enc=" figure only
@@ -58,26 +76,42 @@ final class VideoEncoder {
     /// a client whose decode can't keep up with the fixed default bitrate.
     func setBitrate(_ bitrateBps: Int) {
         currentBitrateBps = bitrateBps
-        isRefinementBoostActive = false
         guard let session else { return }
-        applyBitrateProperties(session, bitrateBps: bitrateBps, burstMultiplier: 1.5, prioritizeSpeed: true)
+        guard bitrateBps != appliedBitrateBps else { return }
+        applyBitrateProperties(session, bitrateBps: bitrateBps)
     }
 
-    private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int, burstMultiplier: Double, prioritizeSpeed: Bool) {
+    private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
-        let burstByteLimit = Int64(Double(bitrateBps) * burstMultiplier / 8.0)
+        // Match UU's 1.0s x 1.5x burst bucket
+        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
         let dataRateLimits: [Any] = [burstByteLimit, 1.0]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
-                             value: prioritizeSpeed ? kCFBooleanTrue : kCFBooleanFalse)
+        appliedBitrateBps = bitrateBps
     }
 
-    /// Adjusts the live session's expected frame rate without tearing it down.
-    func setFps(_ fps: Int) {
-        guard let session else { return }
+    private func applyPrioritizeSpeed(_ session: VTCompressionSession, prioritizeSpeed: Bool) {
+        guard prioritizeSpeed != appliedPrioritizeSpeed else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                             value: prioritizeSpeed ? kCFBooleanTrue : kCFBooleanFalse)
+        appliedPrioritizeSpeed = prioritizeSpeed
+    }
+
+    private func applyExpectedFps(_ session: VTCompressionSession, fps: Int) {
+        guard fps != appliedExpectedFps else { return }
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: NSNumber(value: fps))
+        appliedExpectedFps = fps
+    }
+
+    /// Adjusts the live session's expected frame rate ceiling without tearing it down.
+    func setFps(_ fps: Int) {
+        let clamped = max(1, fps)
+        maxFps = clamped
+        guard let session else { return }
+        let desired = appliedExpectedFps > 0 ? min(appliedExpectedFps, clamped) : clamped
+        applyExpectedFps(session, fps: desired)
     }
 
     func setup(
@@ -91,7 +125,10 @@ final class VideoEncoder {
     ) throws {
         self.codec = codec
         self.currentBitrateBps = bitrateBps
-        self.isRefinementBoostActive = false
+        self.maxFps = max(1, fps)
+        self.recentFrameTimes.removeAll(keepingCapacity: true)
+        self.lastFrameTime = 0
+        self.lastPtsNs = 0
         var s: VTCompressionSession?
         let encoderSpec: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue!,
@@ -121,9 +158,13 @@ final class VideoEncoder {
         let selectedProfile = configureProfileLevel(s, codec: codec, chroma444: chroma444, hdr: hdr)
         configureColorMetadata(s, hdr: hdr)
 
-        applyBitrateProperties(s, bitrateBps: bitrateBps, burstMultiplier: 1.5, prioritizeSpeed: true)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,
-                             value: NSNumber(value: fps))
+        appliedBitrateBps = 0
+        appliedExpectedFps = 0
+        appliedPrioritizeSpeed = false // force initial true set below
+        applyBitrateProperties(s, bitrateBps: bitrateBps)
+        applyPrioritizeSpeed(s, prioritizeSpeed: true)
+        applyExpectedFps(s, fps: self.maxFps)
+        lastRateControlApplyTime = CACurrentMediaTime()
         // A keyframe is ~10-20x the size of a delta frame; at the old 2s
         // interval keyframes alone ate ~20% of a 2Mbps budget. On-demand
         // request_keyframe covers every recovery case (drops, tab switches,
@@ -228,30 +269,82 @@ final class VideoEncoder {
                              value: kVTHDRMetadataInsertionMode_Auto)
     }
 
-    /// Encodes a clean, high-quality refinement frame for static-frame sharpening
-    /// (temporarily lifting bitrate limit and prioritizing quality over speed).
+    /// Encodes a clean, high-quality refinement frame for static-frame sharpening.
+    /// Uses cached dynamic ExpectedFrameRate + quality-over-speed without thrashing
+    /// AverageBitRate/DataRateLimits synchronously on every idle->motion transition.
     func encodeRefinementFrame(_ pb: CVPixelBuffer) {
         guard let session else { return }
-        let boostedBitrate = min(max(currentBitrateBps * 2, 20_000_000), 60_000_000)
-        applyBitrateProperties(session, bitrateBps: boostedBitrate, burstMultiplier: 2.5, prioritizeSpeed: false)
-        isRefinementBoostActive = true
-        submitFrame(pb, session: session)
+        let now = CACurrentMediaTime()
+        let floorFps = min(Self.minDynamicExpectedFps, maxFps)
+        if appliedExpectedFps > floorFps {
+            applyExpectedFps(session, fps: floorFps)
+            lastRateControlApplyTime = now
+        }
+        applyPrioritizeSpeed(session, prioritizeSpeed: false)
+        submitFrame(pb, session: session, now: now)
     }
 
     func encode(_ pb: CVPixelBuffer) {
         guard let session else { return }
-        if isRefinementBoostActive {
-            applyBitrateProperties(session, bitrateBps: currentBitrateBps, burstMultiplier: 1.5, prioritizeSpeed: true)
-            isRefinementBoostActive = false
-        }
-        submitFrame(pb, session: session)
+        let now = CACurrentMediaTime()
+        updateDynamicRateControl(session, now: now)
+        submitFrame(pb, session: session, now: now)
     }
 
-    private func submitFrame(_ pb: CVPixelBuffer, session: VTCompressionSession) {
+    private func updateDynamicRateControl(_ session: VTCompressionSession, now: CFTimeInterval) {
+        let frameInterval = lastFrameTime > 0 ? (now - lastFrameTime) : 1.0
+        lastFrameTime = now
+        recentFrameTimes.append(now)
+        let cutoff = now - Self.fpsWindowSeconds
+        if let firstValidIdx = recentFrameTimes.firstIndex(where: { $0 >= cutoff }) {
+            if firstValidIdx > 0 {
+                recentFrameTimes.removeFirst(firstValidIdx)
+            }
+        } else {
+            recentFrameTimes.removeAll(keepingCapacity: true)
+        }
 
-        let idx  = frameIndex
+        let isRapidMotion = recentFrameTimes.count >= Self.rapidUpshiftFrameCount
+            && (now - recentFrameTimes[recentFrameTimes.count - Self.rapidUpshiftFrameCount]) <= Self.rapidUpshiftWindowSeconds
+        let isIdleWakeup = frameInterval > Self.idleWakeupIntervalSeconds
+
+        let desiredExpectedFps: Int
+        if isRapidMotion {
+            desiredExpectedFps = maxFps
+        } else {
+            let observedFps = Double(recentFrameTimes.count) / Self.fpsWindowSeconds
+            let floorFps = min(Self.minDynamicExpectedFps, maxFps)
+            desiredExpectedFps = max(floorFps, min(maxFps, Int(ceil(observedFps * 1.25))))
+        }
+
+        let fpsDelta = abs(desiredExpectedFps - appliedExpectedFps)
+        let fpsRatioChange = appliedExpectedFps > 0 ? (Double(fpsDelta) / Double(appliedExpectedFps)) : 1.0
+        let significantFpsChange = (fpsDelta >= 5 || fpsRatioChange >= 0.20)
+        let urgentFpsChange = (isRapidMotion && desiredExpectedFps > appliedExpectedFps)
+            || (isIdleWakeup && desiredExpectedFps < appliedExpectedFps && significantFpsChange)
+
+        if desiredExpectedFps != appliedExpectedFps &&
+            (urgentFpsChange || (significantFpsChange && (now - lastRateControlApplyTime >= Self.rateControlThrottleSeconds))) {
+            applyExpectedFps(session, fps: desiredExpectedFps)
+            lastRateControlApplyTime = now
+        }
+
+        if isIdleWakeup {
+            applyPrioritizeSpeed(session, prioritizeSpeed: false)
+        } else if isRapidMotion {
+            applyPrioritizeSpeed(session, prioritizeSpeed: true)
+        }
+    }
+
+    private func submitFrame(_ pb: CVPixelBuffer, session: VTCompressionSession, now: CFTimeInterval) {
+        let idx = frameIndex
         frameIndex += 1
-        let pts  = CMTime(value: idx, timescale: 60)
+        // Use real monotonic clock PTS so VideoToolbox perceives idle intervals
+        // and accumulates VBV credit across static periods.
+        let nowNs = Int64(now * 1_000_000_000)
+        let ptsNs = max(nowNs, lastPtsNs + 1)
+        lastPtsNs = ptsNs
+        let pts = CMTime(value: ptsNs, timescale: 1_000_000_000)
 
         submitLock.lock()
         submitTimes[idx] = CFAbsoluteTimeGetCurrent()

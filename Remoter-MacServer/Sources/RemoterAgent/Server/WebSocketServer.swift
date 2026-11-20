@@ -103,6 +103,7 @@ final class WebSocketServer {
                     ?? ch.eventLoop.makeSucceededVoidFuture()
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(.socketOption(.tcp_nodelay), value: 1)
             .childChannelOption(.maxMessagesPerRead, value: 16)
             .childChannelOption(.recvAllocator, value: AdaptiveRecvByteBufferAllocator())
 

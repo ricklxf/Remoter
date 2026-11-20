@@ -228,7 +228,12 @@ export function RemoteCanvas({
       renderer.setToneMap(toneMap)
 
       if (!VideoDecoder_.isSupported()) {
-        console.error('[RemoteCanvas] WebCodecs not supported')
+        // WebCodecs requires a secure context (HTTPS / localhost).
+        // On plain-HTTP LAN connections, VideoDecoder is undefined.
+        // Fall back to JPEG: tell the server to switch codec and set up 2D canvas.
+        console.warn('[RemoteCanvas] WebCodecs unavailable (non-secure context?), falling back to JPEG')
+        ctx2dRef.current = canvas.getContext('2d')
+        conn.sendSetCodec('jpeg')
         return
       }
 
@@ -357,8 +362,8 @@ export function RemoteCanvas({
       prev?.(e)
 
       if (e.type === 'video_frame') {
-        if (initialCodec === 'jpeg') {
-          // JPEG 模式：直接 createImageBitmap 渲染
+        if (initialCodec === 'jpeg' || (ctx2dRef.current && !decoderRef.current)) {
+          // JPEG 模式（包括 WebCodecs 不可用时降级到 JPEG 的情况）：直接 createImageBitmap 渲染
           const blob = new Blob([e.data], { type: 'image/jpeg' })
           createImageBitmap(blob).then((bmp) => {
             const ctx = ctx2dRef.current

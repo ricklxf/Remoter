@@ -449,6 +449,7 @@ final class Session {
 
         case .netHint(let lan):
             clientNotOnLan = !lan
+            webrtc?.offLanHinted = clientNotOnLan
             webrtc?.lanFloorAllowed = lan
             webrtc?.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
@@ -852,6 +853,7 @@ final class Session {
         usingWebRTCVideo = false
         let agent = WebRTCAgent()
         agent.preferredCodec = currentCodec.rawValue
+        agent.offLanHinted = clientNotOnLan
         agent.lanFloorAllowed = !clientNotOnLan
         agent.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
 

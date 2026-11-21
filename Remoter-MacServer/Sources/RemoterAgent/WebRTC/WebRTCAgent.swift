@@ -88,7 +88,6 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private static let congestionFloorBps: Int = 350_000
     private static let congestionMaxFps: Int = 24
     private static let congestionImmediateRttMs: Double = 250.0
-    private static let congestionImmediateLoss: Double = 0.08
     private static let congestionSustainedRttMs: Double = 150.0
     private static let congestionSustainedLoss: Double = 0.05
     private static let congestionEnterStreakRequired: Int = 2   // 1.0s at 0.5s poll (fast enter)
@@ -177,7 +176,15 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// so `lanFloorAllowed` can be false even on the same physical LAN.
     private var isDirectP2P = false
     private var isDirectPrivateLan = false
-    private var effectiveLanAllowed: Bool { lanFloorAllowed || isDirectPrivateLan }
+    /// The client's own `net_hint lan=false` (it compared its interface subnets
+    /// with our address) beats anything inferred here: a WireGuard/VPN path is
+    /// direct P2P with private IPs, ~5ms RTT and often 0% loss, so it passes
+    /// every `isDirectPrivateLan` test while still being a tunnel.
+    var offLanHinted = false {
+        didSet { if oldValue != offLanHinted { applyMaxBitrate() } }
+    }
+    private var directLanTrusted: Bool { isDirectPrivateLan && !offLanHinted }
+    private var effectiveLanAllowed: Bool { lanFloorAllowed || directLanTrusted }
     /// Only arm the 12 Mbps wired LAN floor when RTT <= 3.5ms (true wired Ethernet);
     /// for Wi-Fi / P2P (3.5 < RTT <= 18ms), start at the safe 6 Mbps `wifiFloorBps` and
     /// elevate to 9 Mbps (`wifiElevatedFloorBps`) after 5s of 0% loss + RTT <= 15ms.
@@ -297,7 +304,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
     private func applyEncodingParams() {
         guard let sender = videoSender else { return }
-        let applyTunnelCap = tunnelCapActive && !isDirectPrivateLan
+        let applyTunnelCap = tunnelCapActive && !directLanTrusted
         let bps = min(requestedMaxBps, lossCapBps ?? Int.max, applyTunnelCap ? Self.tunnelCapBps : Int.max)
         let effectiveFps = congestionGuardActive ? min(requestedMaxFps, Self.congestionMaxFps) : requestedMaxFps
         let params = sender.parameters
@@ -559,7 +566,11 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     /// multi-second PLI freeze storms; restore full fps once the link is clean for 3 seconds.
     private func evaluateCongestionGuard(rttMs: Double?, lossFraction: Double) {
         let rtt = rttMs ?? -1
-        let immediateHit = (rtt >= Self.congestionImmediateRttMs) || (lossFraction >= Self.congestionImmediateLoss)
+        // Loss alone is not "immediate": on the WireGuard path one 0.5s poll of
+        // 16-25% loss at 6ms RTT was followed by 0% a moment later (307 on/off
+        // pairs, median 4s, ~30min of 24fps). It has to persist across the
+        // sustained streak (loss >= 5% for 2 polls) before fps is cut.
+        let immediateHit = rtt >= Self.congestionImmediateRttMs
         let sustainedHit = (rtt >= Self.congestionSustainedRttMs) || (lossFraction >= Self.congestionSustainedLoss)
 
         if !congestionGuardActive {

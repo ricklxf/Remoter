@@ -11,6 +11,8 @@ A personal remote desktop tool for controlling Mac or Windows from any device.
 - **End-to-end encryption** — P-256 ECDH + AES-256-GCM, zero plaintext
 - **LAN direct connect** — latency < 20ms
 - **Cross-network** — WireGuard / VPN tunnel or self-hosted relay server
+- **The client's `net_hint lan=false` must not be overridden by server-side RTT inference**: WireGuard is direct P2P, private IPs, ~5ms RTT and often 0% loss, so it passed every `direct_lan_promoted` test and bypassed the tunnel cap and floor (all 46 sessions were promoted). Once the client reports it is off-LAN, the server no longer promotes.
+- **The congestion guard must not trip on a single loss sample**: one 0.5s poll of 16-25% loss at 6ms RTT, then back to 0, made fps flap between 24 and target (307 times in two days). Loss now needs two consecutive polls; only RTT >= 250ms enters immediately.
 - **Audio forwarding** — system audio encoded as AAC-LC, decoded and played via native hardware / WebCodecs on the client (off by default, toggle in the control menu)
 - **Remote cursor shape sync** — remote cursor auto-hides during control while the local cursor renders with zero latency; shape (text beam, resize arrows, etc.) is polled and synced separately
 - **Chinese IME pass-through** — all four clients (Web / Electron / Mac / Win) support local IME composition echo with snug candidate-bar alignment; only the final committed text is sent to the remote for injection

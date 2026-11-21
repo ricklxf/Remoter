@@ -53,9 +53,23 @@ export function RemoteCanvas({
   // (WS fallback). Driven by the track's mute/unmute events, which is how
   // the browser signals "RTP packets stopped/resumed arriving".
   const [mediaActive, setMediaActive] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (outCountRef.current > 0 || mediaActive) return
+      const d = decoderRef.current
+      setDiag(`收到 ${rxCountRef.current} 帧，已显示 ${outCountRef.current} 帧 | VideoDecoder=${typeof VideoDecoder !== 'undefined'} | 解码器=${d ? d.debugState : '未创建'} | codec=${initialCodec}` +
+        `${d?.lastError ? ' | 解码错误: ' + d.lastError : ''}${initErrRef.current ? ' | 初始化错误: ' + initErrRef.current : ''}`)
+    }, 4000)
+    return () => clearTimeout(t)
+  }, [mediaActive, initialCodec])
   const clampedZoom = Math.min(3, Math.max(1, zoom))
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const rvfcIdRef = useRef<number | null>(null)
+  // On-screen diagnosis when frames arrive but nothing is ever drawn (no console access on the viewing machine).
+  const rxCountRef = useRef(0)
+  const outCountRef = useRef(0)
+  const initErrRef = useRef('')
+  const [diag, setDiag] = useState<string | null>(null)
   const useVideoShader = mediaActive && !forceCanvas && (sharpness !== 'off' || toneMap)
   const useVideoShaderRef = useRef(useVideoShader)
   useVideoShaderRef.current = useVideoShader
@@ -237,7 +251,7 @@ export function RemoteCanvas({
         return
       }
 
-      const decoder = new VideoDecoder_((frame) => renderer.renderFrame(frame))
+      const decoder = new VideoDecoder_((frame) => { outCountRef.current++; renderer.renderFrame(frame) })
       decoder.onOverloaded = () => {
         console.warn('[Decoder] decode queue overloaded, requesting keyframe')
         conn.sendRequestKeyframe()
@@ -247,7 +261,7 @@ export function RemoteCanvas({
       decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec, {
         chroma444: chroma444Ref.current,
         hdr: hdrRef.current,
-      }).catch(console.error)
+      }).catch((err) => { initErrRef.current = String(err); console.error(err) })
       console.log('[RemoteCanvas] H.264 mode, decoder initializing')
       // This decoder is brand new and won't decode anything until it gets a
       // keyframe (Decoder.ts buffers/drops delta frames until then) — ask the
@@ -362,6 +376,7 @@ export function RemoteCanvas({
       prev?.(e)
 
       if (e.type === 'video_frame') {
+        rxCountRef.current++
         if (initialCodec === 'jpeg' || (ctx2dRef.current && !decoderRef.current)) {
           // JPEG 模式（包括 WebCodecs 不可用时降级到 JPEG 的情况）：直接 createImageBitmap 渲染
           const blob = new Blob([e.data], { type: 'image/jpeg' })
@@ -428,6 +443,11 @@ export function RemoteCanvas({
             pointerEvents: 'none',
           }}
         />
+        {diag && outCountRef.current === 0 && (
+          <div style={{ position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, padding: 8, background: 'rgba(0,0,0,.8)', color: '#ffb4b4', font: '12px monospace', pointerEvents: 'none' }}>
+            无画面诊断：{diag}
+          </div>
+        )}
         <video
           ref={videoRef}
           muted

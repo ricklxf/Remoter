@@ -52,6 +52,8 @@ export class VideoDecoder_ {
   // chunk timestamp which VideoFrame echoes back — for the latency panel.
   private decodeSubmitTimes = new Map<number, number>()
   lastDecodeMs = 0
+  lastError = ''
+  get debugState(): string { return this.decoder ? `${this.decoder.state} q=${this.decoder.decodeQueueSize}` : 'none' }
 
   // Periodic visibility into decodeQueueSize even when it never crosses the
   // hard overload threshold — distinguishes "chronically a bit behind" from
@@ -111,6 +113,7 @@ export class VideoDecoder_ {
       },
       error: (e) => {
         console.error('[Decoder] decode error:', e.message)
+        this.lastError = e.message
         this.pendingKeyframe = true
         this.decodeSubmitTimes.clear()
       }

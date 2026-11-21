@@ -119,13 +119,28 @@ export class VideoDecoder_ {
       }
     })
 
-    this.decoder.configure({
-      codec: codecStr,
-      codedWidth: width,
-      codedHeight: height,
-      optimizeForLatency: true,
-      hardwareAcceleration: 'prefer-hardware',
-    })
+    // Some browsers (e.g. Edge without a usable H.264 decoder for this profile)
+    // reject the preferred config: probe relaxed variants, else let the caller fall back to JPEG.
+    const base = { codec: codecStr, codedWidth: width, codedHeight: height, optimizeForLatency: true }
+    const variants: VideoDecoderConfig[] = [
+      { ...base, hardwareAcceleration: 'prefer-hardware' },
+      { ...base },
+      { ...base, hardwareAcceleration: 'prefer-software' },
+      { codec: codecStr, optimizeForLatency: true },
+    ]
+    let chosen: VideoDecoderConfig | null = null
+    for (const v of variants) {
+      try {
+        if ((await VideoDecoder.isConfigSupported(v)).supported) { chosen = v; break }
+      } catch { /* try next */ }
+    }
+    if (!chosen) {
+      this.decoder.close()
+      this.decoder = null
+      this.lastError = `Unsupported configuration ${codecStr}`
+      throw new Error(this.lastError)
+    }
+    this.decoder.configure(chosen)
 
     this.pendingKeyframe = true
     console.log(

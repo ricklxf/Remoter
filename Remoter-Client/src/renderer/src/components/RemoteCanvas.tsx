@@ -69,6 +69,9 @@ export function RemoteCanvas({
   const rxCountRef = useRef(0)
   const outCountRef = useRef(0)
   const initErrRef = useRef('')
+  const jpegCanvasRef = useRef<HTMLCanvasElement>(null)
+  const [jpegFallback, setJpegFallback] = useState(false)
+  const jpegFallbackRef = useRef(false)
   const [diag, setDiag] = useState<string | null>(null)
   const useVideoShader = mediaActive && !forceCanvas && (sharpness !== 'off' || toneMap)
   const useVideoShaderRef = useRef(useVideoShader)
@@ -246,7 +249,8 @@ export function RemoteCanvas({
         // On plain-HTTP LAN connections, VideoDecoder is undefined.
         // Fall back to JPEG: tell the server to switch codec and set up 2D canvas.
         console.warn('[RemoteCanvas] WebCodecs unavailable (non-secure context?), falling back to JPEG')
-        ctx2dRef.current = canvas.getContext('2d')
+        jpegFallbackRef.current = true
+        setJpegFallback(true)
         conn.sendSetCodec('jpeg')
         return
       }
@@ -261,7 +265,15 @@ export function RemoteCanvas({
       decoder.init(streamInfo.width, streamInfo.height, initialCodec as VideoCodec, {
         chroma444: chroma444Ref.current,
         hdr: hdrRef.current,
-      }).catch((err) => { initErrRef.current = String(err); console.error(err) })
+      }).catch((err) => {
+        initErrRef.current = String(err); console.error(err)
+        // Decoder can't be configured here → ask the server for JPEG frames instead.
+        console.warn('[RemoteCanvas] H.264 decoder unavailable, falling back to JPEG')
+        decoderRef.current = null
+        jpegFallbackRef.current = true
+        setJpegFallback(true)
+        conn.sendSetCodec('jpeg')
+      })
       console.log('[RemoteCanvas] H.264 mode, decoder initializing')
       // This decoder is brand new and won't decode anything until it gets a
       // keyframe (Decoder.ts buffers/drops delta frames until then) — ask the
@@ -377,16 +389,18 @@ export function RemoteCanvas({
 
       if (e.type === 'video_frame') {
         rxCountRef.current++
-        if (initialCodec === 'jpeg' || (ctx2dRef.current && !decoderRef.current)) {
-          // JPEG 模式（包括 WebCodecs 不可用时降级到 JPEG 的情况）：直接 createImageBitmap 渲染
+        if (initialCodec === 'jpeg' || jpegFallbackRef.current) {
+          // JPEG 模式（含解码器不可用时的降级）：画到独立的 2D canvas（主 canvas 可能已被 WebGL 占用）
           const blob = new Blob([e.data], { type: 'image/jpeg' })
           createImageBitmap(blob).then((bmp) => {
-            const ctx = ctx2dRef.current
-            const canvas = canvasRef.current
-            if (ctx && canvas) {
-              ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height)
-              bmp.close()
+            const jc = jpegCanvasRef.current
+            const ctx = jc?.getContext('2d')
+            if (jc && ctx) {
+              if (jc.width !== bmp.width || jc.height !== bmp.height) { jc.width = bmp.width; jc.height = bmp.height }
+              ctx.drawImage(bmp, 0, 0)
+              outCountRef.current++
             }
+            bmp.close()
           }).catch(() => {/* ignore decode errors */})
         } else if (decoderRef.current) {
           decoderRef.current.decode(e.data, e.keyframe, e.ptsMs * 1000)
@@ -448,6 +462,14 @@ export function RemoteCanvas({
             无画面诊断：{diag}
           </div>
         )}
+        <canvas
+          ref={jpegCanvasRef}
+          style={{
+            position: 'absolute', inset: 0, width: '100%', height: '100%',
+            display: (jpegFallback || initialCodec === 'jpeg') ? 'block' : 'none',
+            zIndex: 2, pointerEvents: 'none',
+          }}
+        />
         <video
           ref={videoRef}
           muted

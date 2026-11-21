@@ -594,6 +594,12 @@ export class Connection {
   }
 
   private async initiateWebRTC(): Promise<void> {
+    // Browsers/extensions that disable WebRTC leave RTCPeerConnection undefined:
+    // stay on the WebSocket (WebCodecs) transport instead of an unhandled rejection.
+    if (typeof RTCPeerConnection === 'undefined') {
+      console.warn('[WebRTC] RTCPeerConnection unavailable (disabled by browser/extension) — using WebSocket video')
+      return
+    }
     const rtc = new WebRTCClient()
     this.webrtc = rtc
 

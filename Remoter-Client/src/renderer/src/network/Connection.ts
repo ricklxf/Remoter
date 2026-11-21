@@ -428,12 +428,17 @@ export class Connection {
       // Same backlog risk as mouse_move (a trackpad scroll gesture can fire
       // far more often than 120Hz) — but unlike position, intermediate
       // deltas matter and must accumulate rather than be discarded.
-      const o = obj as { dx: number; dy: number }
+      // px/py/isPrecise must survive the merge: without them the agent only
+      // sees whole notches (dx/dy), and a wheel step under 100px sends nothing.
+      const o = obj as { dx: number; dy: number; px?: number; py?: number; isPrecise?: boolean }
       if (this.pendingScroll) {
         this.pendingScroll.dx += o.dx
         this.pendingScroll.dy += o.dy
+        this.pendingScroll.px += o.px ?? 0
+        this.pendingScroll.py += o.py ?? 0
+        this.pendingScroll.isPrecise = o.isPrecise
       } else {
-        this.pendingScroll = { dx: o.dx, dy: o.dy }
+        this.pendingScroll = { dx: o.dx, dy: o.dy, px: o.px ?? 0, py: o.py ?? 0, isPrecise: o.isPrecise }
       }
       if (this.scrollInFlight) return
       this.scrollInFlight = true
@@ -441,7 +446,7 @@ export class Connection {
         const latest = this.pendingScroll!
         this.pendingScroll = null
         this.scrollInFlight = false
-        return { type: 'mouse_scroll', dx: latest.dx, dy: latest.dy }
+        return { type: 'mouse_scroll', dx: latest.dx, dy: latest.dy, px: latest.px, py: latest.py, isPrecise: latest.isPrecise }
       })
       return
     }
@@ -450,7 +455,7 @@ export class Connection {
 
   private pendingMouseMove: object | null = null
   private mouseMoveInFlight = false
-  private pendingScroll: { dx: number; dy: number } | null = null
+  private pendingScroll: { dx: number; dy: number; px: number; py: number; isPrecise?: boolean } | null = null
   private scrollInFlight = false
 
   // Input events prefer the WebRTC control DataChannel once it's open: the

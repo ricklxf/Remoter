@@ -96,6 +96,7 @@ final class RemoterAgent {
 
         wsServer.webDir = webDir
         try wsServer.start(port: config.port)
+        UdpVideoServer.shared.start()
 
         Task {
             await PublicIPResolver.shared.setOnRefreshed { ip in
@@ -348,6 +349,7 @@ for sig in [SIGTERM, SIGINT] {
     source.setEventHandler {
         keybotRetryTimer?.cancel()
         keybotRetryTimer = nil
+        UdpVideoServer.shared.stop()
         KeybotEventTap.shared.stop()
         InputSourceForcer.shared.end()
         InputLocker.shared.setLocked(false)

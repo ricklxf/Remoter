@@ -425,6 +425,9 @@ public final class RemoterConnection: @unchecked Sendable {
     private var _activeSession: URLSession?
     private var _activeWebSocket: URLSessionWebSocketTask?
     private var _sendQueue: SendQueue?
+    private var _udpReceiver: UdpVideoReceiver?
+    private var _udpActive = false
+    private var _lastUdpKeyframeReqMs: UInt64 = 0
 
     // Clipboard anti-loop state (FNV-1a 64-bit)
     private var _clipboardEnabled = true
@@ -597,8 +600,12 @@ public final class RemoterConnection: @unchecked Sendable {
         _activeSession = nil
         let queue = _sendQueue
         _sendQueue = nil
+        let udp = _udpReceiver
+        _udpReceiver = nil
+        _udpActive = false
         stateLock.unlock()
 
+        udp?.stop()
         queue?.close()
         task?.cancel()
         ws?.cancel(with: .normalClosure, reason: Data("Client disconnect".utf8))
@@ -691,12 +698,17 @@ public final class RemoterConnection: @unchecked Sendable {
 
         defer {
             sendQueue.close()
-            stateLock.withLock {
+            let udp: UdpVideoReceiver? = stateLock.withLock {
                 if _activeWebSocket === ws { _activeWebSocket = nil }
                 if _activeSession === session { _activeSession = nil }
                 if _sendQueue === sendQueue { _sendQueue = nil }
                 _e2eSendActive = false
+                _udpActive = false
+                let u = _udpReceiver
+                _udpReceiver = nil
+                return u
             }
+            udp?.stop()
             ws.cancel(with: .goingAway, reason: nil)
             session.invalidateAndCancel()
         }
@@ -923,13 +935,14 @@ public final class RemoterConnection: @unchecked Sendable {
             enqueueControlJson(ClientMessages.ping())
             enqueueControlJson(ClientMessages.clientStats(fps: fps.rounded(), rttMs: rtt, rx: ""))
 
+            let isUdp = stateLock.withLock { _udpActive }
             onStatsUpdated?(ClientStats(
                 fps: fps,
                 rttMs: rtt,
                 bitrateKbps: bitrateKbps,
                 encodeMs: encode,
                 decodeMs: decodeMs,
-                transport: "TCP",
+                transport: isUdp ? "UDP" : "TCP",
                 codec: activeCodec,
                 isHardwareDecoded: isHw
             ))
@@ -1124,6 +1137,14 @@ public final class RemoterConnection: @unchecked Sendable {
         case .forceCanvas(let enabled):
             onForceCanvasChanged?(enabled)
 
+        case .udpOffer(let port, let tokenHex):
+            handleUdpOffer(port: port, tokenHex: tokenHex)
+
+        case .udpActive(let enabled):
+            stateLock.withLock {
+                _udpActive = enabled
+            }
+
         case .keepalive, .unknown:
             break
         }
@@ -1146,6 +1167,64 @@ public final class RemoterConnection: @unchecked Sendable {
         case .pin:
             break
         }
+    }
+
+    // MARK: - Direct UDP Video Channel
+
+    private func handleUdpOffer(port: Int, tokenHex: String) {
+        guard port > 0 && port <= Int(UInt16.max),
+              let token = UdpVideoReceiver.decodeHexToken(tokenHex) else {
+            return
+        }
+
+        let params = stateLock.withLock { _params }
+        guard let params,
+              params.mode == .direct,
+              let url = try? params.buildWebSocketURL(),
+              let host = url.host,
+              !host.isEmpty else {
+            return
+        }
+
+        let receiver = UdpVideoReceiver()
+        receiver.onConnected = { [weak self] connected in
+            self?.stateLock.withLock {
+                self?._udpActive = connected
+            }
+        }
+        receiver.onFrame = { [weak self] packet in
+            guard let self else { return }
+            let now = Self.monotonicMs()
+            self.statsLock.lock()
+            self._lastRecvMs = now
+            self._frameCount += 1
+            self._bytesCount += Int64(packet.data.count)
+            self.statsLock.unlock()
+            self.onVideoFrame?(packet)
+        }
+        receiver.onFrameDropped = { [weak self] in
+            guard let self else { return }
+            let now = Self.monotonicMs()
+            let shouldRequest: Bool = self.stateLock.withLock {
+                if now >= self._lastUdpKeyframeReqMs && (now - self._lastUdpKeyframeReqMs) >= 500 {
+                    self._lastUdpKeyframeReqMs = now
+                    return true
+                }
+                return false
+            }
+            if shouldRequest {
+                self.sendRequestKeyframe()
+            }
+        }
+
+        let previous: UdpVideoReceiver? = stateLock.withLock {
+            let prev = _udpReceiver
+            _udpReceiver = receiver
+            _udpActive = false
+            return prev
+        }
+        previous?.stop()
+        receiver.start(host: host, port: UInt16(port), token: token)
     }
 
     // MARK: - LAN Subnet Detection (net_hint via getifaddrs)

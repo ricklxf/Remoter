@@ -59,6 +59,9 @@ public sealed class RemoterConnection : IDisposable
     private readonly object _coalesceLock = new();
 
     private ClientWebSocket? _ws;
+    private UdpVideoReceiver? _udpReceiver;
+    private volatile bool _udpActive;
+    private long _lastUdpKeyframeReqTicks;
     private CancellationTokenSource? _lifecycleCts;
     private CancellationTokenSource? _connCts;
     private Channel<OutboundItem>? _sendChannel;
@@ -229,6 +232,7 @@ public sealed class RemoterConnection : IDisposable
         lifeCts?.Dispose();
         _e2eSendActive = false;
         _e2e.Reset();
+        StopUdpReceiver();
         _fileTransfer.CancelAllDownloads();
         ClearCoalescedInput();
 
@@ -273,6 +277,7 @@ public sealed class RemoterConnection : IDisposable
         try { ws?.Dispose(); } catch { }
         connCts?.Dispose();
         lifeCts?.Dispose();
+        StopUdpReceiver();
     }
 
     private async Task ConnectionSupervisorLoopAsync(ConnectParams parameters, CancellationToken lifeCt)
@@ -439,6 +444,7 @@ public sealed class RemoterConnection : IDisposable
             try { ws.Dispose(); } catch { }
             connCts.Dispose();
             sendSignal.Dispose();
+            StopUdpReceiver();
         }
     }
 
@@ -724,7 +730,7 @@ public sealed class RemoterConnection : IDisposable
                     BitrateKbps: bitrateKbps,
                     EncodeMs: encodeMs,
                     DecodeMs: decodeMs,
-                    Transport: "TCP",
+                    Transport: _udpActive ? "UDP" : "TCP",
                     Codec: _activeCodec));
             }
         }
@@ -951,9 +957,109 @@ public sealed class RemoterConnection : IDisposable
                 ForceCanvasChanged?.Invoke(fc.Enabled);
                 break;
 
+            case ServerMessage.UdpOffer offer:
+                HandleUdpOffer(offer);
+                break;
+
+            case ServerMessage.UdpActive ua:
+                _udpActive = ua.Enabled;
+                if (!ua.Enabled)
+                {
+                    StopUdpReceiver();
+                }
+                break;
+
             case ServerMessage.Keepalive:
             case ServerMessage.Unknown:
                 break;
+        }
+    }
+
+    private void HandleUdpOffer(ServerMessage.UdpOffer offer)
+    {
+        var p = _params;
+        if (p == null || p.Mode != ConnectMode.Direct) return;
+        if (offer.Port <= 0 || offer.Port > 65535 || string.IsNullOrWhiteSpace(offer.SessionTokenHex)) return;
+
+        byte[] token;
+        try
+        {
+            token = Convert.FromHexString(offer.SessionTokenHex.Trim());
+        }
+        catch
+        {
+            return;
+        }
+        if (token.Length != 16) return;
+
+        string host;
+        try
+        {
+            host = p.BuildWebSocketUri().Host;
+        }
+        catch
+        {
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(host)) return;
+
+        StopUdpReceiver();
+
+        var receiver = new UdpVideoReceiver();
+        receiver.ConnectedChanged += connected =>
+        {
+            _udpActive = connected;
+        };
+        receiver.FrameReceived += pkt =>
+        {
+            Volatile.Write(ref _lastRecvTicks, Environment.TickCount64);
+            Interlocked.Increment(ref _frameCount);
+            Interlocked.Add(ref _bytesCount, pkt.Data.Length);
+            VideoFrameReceived?.Invoke(pkt);
+        };
+        receiver.FrameDropped += () =>
+        {
+            long now = Environment.TickCount64;
+            long prev = Volatile.Read(ref _lastUdpKeyframeReqTicks);
+            if (now - prev >= 500 &&
+                Interlocked.CompareExchange(ref _lastUdpKeyframeReqTicks, now, prev) == prev)
+            {
+                SendRequestKeyframe();
+            }
+        };
+
+        lock (_stateLock)
+        {
+            if (_disposed || _intentionalClose)
+            {
+                receiver.Dispose();
+                return;
+            }
+            _udpReceiver = receiver;
+        }
+
+        try
+        {
+            receiver.Start(host, offer.Port, token);
+        }
+        catch
+        {
+            StopUdpReceiver();
+        }
+    }
+
+    private void StopUdpReceiver()
+    {
+        UdpVideoReceiver? receiver;
+        lock (_stateLock)
+        {
+            receiver = _udpReceiver;
+            _udpReceiver = null;
+        }
+        _udpActive = false;
+        if (receiver != null)
+        {
+            try { receiver.Dispose(); } catch { }
         }
     }
 

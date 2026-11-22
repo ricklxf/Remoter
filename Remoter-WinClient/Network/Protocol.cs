@@ -316,6 +316,8 @@ public abstract record ServerMessage
     public sealed record ChromaActive(ChromaMode Mode) : ServerMessage;
     public sealed record HdrActive(bool Enabled) : ServerMessage;
     public sealed record ForceCanvas(bool Enabled) : ServerMessage;
+    public sealed record UdpOffer(int Port, string SessionTokenHex) : ServerMessage;
+    public sealed record UdpActive(bool Enabled) : ServerMessage;
     public sealed record InputLockChanged(bool Locked) : ServerMessage;
     public sealed record CursorShape(CursorShapeInfo Cursor) : ServerMessage;
     public sealed record Pong(int EncodeMs) : ServerMessage;
@@ -366,6 +368,12 @@ public abstract record ServerMessage
             "hdr_active" => new HdrActive(root.ReadBool("enabled")),
 
             "force_canvas" => new ForceCanvas(root.ReadBool("enabled")),
+
+            "udp_offer" => new UdpOffer(
+                Port: root.ReadInt("port"),
+                SessionTokenHex: root.ReadString("session_token")),
+
+            "udp_active" => new UdpActive(root.ReadBool("enabled")),
 
             "input_lock_changed" => new InputLockChanged(root.ReadBool("locked")),
 

@@ -83,6 +83,14 @@ final class Session {
     private var keyframeRequests = 0      // client request_keyframe messages received (pre-cooldown)
     private var usingWebRTCVideo = false  // legacy DataChannel video path active
     private var usingRtpVideo = false     // RTP media-track path active
+    private var usingUdpVideo = false     // direct UDP video path active
+    private let udpSessionToken: Data = {
+        var rng = SystemRandomNumberGenerator()
+        return Data((0..<16).map { _ in UInt8.random(in: 0...255, using: &rng) })
+    }()
+    private var udpSessionTokenHex: String {
+        udpSessionToken.map { String(format: "%02x", $0) }.joined()
+    }
     private var pendingTextInputSince: Date?   // TEMP DIAGNOSTIC — see .textInput case
     // Client-reported: none of its network interfaces share a subnet with the
     // address it dialed (i.e. it's coming in through a tunnel/router, e.g.
@@ -328,6 +336,8 @@ final class Session {
         }
         cursorMonitor?.stop()
         cursorMonitor = nil
+        usingUdpVideo = false
+        UdpVideoServer.shared.unregisterSession(token: udpSessionToken)
         encoder?.close()
         encoder = nil
         // Capture the current capturer locally before niling it out, so the
@@ -1016,12 +1026,21 @@ final class Session {
             let fid = self.frameId
             self.frameId &+= 1
             self.bytesSent += Int64(data.count)
+            let nowMs = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
 
-            // Prefer WebRTC's unreliable-ish DataChannel (frame-level drop on
-            // congestion, no TCP head-of-line blocking) whenever it's actually
-            // open; re-checked per frame so a mid-session ICE failure falls
-            // back to the always-available WebSocket path transparently.
-            if let webrtc = self.webrtc, webrtc.isVideoChannelOpen {
+            // 1. Direct low-latency UDP video channel (native clients / WebCodecs path)
+            if !self.usingRtpVideo && self.usingUdpVideo,
+               UdpVideoServer.shared.sendVideoFrame(
+                   token: self.udpSessionToken,
+                   frameId: fid,
+                   ptsMs: nowMs,
+                   data: data,
+                   isKeyframe: isKeyframe,
+                   isHEVC: self.currentCodec == .h265
+               ) {
+                self.recordSentFrame()
+            } else if let webrtc = self.webrtc, webrtc.isVideoChannelOpen {
+                // 2. WebRTC DataChannel fallback
                 if !self.usingWebRTCVideo {
                     self.usingWebRTCVideo = true
                     ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
@@ -1039,6 +1058,7 @@ final class Session {
                     }
                 }
             } else {
+                // 3. WebSocket TCP fallback
                 if self.usingWebRTCVideo {
                     self.usingWebRTCVideo = false
                     ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
@@ -1054,8 +1074,7 @@ final class Session {
                     }
                     return
                 }
-                let now = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
-                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: now, isKeyframe: isKeyframe)
+                let pkt = buildVideoFramePacket(data: data, frameId: fid, ptsMs: nowMs, isKeyframe: isKeyframe)
                 self.connection.sendBinaryVideo(pkt) {
                     self.wsSendSem.signal()
                     self.recordSentFrame()
@@ -1144,6 +1163,28 @@ final class Session {
                                               "width": $0.width, "height": $0.height] },
                 "display": Int(selectedDisplayID ?? CGMainDisplayID())
             ])
+
+            let udpPort = UdpVideoServer.shared.listeningPort
+            if udpPort > 0 {
+                UdpVideoServer.shared.registerSession(token: udpSessionToken) { [weak self] active in
+                    guard let self, !self.isClosed else { return }
+                    self.usingUdpVideo = active
+                    ConnectionLogger.shared.logStep(
+                        sessionId: self.id.uuidString,
+                        step: "video_transport",
+                        detail: active ? "udp" : "ws_fallback"
+                    )
+                    self.sendJson(["type": "udp_active", "enabled": active])
+                    if active {
+                        self.encoder?.forceKeyframe()
+                    }
+                }
+                sendJson([
+                    "type": "udp_offer",
+                    "port": Int(udpPort),
+                    "session_token": udpSessionTokenHex
+                ])
+            }
 
             c.onFrame = { [weak self] pixelBuffer, _, _ in
                 guard let self else { return }
@@ -1274,8 +1315,9 @@ final class Session {
         sentFrames += 1
         let dt = Date().timeIntervalSince(sentTick)
         if dt >= 5 {
+            let transportLabel = usingRtpVideo ? "rtp" : (usingUdpVideo ? "udp" : (usingWebRTCVideo ? "webrtc" : "ws"))
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
-                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(usingRtpVideo ? "rtp" : (usingWebRTCVideo ? "webrtc" : "ws")) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
+                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(transportLabel) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
             // On the RTP path libwebrtc's GCC owns bandwidth adaptation and
             // the browser handles decode-overload (frame dropping + PLI), so
             // our reactive stepping would just fight it — only run it for

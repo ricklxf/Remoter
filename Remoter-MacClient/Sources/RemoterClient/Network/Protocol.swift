@@ -315,6 +315,8 @@ public enum ServerMessage: Equatable, Sendable {
     case chromaActive(ChromaMode)
     case hdrActive(enabled: Bool)
     case forceCanvas(enabled: Bool)
+    case udpOffer(port: Int, sessionTokenHex: String)
+    case udpActive(enabled: Bool)
     case inputLockChanged(locked: Bool)
     case cursorShape(CursorShapeInfo)
     case pong(encodeMs: Int)
@@ -378,6 +380,15 @@ public enum ServerMessage: Equatable, Sendable {
 
         case "force_canvas":
             return .forceCanvas(enabled: readBool(root, "enabled"))
+
+        case "udp_offer":
+            return .udpOffer(
+                port: readInt(root, "port"),
+                sessionTokenHex: readString(root, "session_token")
+            )
+
+        case "udp_active":
+            return .udpActive(enabled: readBool(root, "enabled"))
 
         case "input_lock_changed":
             return .inputLockChanged(locked: readBool(root, "locked"))

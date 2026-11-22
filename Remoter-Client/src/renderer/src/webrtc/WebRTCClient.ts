@@ -138,6 +138,24 @@ export class WebRTCClient {
     if ('jitterBufferTarget' in r) r.jitterBufferTarget = 0
   }
 
+  /** Re-assert 0ms jitter buffer targets if Chromium reset them after ICE/SSRC recovery. */
+  private reassertZeroJitterBufferIfDrifted(): void {
+    const r = this.videoReceiver
+    if (!r) return
+    let drifted = false
+    if ('playoutDelayHint' in r && r.playoutDelayHint !== 0) {
+      r.playoutDelayHint = 0
+      drifted = true
+    }
+    if ('jitterBufferTarget' in r && r.jitterBufferTarget !== 0) {
+      r.jitterBufferTarget = 0
+      drifted = true
+    }
+    if (drifted) {
+      console.log('[WebRTC] re-asserted playoutDelayHint=0 and jitterBufferTarget=0 after drift')
+    }
+  }
+
   private ensurePlayoutDelayNegotiated(transceiver: RTCRtpTransceiver): void {
     try {
       const extTransceiver = transceiver as HeaderExtTransceiver
@@ -150,7 +168,11 @@ export class WebRTCClient {
       const exts = extTransceiver.getHeaderExtensionsToNegotiate()
       let changed = false
       const updated = exts.map((ext) => {
-        if (ext.uri === PLAYOUT_DELAY_EXT_URI && ext.direction === 'stopped') {
+        if (
+          ext.uri === PLAYOUT_DELAY_EXT_URI &&
+          ext.direction !== 'recvonly' &&
+          ext.direction !== 'sendrecv'
+        ) {
           changed = true
           return { ...ext, direction: 'recvonly' as RTCRtpTransceiverDirection }
         }
@@ -167,8 +189,8 @@ export class WebRTCClient {
   /** Ensure the video m-line advertises the playout-delay RTP header extension
    *  so the sender can signal min=0/max=0 playout delay per frame. */
   private ensurePlayoutDelayHeaderExtension(sdp: string): string {
-    if (sdp.includes(PLAYOUT_DELAY_EXT_URI)) return sdp
-    const lines = sdp.split('\r\n')
+    const eol = sdp.includes('\r\n') ? '\r\n' : '\n'
+    const lines = sdp.split(eol)
     const videoStart = lines.findIndex((l) => l.startsWith('m=video '))
     if (videoStart < 0) return sdp
 
@@ -183,7 +205,17 @@ export class WebRTCClient {
     const usedIds = new Set<number>()
     let lastExtmapIdx = -1
     for (let i = videoStart + 1; i < videoEnd; i++) {
-      const m = lines[i].match(/^a=extmap:(\d+)(?:\/\S+)?\s+/)
+      const line = lines[i]
+      if (line.includes(PLAYOUT_DELAY_EXT_URI)) {
+        // Already present in video m-line; ensure it is not marked inactive/sendonly.
+        const fixed = line.replace(/^(a=extmap:\d+)\/(?:inactive|sendonly)(\s+)/, '$1$2')
+        if (fixed !== line) {
+          lines[i] = fixed
+          return lines.join(eol)
+        }
+        return sdp
+      }
+      const m = line.match(/^a=extmap:(\d+)(?:\/\S+)?\s+/)
       if (m) {
         usedIds.add(Number(m[1]))
         lastExtmapIdx = i
@@ -196,7 +228,7 @@ export class WebRTCClient {
 
     const insertIdx = lastExtmapIdx >= 0 ? lastExtmapIdx + 1 : videoStart + 1
     lines.splice(insertIdx, 0, `a=extmap:${nextId} ${PLAYOUT_DELAY_EXT_URI}`)
-    return lines.join('\r\n')
+    return lines.join(eol)
   }
 
   private applyCodecPreferences(
@@ -341,6 +373,8 @@ export class WebRTCClient {
     if (!this.firstFrameJitterReset && (s.framesDecoded ?? 0) > 0) {
       this.firstFrameJitterReset = true
       this.applyZeroJitterBuffer()
+    } else {
+      this.reassertZeroJitterBufferIfDrifted()
     }
 
     const now = performance.now()

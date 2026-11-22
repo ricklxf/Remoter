@@ -203,6 +203,9 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private var activeFloorBps: Int = 0
     private var minBitrateFloorActive = false
 
+    private static let playoutDelayExtURI = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
+    private var offerPlayoutDelayExtId: Int?
+
     // MARK: - 信令处理
 
     func handleOffer(_ sdp: String, turnServers: [RTCIceServer] = []) {
@@ -222,6 +225,15 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             print("[WebRTC] failed to create peer connection"); return
         }
         self.pc = p
+
+        // Inspect Offer for RFC5285 playout-delay RTP header extension so Answer preserves it.
+        let playoutExtId = Self.extractPlayoutDelayExtId(from: sdp)
+        offerPlayoutDelayExtId = playoutExtId
+        ConnectionLogger.shared.logStep(
+            sessionId: "webrtc",
+            step: "playout_delay_extmap",
+            detail: playoutExtId.map { "offer id=\($0)" } ?? "offer absent"
+        )
 
         // libwebrtc selects the *sender* encode codec from the remote Offer's m=video
         // payload order, not just the local Answer. Reorder the incoming Offer so even
@@ -482,6 +494,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         congestionGuardActive = false
         congestionEnterStreak = 0
         congestionClearStreak = 0
+        offerPlayoutDelayExtId = nil
         pc?.close()
         pc = nil
         videoChannel = nil
@@ -515,6 +528,19 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             let params = sender.parameters
             params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainFramerate.rawValue)
             sender.parameters = params
+            if let ext = params.headerExtensions.first(where: { $0.uri == Self.playoutDelayExtURI }) {
+                ConnectionLogger.shared.logStep(
+                    sessionId: "webrtc",
+                    step: "playout_delay_extmap",
+                    detail: "sender_active id=\(ext.id) encrypted=\(ext.isEncrypted)"
+                )
+            } else {
+                ConnectionLogger.shared.logStep(
+                    sessionId: "webrtc",
+                    step: "playout_delay_extmap",
+                    detail: "sender_inactive extCount=\(params.headerExtensions.count)"
+                )
+            }
         }
     }
 
@@ -716,7 +742,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 return
             }
             let reorderedSdpStr = self.preferCodecInSDP(sdp.sdp, preferred: self.preferredCodec)
-            let finalSdp = RTCSessionDescription(type: sdp.type, sdp: reorderedSdpStr)
+            let finalSdpStr = Self.ensurePlayoutDelayInAnswer(reorderedSdpStr, offerExtId: self.offerPlayoutDelayExtId)
+            let finalSdp = RTCSessionDescription(type: sdp.type, sdp: finalSdpStr)
             pc.setLocalDescription(finalSdp) { err in
                 if let err {
                     ConnectionLogger.shared.logStep(
@@ -731,6 +758,82 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                 self.onLocalDescription?("answer", finalSdp.sdp)
             }
         }
+    }
+
+    /// Extracts the RFC5285 extension ID for `playout-delay` from the `m=video` section of an SDP.
+    /// Supports both `a=extmap:<id> <uri>` and `a=extmap:<id>/<dir> ... <uri>`.
+    private static func extractPlayoutDelayExtId(from sdp: String) -> Int? {
+        let lineSep = sdp.contains("\r\n") ? "\r\n" : "\n"
+        let lines = sdp.components(separatedBy: lineSep)
+        guard let videoMLineIdx = lines.firstIndex(where: { $0.hasPrefix("m=video ") }) else {
+            return nil
+        }
+        let nextMLineIdx = lines[(videoMLineIdx + 1)...].firstIndex(where: { $0.hasPrefix("m=") }) ?? lines.endIndex
+        for i in (videoMLineIdx + 1)..<nextMLineIdx {
+            let line = lines[i]
+            guard line.hasPrefix("a=extmap:"), line.contains(playoutDelayExtURI) else { continue }
+            let body = line.dropFirst("a=extmap:".count)
+            guard let idToken = body.split(separator: " ").first else { continue }
+            let idStr = idToken.split(separator: "/").first ?? idToken
+            if let id = Int(idStr), id >= 1 {
+                return id
+            }
+        }
+        return nil
+    }
+
+    /// Ensures the Answer's `m=video` section preserves the exact `a=extmap:<id> playout-delay`
+    /// offered by the remote peer (per RFC 5285, never injects one if absent from Offer).
+    private static func ensurePlayoutDelayInAnswer(_ sdp: String, offerExtId: Int?) -> String {
+        guard let offerExtId else { return sdp }
+        let lineSep = sdp.contains("\r\n") ? "\r\n" : "\n"
+        var lines = sdp.components(separatedBy: lineSep)
+        guard let videoMLineIdx = lines.firstIndex(where: { $0.hasPrefix("m=video ") }) else {
+            return sdp
+        }
+        let nextMLineIdx = lines[(videoMLineIdx + 1)...].firstIndex(where: { $0.hasPrefix("m=") }) ?? lines.endIndex
+        let targetLine = "a=extmap:\(offerExtId) \(playoutDelayExtURI)"
+
+        var existingIdx: Int?
+        var lastExtmapIdx: Int?
+        for i in (videoMLineIdx + 1)..<nextMLineIdx {
+            let line = lines[i]
+            if line.hasPrefix("a=extmap:") {
+                lastExtmapIdx = i
+                if line.contains(playoutDelayExtURI) {
+                    existingIdx = i
+                }
+            }
+        }
+
+        if let idx = existingIdx {
+            let existingId = extractPlayoutDelayExtId(from: sdp)
+            if existingId == offerExtId {
+                ConnectionLogger.shared.logStep(
+                    sessionId: "webrtc",
+                    step: "playout_delay_extmap",
+                    detail: "answer_preserved id=\(offerExtId)"
+                )
+                return sdp
+            }
+            lines[idx] = targetLine
+            ConnectionLogger.shared.logStep(
+                sessionId: "webrtc",
+                step: "playout_delay_extmap",
+                detail: "answer_aligned id=\(offerExtId) prev=\(existingId.map(String.init) ?? "?")"
+            )
+            return lines.joined(separator: lineSep)
+        }
+
+        // Insert right after the last a=extmap: line in m=video (or right after m=video).
+        let insertIdx = (lastExtmapIdx ?? videoMLineIdx) + 1
+        lines.insert(targetLine, at: insertIdx)
+        ConnectionLogger.shared.logStep(
+            sessionId: "webrtc",
+            step: "playout_delay_extmap",
+            detail: "answer_injected id=\(offerExtId)"
+        )
+        return lines.joined(separator: lineSep)
     }
 
     /// Reorders `m=video` payload types to prioritize `preferred` codec (defaulting to

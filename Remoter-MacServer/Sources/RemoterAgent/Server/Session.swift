@@ -1265,7 +1265,8 @@ final class Session {
 
             let udpPort = UdpVideoServer.shared.listeningPort
             if udpPort > 0 {
-                UdpVideoServer.shared.registerSession(token: udpSessionToken) { [weak self] active in
+                let cryptoKey = crypto.rawKeyData
+                UdpVideoServer.shared.registerSession(token: udpSessionToken, aesKey: cryptoKey) { [weak self] active in
                     guard let self, !self.isClosed else { return }
                     self.usingUdpVideo = active
                     ConnectionLogger.shared.logStep(
@@ -1281,7 +1282,8 @@ final class Session {
                 sendJson([
                     "type": "udp_offer",
                     "port": Int(udpPort),
-                    "session_token": udpSessionTokenHex
+                    "session_token": udpSessionTokenHex,
+                    "encrypted": (cryptoKey != nil)
                 ])
             }
 

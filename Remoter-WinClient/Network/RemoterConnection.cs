@@ -1038,9 +1038,10 @@ public sealed class RemoterConnection : IDisposable
             _udpReceiver = receiver;
         }
 
+        byte[]? aesKey = offer.Encrypted ? _e2e.RawKeyBytes : null;
         try
         {
-            receiver.Start(host, offer.Port, token);
+            receiver.Start(host, offer.Port, token, aesKey);
         }
         catch
         {

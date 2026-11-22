@@ -319,7 +319,7 @@ public abstract record ServerMessage
     public sealed record ChromaActive(ChromaMode Mode) : ServerMessage;
     public sealed record HdrActive(bool Enabled) : ServerMessage;
     public sealed record ForceCanvas(bool Enabled) : ServerMessage;
-    public sealed record UdpOffer(int Port, string SessionTokenHex) : ServerMessage;
+    public sealed record UdpOffer(int Port, string SessionTokenHex, bool Encrypted = false) : ServerMessage;
     public sealed record UdpActive(bool Enabled) : ServerMessage;
     public sealed record InputLockChanged(bool Locked) : ServerMessage;
     public sealed record CursorShape(CursorShapeInfo Cursor) : ServerMessage;
@@ -374,7 +374,8 @@ public abstract record ServerMessage
 
             "udp_offer" => new UdpOffer(
                 Port: root.ReadInt("port"),
-                SessionTokenHex: root.ReadString("session_token")),
+                SessionTokenHex: root.ReadString("session_token"),
+                Encrypted: root.ReadBool("encrypted", defaultValue: false)),
 
             "udp_active" => new UdpActive(root.ReadBool("enabled")),
 

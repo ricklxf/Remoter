@@ -16,6 +16,7 @@ public sealed class E2ECrypto : IDisposable
     private readonly object _sync = new();
     private ECDiffieHellman? _ecdh;
     private AesGcm? _aes;
+    private byte[]? _rawKey;
     private bool _disposed;
 
     public bool IsReady
@@ -29,12 +30,32 @@ public sealed class E2ECrypto : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns a copy of the derived 32-byte AES-256-GCM symmetric key (for direct UDP video encryption),
+    /// or null if E2E handshake has not completed.
+    /// </summary>
+    public byte[]? RawKeyBytes
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _rawKey != null ? (byte[])_rawKey.Clone() : null;
+            }
+        }
+    }
+
     public void Reset()
     {
         lock (_sync)
         {
             _aes?.Dispose();
             _aes = null;
+            if (_rawKey != null)
+            {
+                CryptographicOperations.ZeroMemory(_rawKey);
+                _rawKey = null;
+            }
             _ecdh?.Dispose();
             _ecdh = null;
         }
@@ -47,6 +68,11 @@ public sealed class E2ECrypto : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             _aes?.Dispose();
             _aes = null;
+            if (_rawKey != null)
+            {
+                CryptographicOperations.ZeroMemory(_rawKey);
+                _rawKey = null;
+            }
             _ecdh?.Dispose();
             _ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
 
@@ -90,6 +116,8 @@ public sealed class E2ECrypto : IDisposable
 
             _aes?.Dispose();
             _aes = new AesGcm(key, tagSizeInBytes: 16);
+            if (_rawKey != null) CryptographicOperations.ZeroMemory(_rawKey);
+            _rawKey = key;
         }
     }
 
@@ -146,6 +174,11 @@ public sealed class E2ECrypto : IDisposable
             _disposed = true;
             _aes?.Dispose();
             _aes = null;
+            if (_rawKey != null)
+            {
+                CryptographicOperations.ZeroMemory(_rawKey);
+                _rawKey = null;
+            }
             _ecdh?.Dispose();
             _ecdh = null;
         }

@@ -1137,8 +1137,8 @@ public final class RemoterConnection: @unchecked Sendable {
         case .forceCanvas(let enabled):
             onForceCanvasChanged?(enabled)
 
-        case .udpOffer(let port, let tokenHex):
-            handleUdpOffer(port: port, tokenHex: tokenHex)
+        case .udpOffer(let port, let tokenHex, let encrypted):
+            handleUdpOffer(port: port, tokenHex: tokenHex, encrypted: encrypted)
 
         case .udpActive(let enabled):
             stateLock.withLock {
@@ -1171,9 +1171,14 @@ public final class RemoterConnection: @unchecked Sendable {
 
     // MARK: - Direct UDP Video Channel
 
-    private func handleUdpOffer(port: Int, tokenHex: String) {
+    private func handleUdpOffer(port: Int, tokenHex: String, encrypted: Bool) {
         guard port > 0 && port <= Int(UInt16.max),
               let token = UdpVideoReceiver.decodeHexToken(tokenHex) else {
+            return
+        }
+
+        let aesKey: Data? = encrypted ? e2e.rawKeyData : nil
+        if encrypted && aesKey == nil {
             return
         }
 
@@ -1188,8 +1193,9 @@ public final class RemoterConnection: @unchecked Sendable {
 
         let receiver = UdpVideoReceiver()
         receiver.onConnected = { [weak self] connected in
-            self?.stateLock.withLock {
-                self?._udpActive = connected
+            guard let self else { return }
+            self.stateLock.withLock {
+                self._udpActive = connected
             }
         }
         receiver.onFrame = { [weak self] packet in
@@ -1224,7 +1230,7 @@ public final class RemoterConnection: @unchecked Sendable {
             return prev
         }
         previous?.stop()
-        receiver.start(host: host, port: UInt16(port), token: token)
+        receiver.start(host: host, port: UInt16(port), token: token, aesKey: aesKey)
     }
 
     // MARK: - LAN Subnet Detection (net_hint via getifaddrs)

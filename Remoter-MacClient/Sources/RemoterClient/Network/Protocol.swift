@@ -319,7 +319,7 @@ public enum ServerMessage: Equatable, Sendable {
     case chromaActive(ChromaMode)
     case hdrActive(enabled: Bool)
     case forceCanvas(enabled: Bool)
-    case udpOffer(port: Int, sessionTokenHex: String)
+    case udpOffer(port: Int, sessionTokenHex: String, encrypted: Bool)
     case udpActive(enabled: Bool)
     case inputLockChanged(locked: Bool)
     case cursorShape(CursorShapeInfo)
@@ -388,7 +388,8 @@ public enum ServerMessage: Equatable, Sendable {
         case "udp_offer":
             return .udpOffer(
                 port: readInt(root, "port"),
-                sessionTokenHex: readString(root, "session_token")
+                sessionTokenHex: readString(root, "session_token"),
+                encrypted: readBool(root, "encrypted", defaultValue: false)
             )
 
         case "udp_active":

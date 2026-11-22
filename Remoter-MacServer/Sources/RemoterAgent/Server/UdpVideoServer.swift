@@ -1,15 +1,18 @@
 import Foundation
 import Darwin
+import CryptoKit
 
-/// Direct low-latency UDP video transport server with adaptive XOR-FEC.
+/// Direct low-latency UDP video transport server with adaptive XOR-FEC,
+/// AES-256-GCM encryption, and 128-packet ring-buffer NACK retransmission.
 ///
 /// Wire protocol (Big-Endian, matches MacClient & WinClient bit-for-bit):
 /// - Magic: [0x52, 0x55], Version: 0x01
-/// - Control packets (20 bytes):
-///   - HELLO     (0x01): [0x52, 0x55, 0x01, 0x01] + 16-byte session token
-///   - HELLO_ACK (0x02): [0x52, 0x55, 0x01, 0x02] + 16-byte session token
-///   - KEEPALIVE (0x03): [0x52, 0x55, 0x01, 0x03] + 16-byte session token
-/// - Video packets (20-byte header + body):
+/// - Control packets:
+///   - HELLO     (0x01): [0x52, 0x55, 0x01, 0x01] + 16-byte session token (20B)
+///   - HELLO_ACK (0x02): [0x52, 0x55, 0x01, 0x02] + 16-byte session token (20B)
+///   - KEEPALIVE (0x03): [0x52, 0x55, 0x01, 0x03] + 16-byte session token (20B)
+///   - NACK      (0x12): [0x52, 0x55, 0x01, 0x12] + 16B token + frameId(BE4) + count(1..16) + count*fragIndex
+/// - Video packets (20-byte header + body [+ 16B GCM tag if header[18] & 0x01 != 0]):
 ///   - DATA       (0x10): header + fragment payload (<= 1200 bytes)
 ///   - FEC_PARITY (0x11): header + [2-byte XOR(BE payloadLen)] + [XOR(zero-padded payloads)]
 ///   Header layout (20 bytes):
@@ -22,8 +25,13 @@ import Darwin
 ///     13:    fragIndex (0..<fragCount for DATA; group index for FEC_PARITY)
 ///     14:    fragCount (1...255)
 ///     15:    fecGroupSize (4 for keyframe, 8 for delta, 0 if fragCount == 1)
-///     16..17: payloadLen (UInt16 BE, body length after 20-byte header)
-///     18..19: reserved (0x00, 0x00)
+///     16..17: payloadLen (UInt16 BE, plaintext body length after 20-byte header)
+///     18:    encFlags (bit0 = AES-256-GCM encrypted)
+///     19:    reserved (0x00)
+///   AES-256-GCM parameters when header[18] == 0x01:
+///     Nonce (12B): [0x52, 0x55, packetType, fragIndex] + frameId(BE4) + ptsMs(BE4)
+///     AAD   (20B): header[0..<20]
+///     Wire:        header[0..<20] + ciphertext(payloadLen B) + tag(16B)
 final class UdpVideoServer {
     static let shared = UdpVideoServer()
 
@@ -36,11 +44,14 @@ final class UdpVideoServer {
     static let packetKeepalive: UInt8 = 0x03
     static let packetData: UInt8      = 0x10
     static let packetFecParity: UInt8 = 0x11
+    static let packetNack: UInt8      = 0x12
 
     static let defaultPort: UInt16 = 7789
     static let maxFragmentPayload: Int = 1200
     static let maxFragments: Int = 255
     static let headerSize: Int = 20
+    static let gcmTagSize: Int = 16
+    static let ringBufferCapacity: Int = 128
     static let keepaliveTimeoutSeconds: TimeInterval = 6.0
 
     private final class PeerSession {
@@ -48,10 +59,40 @@ final class UdpVideoServer {
         var peerLen: socklen_t = 0
         var isActive: Bool = false
         var lastKeepaliveAt: Date = .distantPast
+        var symmetricKey: SymmetricKey?
         var onActivated: (Bool) -> Void
 
-        init(onActivated: @escaping (Bool) -> Void) {
+        // 128-packet ring buffer keyed by (UInt64(frameId) << 8) | UInt64(fragIndex)
+        var ringKeys: [UInt64] = Array(repeating: 0, count: UdpVideoServer.ringBufferCapacity)
+        var ringData: [Data?] = Array(repeating: nil, count: UdpVideoServer.ringBufferCapacity)
+        var ringIndexMap: [UInt64: Int] = [:]
+        var ringWriteCursor: Int = 0
+        var nackRetransmits: UInt64 = 0
+
+        init(aesKey: Data?, onActivated: @escaping (Bool) -> Void) {
+            if let aesKey, aesKey.count == 32 {
+                self.symmetricKey = SymmetricKey(data: aesKey)
+            }
             self.onActivated = onActivated
+        }
+
+        func storeInRing(key: UInt64, datagram: Data) {
+            let slot = ringWriteCursor
+            if ringData[slot] != nil {
+                let evictedKey = ringKeys[slot]
+                if ringIndexMap[evictedKey] == slot {
+                    ringIndexMap.removeValue(forKey: evictedKey)
+                }
+            }
+            ringKeys[slot] = key
+            ringData[slot] = datagram
+            ringIndexMap[key] = slot
+            ringWriteCursor = (slot + 1) % UdpVideoServer.ringBufferCapacity
+        }
+
+        func lookupInRing(key: UInt64) -> Data? {
+            guard let slot = ringIndexMap[key] else { return nil }
+            return ringData[slot]
         }
     }
 
@@ -132,27 +173,38 @@ final class UdpVideoServer {
 
     // MARK: - Session registration
 
-    func registerSession(token: Data, onActivated: @escaping (Bool) -> Void) {
+    func registerSession(token: Data, aesKey: Data? = nil, onActivated: @escaping (Bool) -> Void) {
         guard token.count == 16 else { return }
         lock.lock()
         if let existing = sessions[token] {
             // Preserve active UDP peer across pipeline rebuilds (resolution/codec switch)
             existing.onActivated = onActivated
+            if let aesKey, aesKey.count == 32 {
+                existing.symmetricKey = SymmetricKey(data: aesKey)
+            }
         } else {
-            sessions[token] = PeerSession(onActivated: onActivated)
+            sessions[token] = PeerSession(aesKey: aesKey, onActivated: onActivated)
         }
         lock.unlock()
     }
 
     func unregisterSession(token: Data) {
+        var retransmits: UInt64 = 0
         lock.lock()
-        sessions.removeValue(forKey: token)
+        if let removed = sessions.removeValue(forKey: token) {
+            retransmits = removed.nackRetransmits
+        }
         lock.unlock()
+        if retransmits > 0 {
+            ConnectionLogger.shared.logStep(sessionId: "udp", step: "udp_nack_summary",
+                                            detail: "retransmits=\(retransmits)")
+        }
     }
 
     // MARK: - Video frame transmission
 
-    /// Fragments and transmits an encoded video frame over UDP with adaptive XOR-FEC.
+    /// Fragments and transmits an encoded video frame over UDP with optional
+    /// AES-256-GCM encryption, adaptive XOR-FEC, and ring-buffer caching for NACKs.
     /// Returns `false` if UDP is inactive for this session or the frame exceeds 255 * 1200 bytes
     /// (caller should fall back to WebSocket binary transport).
     func sendVideoFrame(
@@ -178,6 +230,7 @@ final class UdpVideoServer {
             return false
         }
         let peerLen = session.peerLen
+        let symmetricKey = session.symmetricKey
         lock.unlock()
 
         let fragCount = (totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload
@@ -192,33 +245,61 @@ final class UdpVideoServer {
 
         let flags: UInt8 = (isKeyframe ? 0x01 : 0x00) | (isHEVC ? 0x02 : 0x00)
         let fragCountU8 = UInt8(fragCount)
+        let encryptedFlag: UInt8 = (symmetricKey != nil) ? 0x01 : 0x00
 
-        // Reusable packet buffer: 20B header + 2B length XOR + 1200B max payload
-        var packetBuf = [UInt8](repeating: 0, count: Self.headerSize + 2 + Self.maxFragmentPayload)
+        // Reusable buffer: 20B header + 2B length XOR + 1200B max payload + 16B GCM tag
+        var packetBuf = [UInt8](repeating: 0, count: Self.headerSize + 2 + Self.maxFragmentPayload + Self.gcmTagSize)
         var addrCopy = peerAddr
+        var cachedDataPackets: [(UInt64, Data)] = []
+        cachedDataPackets.reserveCapacity(fragCount)
 
-        return data.withUnsafeBytes { rawBuf -> Bool in
+        let ok = data.withUnsafeBytes { rawBuf -> Bool in
             guard let basePtr = rawBuf.bindMemory(to: UInt8.self).baseAddress else { return false }
 
             // 1. Send all data fragments (0x10)
             for i in 0..<fragCount {
                 let offset = i * Self.maxFragmentPayload
                 let fragLen = min(Self.maxFragmentPayload, totalLen - offset)
+                let fragIdx = UInt8(i)
                 writeHeader(
                     into: &packetBuf,
                     packetType: Self.packetData,
                     frameId: frameId,
                     ptsMs: ptsMs,
                     flags: flags,
-                    fragIndex: UInt8(i),
+                    fragIndex: fragIdx,
                     fragCount: fragCountU8,
                     fecGroupSize: fecGroupSize,
-                    payloadLen: UInt16(fragLen)
+                    payloadLen: UInt16(fragLen),
+                    encFlag: encryptedFlag
                 )
-                for j in 0..<fragLen {
-                    packetBuf[Self.headerSize + j] = basePtr[offset + j]
+
+                let wireLen: Int
+                if let key = symmetricKey {
+                    let plaintext = UnsafeBufferPointer(start: basePtr.advanced(by: offset), count: fragLen)
+                    guard let sealedLen = sealIntoPacketBuffer(
+                        packetBuf: &packetBuf,
+                        plaintext: plaintext,
+                        key: key,
+                        packetType: Self.packetData,
+                        fragIndex: fragIdx,
+                        frameId: frameId,
+                        ptsMs: ptsMs
+                    ) else {
+                        return false
+                    }
+                    wireLen = sealedLen
+                } else {
+                    for j in 0..<fragLen {
+                        packetBuf[Self.headerSize + j] = basePtr[offset + j]
+                    }
+                    wireLen = Self.headerSize + fragLen
                 }
-                if !sendPacket(fd: fd, buffer: packetBuf, length: Self.headerSize + fragLen,
+
+                let cacheKey = (UInt64(frameId) << 8) | UInt64(fragIdx)
+                cachedDataPackets.append((cacheKey, Data(packetBuf[0..<wireLen])))
+
+                if !sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
                                peerAddr: &addrCopy, peerLen: peerLen) {
                     return false
                 }
@@ -228,6 +309,8 @@ final class UdpVideoServer {
             if fecGroupSize > 0 {
                 let groupSz = Int(fecGroupSize)
                 let groupCount = (fragCount + groupSz - 1) / groupSz
+                var parityBody = [UInt8](repeating: 0, count: 2 + Self.maxFragmentPayload)
+
                 for g in 0..<groupCount {
                     let start = g * groupSz
                     let end = min(start + groupSz, fragCount)
@@ -240,10 +323,9 @@ final class UdpVideoServer {
                         if flen > maxLenInGroup { maxLenInGroup = flen }
                     }
 
-                    // Zero out parity body area: 2-byte length XOR + maxLenInGroup payload XOR
                     let bodyLen = 2 + maxLenInGroup
                     for k in 0..<bodyLen {
-                        packetBuf[Self.headerSize + k] = 0
+                        parityBody[k] = 0
                     }
 
                     var xorLen: UInt16 = 0
@@ -252,35 +334,108 @@ final class UdpVideoServer {
                         let flen = min(Self.maxFragmentPayload, totalLen - offset)
                         xorLen ^= UInt16(flen)
                         for j in 0..<flen {
-                            packetBuf[Self.headerSize + 2 + j] ^= basePtr[offset + j]
+                            parityBody[2 + j] ^= basePtr[offset + j]
                         }
                     }
 
-                    // Store 2-byte big-endian XOR of payload lengths
-                    packetBuf[Self.headerSize]     = UInt8((xorLen >> 8) & 0xFF)
-                    packetBuf[Self.headerSize + 1] = UInt8(xorLen & 0xFF)
+                    parityBody[0] = UInt8((xorLen >> 8) & 0xFF)
+                    parityBody[1] = UInt8(xorLen & 0xFF)
 
+                    let groupIdx = UInt8(g)
                     writeHeader(
                         into: &packetBuf,
                         packetType: Self.packetFecParity,
                         frameId: frameId,
                         ptsMs: ptsMs,
                         flags: flags,
-                        fragIndex: UInt8(g),
+                        fragIndex: groupIdx,
                         fragCount: fragCountU8,
                         fecGroupSize: fecGroupSize,
-                        payloadLen: UInt16(bodyLen)
+                        payloadLen: UInt16(bodyLen),
+                        encFlag: encryptedFlag
                     )
-                    _ = sendPacket(fd: fd, buffer: packetBuf, length: Self.headerSize + bodyLen,
+
+                    let wireLen: Int
+                    if let key = symmetricKey {
+                        let sealedLen: Int? = parityBody.withUnsafeBufferPointer { pbPtr in
+                            let slice = UnsafeBufferPointer(start: pbPtr.baseAddress, count: bodyLen)
+                            return sealIntoPacketBuffer(
+                                packetBuf: &packetBuf,
+                                plaintext: slice,
+                                key: key,
+                                packetType: Self.packetFecParity,
+                                fragIndex: groupIdx,
+                                frameId: frameId,
+                                ptsMs: ptsMs
+                            )
+                        }
+                        guard let sealedLen else { continue }
+                        wireLen = sealedLen
+                    } else {
+                        for k in 0..<bodyLen {
+                            packetBuf[Self.headerSize + k] = parityBody[k]
+                        }
+                        wireLen = Self.headerSize + bodyLen
+                    }
+
+                    _ = sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
                                    peerAddr: &addrCopy, peerLen: peerLen)
                 }
             }
 
             return true
         }
+
+        if !cachedDataPackets.isEmpty {
+            lock.lock()
+            if let s = sessions[token] {
+                for (cacheKey, datagram) in cachedDataPackets {
+                    s.storeInRing(key: cacheKey, datagram: datagram)
+                }
+            }
+            lock.unlock()
+        }
+
+        return ok
     }
 
     // MARK: - Private helpers
+
+    private func sealIntoPacketBuffer(
+        packetBuf: inout [UInt8],
+        plaintext: UnsafeBufferPointer<UInt8>,
+        key: SymmetricKey,
+        packetType: UInt8,
+        fragIndex: UInt8,
+        frameId: UInt32,
+        ptsMs: UInt32
+    ) -> Int? {
+        var nonceBytes = [UInt8](repeating: 0, count: 12)
+        nonceBytes[0]  = Self.magic0
+        nonceBytes[1]  = Self.magic1
+        nonceBytes[2]  = packetType
+        nonceBytes[3]  = fragIndex
+        nonceBytes[4]  = UInt8((frameId >> 24) & 0xFF)
+        nonceBytes[5]  = UInt8((frameId >> 16) & 0xFF)
+        nonceBytes[6]  = UInt8((frameId >> 8) & 0xFF)
+        nonceBytes[7]  = UInt8(frameId & 0xFF)
+        nonceBytes[8]  = UInt8((ptsMs >> 24) & 0xFF)
+        nonceBytes[9]  = UInt8((ptsMs >> 16) & 0xFF)
+        nonceBytes[10] = UInt8((ptsMs >> 8) & 0xFF)
+        nonceBytes[11] = UInt8(ptsMs & 0xFF)
+
+        guard let nonce = try? AES.GCM.Nonce(data: nonceBytes) else { return nil }
+        let aad = packetBuf[0..<Self.headerSize]
+        guard let sealed = try? AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: aad) else {
+            return nil
+        }
+
+        let ctLen = sealed.ciphertext.count
+        let tagLen = sealed.tag.count
+        sealed.ciphertext.copyBytes(to: &packetBuf[Self.headerSize], count: ctLen)
+        sealed.tag.copyBytes(to: &packetBuf[Self.headerSize + ctLen], count: tagLen)
+        return Self.headerSize + ctLen + tagLen
+    }
 
     private func writeHeader(
         into buf: inout [UInt8],
@@ -291,7 +446,8 @@ final class UdpVideoServer {
         fragIndex: UInt8,
         fragCount: UInt8,
         fecGroupSize: UInt8,
-        payloadLen: UInt16
+        payloadLen: UInt16,
+        encFlag: UInt8
     ) {
         buf[0]  = Self.magic0
         buf[1]  = Self.magic1
@@ -311,7 +467,7 @@ final class UdpVideoServer {
         buf[15] = fecGroupSize
         buf[16] = UInt8((payloadLen >> 8) & 0xFF)
         buf[17] = UInt8(payloadLen & 0xFF)
-        buf[18] = 0x00
+        buf[18] = encFlag
         buf[19] = 0x00
     }
 
@@ -340,13 +496,28 @@ final class UdpVideoServer {
         return true
     }
 
+    private func sendDataPacket(
+        fd: Int32,
+        data: Data,
+        peerAddr: inout sockaddr_storage,
+        peerLen: socklen_t
+    ) {
+        _ = data.withUnsafeBytes { rawPtr -> Int in
+            withUnsafePointer(to: &peerAddr) { storagePtr -> Int in
+                storagePtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    Darwin.sendto(fd, rawPtr.baseAddress, data.count, 0, saPtr, peerLen)
+                }
+            }
+        }
+    }
+
     private func drainIncomingPackets() {
         lock.lock()
         let fd = sockfd
         lock.unlock()
         guard fd >= 0 else { return }
 
-        var recvBuf = [UInt8](repeating: 0, count: 64)
+        var recvBuf = [UInt8](repeating: 0, count: 128)
         while true {
             var srcAddr = sockaddr_storage()
             var srcLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
@@ -374,6 +545,8 @@ final class UdpVideoServer {
                 handleHello(fd: fd, token: token, srcAddr: srcAddr, srcLen: srcLen)
             case Self.packetKeepalive:
                 handleKeepalive(token: token, srcAddr: srcAddr, srcLen: srcLen)
+            case Self.packetNack:
+                handleNack(fd: fd, token: token, buf: recvBuf, length: n, srcAddr: srcAddr, srcLen: srcLen)
             default:
                 break
             }
@@ -424,6 +597,63 @@ final class UdpVideoServer {
         }
         lock.unlock()
         callbackToFire?(true)
+    }
+
+    /// Handles incoming 0x12 NACK:
+    /// [0x52, 0x55, 0x01, 0x12] + 16B token + frameId(BE4) + count(1..16) + count * fragIndex
+    private func handleNack(
+        fd: Int32,
+        token: Data,
+        buf: [UInt8],
+        length: Int,
+        srcAddr: sockaddr_storage,
+        srcLen: socklen_t
+    ) {
+        guard length >= 25 else { return }
+        let frameId: UInt32 = (UInt32(buf[20]) << 24) |
+                              (UInt32(buf[21]) << 16) |
+                              (UInt32(buf[22]) << 8) |
+                              UInt32(buf[23])
+        let count = Int(buf[24])
+        guard count >= 1, count <= 16, length >= 25 + count else { return }
+
+        var toRetransmit: [Data] = []
+        toRetransmit.reserveCapacity(count)
+        var destAddr = srcAddr
+        var destLen = srcLen
+        var totalRetransmits: UInt64 = 0
+
+        lock.lock()
+        if let session = sessions[token], session.isActive {
+            if let boundAddr = session.peerAddr {
+                destAddr = boundAddr
+                destLen = session.peerLen
+            }
+            for idx in 0..<count {
+                let fragIndex = buf[25 + idx]
+                let key = (UInt64(frameId) << 8) | UInt64(fragIndex)
+                if let cached = session.lookupInRing(key: key) {
+                    toRetransmit.append(cached)
+                }
+            }
+            if !toRetransmit.isEmpty {
+                session.nackRetransmits += UInt64(toRetransmit.count)
+                totalRetransmits = session.nackRetransmits
+            }
+        }
+        lock.unlock()
+
+        for datagram in toRetransmit {
+            sendDataPacket(fd: fd, data: datagram, peerAddr: &destAddr, peerLen: destLen)
+        }
+
+        if !toRetransmit.isEmpty && (totalRetransmits == UInt64(toRetransmit.count) || totalRetransmits % 50 == 0) {
+            ConnectionLogger.shared.logStep(
+                sessionId: "udp",
+                step: "udp_nack_retransmit",
+                detail: "frameId=\(frameId) sent=\(toRetransmit.count)/\(count) total=\(totalRetransmits)"
+            )
+        }
     }
 
     private func checkKeepaliveTimeouts() {

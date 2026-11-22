@@ -2,14 +2,16 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace RemoterWinClient;
 
 /// <summary>
-/// Direct low-latency UDP video receiver with 0ms XOR-FEC single-packet recovery
-/// and automatic fallback to WebSocket TCP when UDP handshake times out.
+/// Direct low-latency UDP video receiver with AES-256-GCM decryption, 0ms XOR-FEC
+/// single-packet recovery, per-fragment NACK (0x12) retransmission, and automatic
+/// fallback to WebSocket TCP when UDP handshake times out.
 /// Wire protocol matches Remoter-MacServer/Server/UdpVideoServer.swift bit-for-bit.
 /// </summary>
 public sealed class UdpVideoReceiver : IDisposable
@@ -23,9 +25,14 @@ public sealed class UdpVideoReceiver : IDisposable
     private const byte PacketKeepalive = 0x03;
     private const byte PacketData      = 0x10;
     private const byte PacketFecParity = 0x11;
+    private const byte PacketNack      = 0x12;
+
+    private const byte HeaderFlagEncrypted = 0x01;
 
     private const int ControlPacketSize = 20;
     private const int VideoHeaderSize = 20;
+    private const int GcmTagSize = 16;
+    private const int MaxNackIndices = 16;
     private const int MaxInFlightFrames = 4;
     private const int ReceiveBufferBytes = 4 * 1024 * 1024;
     private const int HelloRetryCount = 3;
@@ -44,6 +51,7 @@ public sealed class UdpVideoReceiver : IDisposable
         public byte[]?[] Fragments = Array.Empty<byte[]?>();
         public int ReceivedCount;
         public Dictionary<int, byte[]>? ParityGroups;
+        public HashSet<byte>? NackedFrags;
     }
 
     private readonly object _lock = new();
@@ -52,6 +60,7 @@ public sealed class UdpVideoReceiver : IDisposable
     private UdpClient? _udp;
     private CancellationTokenSource? _cts;
     private byte[]? _token;
+    private AesGcm? _aesGcm;
     private bool _connected;
     private bool _hasCompletedFrame;
     private uint _lastCompletedFrameId;
@@ -63,7 +72,7 @@ public sealed class UdpVideoReceiver : IDisposable
     public event Action<VideoFramePacket>? FrameReceived;
     public event Action? FrameDropped;
 
-    public void Start(string host, int port, byte[] token)
+    public void Start(string host, int port, byte[] token, byte[]? aesKey = null)
     {
         if (string.IsNullOrWhiteSpace(host))
             throw new ArgumentException("Host must not be empty.", nameof(host));
@@ -79,6 +88,9 @@ public sealed class UdpVideoReceiver : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
 
             _token = (byte[])token.Clone();
+            _aesGcm = (aesKey != null && aesKey.Length == 32)
+                ? new AesGcm(aesKey, tagSizeInBytes: GcmTagSize)
+                : null;
             _connected = false;
             _hasCompletedFrame = false;
             _lastCompletedFrameId = 0;
@@ -101,6 +113,7 @@ public sealed class UdpVideoReceiver : IDisposable
     {
         UdpClient? udp;
         CancellationTokenSource? cts;
+        AesGcm? aes;
         bool wasConnected;
 
         lock (_lock)
@@ -109,6 +122,8 @@ public sealed class UdpVideoReceiver : IDisposable
             _udp = null;
             cts = _cts;
             _cts = null;
+            aes = _aesGcm;
+            _aesGcm = null;
             wasConnected = _connected;
             _connected = false;
             _frames.Clear();
@@ -118,6 +133,7 @@ public sealed class UdpVideoReceiver : IDisposable
         try { udp?.Close(); } catch { }
         try { udp?.Dispose(); } catch { }
         try { cts?.Dispose(); } catch { }
+        try { aes?.Dispose(); } catch { }
 
         if (wasConnected)
         {
@@ -241,15 +257,55 @@ public sealed class UdpVideoReceiver : IDisposable
         byte fragCount = buf[14];
         byte fecGroupSize = buf[15];
         ushort payloadLen = BinaryPrimitives.ReadUInt16BigEndian(buf.AsSpan(16, 2));
+        bool isEncrypted = (buf[18] & HeaderFlagEncrypted) != 0;
 
-        if (fragCount == 0 || VideoHeaderSize + payloadLen > buf.Length) return;
+        if (fragCount == 0) return;
+
+        byte[] payload = new byte[payloadLen];
+        if (isEncrypted)
+        {
+            if (VideoHeaderSize + payloadLen + GcmTagSize > buf.Length) return;
+
+            Span<byte> nonce = stackalloc byte[12];
+            nonce[0] = Magic0;
+            nonce[1] = Magic1;
+            nonce[2] = pktType;
+            nonce[3] = fragIndex;
+            buf.AsSpan(4, 8).CopyTo(nonce.Slice(4, 8)); // frameId(BE4) + ptsMs(BE4)
+
+            ReadOnlySpan<byte> aad = buf.AsSpan(0, VideoHeaderSize);
+            ReadOnlySpan<byte> ciphertext = buf.AsSpan(VideoHeaderSize, payloadLen);
+            ReadOnlySpan<byte> tag = buf.AsSpan(VideoHeaderSize + payloadLen, GcmTagSize);
+
+            lock (_lock)
+            {
+                if (_aesGcm == null) return;
+                try
+                {
+                    _aesGcm.Decrypt(nonce, ciphertext, tag, payload, associatedData: aad);
+                }
+                catch (CryptographicException)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+            }
+        }
+        else
+        {
+            if (VideoHeaderSize + payloadLen > buf.Length) return;
+            Buffer.BlockCopy(buf, VideoHeaderSize, payload, 0, payloadLen);
+        }
 
         bool isKeyframe = (flags & 0x01) != 0;
         VideoCodecType codec = (flags & 0x02) != 0 ? VideoCodecType.H265 : VideoCodecType.H264;
-        byte[] payload = new byte[payloadLen];
-        Buffer.BlockCopy(buf, VideoHeaderSize, payload, 0, payloadLen);
 
         VideoFramePacket? completedPacket = null;
+        byte[]? nackPacket = null;
+        UdpClient? nackUdp = null;
         int droppedCount = 0;
 
         lock (_lock)
@@ -351,6 +407,34 @@ public sealed class UdpVideoReceiver : IDisposable
                     IsKeyframe: assembly.IsKeyframe,
                     Codec: assembly.Codec);
             }
+            else if (pktType == PacketData && _udp != null && _token != null && fragIndex > 0)
+            {
+                // Per-fragment NACK (0x12): collect earlier missing indices < fragIndex not yet NACKed
+                int upper = Math.Min((int)fragIndex, assembly.FragCount);
+                List<byte>? missing = null;
+                for (int i = 0; i < upper; i++)
+                {
+                    if (assembly.Fragments[i] != null) continue;
+                    byte idx = (byte)i;
+                    if (assembly.NackedFrags != null && assembly.NackedFrags.Contains(idx)) continue;
+                    missing ??= new List<byte>();
+                    missing.Add(idx);
+                    if (missing.Count >= MaxNackIndices) break;
+                }
+
+                if (missing != null && missing.Count > 0)
+                {
+                    assembly.NackedFrags ??= new HashSet<byte>();
+                    foreach (byte idx in missing) assembly.NackedFrags.Add(idx);
+                    nackPacket = BuildNackPacket(_token, frameId, missing);
+                    nackUdp = _udp;
+                }
+            }
+        }
+
+        if (nackPacket != null && nackUdp != null)
+        {
+            _ = SendNackAsync(nackUdp, nackPacket);
         }
 
         for (int i = 0; i < droppedCount; i++)
@@ -362,6 +446,33 @@ public sealed class UdpVideoReceiver : IDisposable
         {
             FrameReceived?.Invoke(completedPacket.Value);
         }
+    }
+
+    private static async Task SendNackAsync(UdpClient udp, byte[] nackPacket)
+    {
+        try
+        {
+            await udp.SendAsync(nackPacket).ConfigureAwait(false);
+        }
+        catch { }
+    }
+
+    private static byte[] BuildNackPacket(byte[] token, uint frameId, List<byte> missingIndices)
+    {
+        int count = Math.Min(missingIndices.Count, MaxNackIndices);
+        byte[] pkt = new byte[4 + 16 + 4 + 1 + count];
+        pkt[0] = Magic0;
+        pkt[1] = Magic1;
+        pkt[2] = ProtocolVersion;
+        pkt[3] = PacketNack;
+        Buffer.BlockCopy(token, 0, pkt, 4, 16);
+        BinaryPrimitives.WriteUInt32BigEndian(pkt.AsSpan(20, 4), frameId);
+        pkt[24] = (byte)count;
+        for (int i = 0; i < count; i++)
+        {
+            pkt[25 + i] = missingIndices[i];
+        }
+        return pkt;
     }
 
     private static void TryRecoverWithFec(FrameAssembly assembly)

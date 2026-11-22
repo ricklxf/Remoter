@@ -26,6 +26,14 @@ public final class E2ECrypto: @unchecked Sendable {
         return symmetricKey != nil
     }
 
+    /// Raw 32-byte AES-256 symmetric key (for direct UDP AES-256-GCM channel).
+    public var rawKeyData: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let key = symmetricKey else { return nil }
+        return key.withUnsafeBytes { Data($0) }
+    }
+
     public func reset() {
         lock.lock()
         privateKey = nil

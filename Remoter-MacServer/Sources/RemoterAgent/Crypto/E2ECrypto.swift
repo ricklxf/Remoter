@@ -14,6 +14,11 @@ final class E2ECrypto {
 
     var isReady: Bool { symmetricKey != nil }
 
+    /// 32 字节原始对称密钥（供直连 UDP AES-256-GCM 复用，仅在 E2E 握手完成后非空）
+    var rawKeyData: Data? {
+        symmetricKey?.withUnsafeBytes { Data($0) }
+    }
+
     /// Mac 的 P-256 公钥（65 字节 x9.63 格式，Base64 编码）
     var publicKeyBase64: String {
         privateKey.publicKey.x963Representation.base64EncodedString()

@@ -1,7 +1,9 @@
 import Foundation
+import CryptoKit
 import Darwin
 
-/// Direct low-latency UDP video receiver with 0ms XOR-FEC recovery and automatic WebSocket fallback.
+/// Direct low-latency UDP video receiver with AES-256-GCM decryption, 0ms XOR-FEC recovery,
+/// per-fragment NACK (0x12) retransmission, and automatic WebSocket fallback.
 /// Wire protocol matches `Remoter-MacServer/Server/UdpVideoServer.swift` and `Remoter-WinClient/Network/UdpVideoReceiver.cs` bit-for-bit.
 public final class UdpVideoReceiver: @unchecked Sendable {
     public static let magic0: UInt8 = 0x52 // 'R'
@@ -13,10 +15,14 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     public static let packetTypeKeepalive: UInt8 = 0x03
     public static let packetTypeData: UInt8 = 0x10
     public static let packetTypeFecParity: UInt8 = 0x11
+    public static let packetTypeNack: UInt8 = 0x12
 
     public static let controlPacketSize = 20
     public static let videoHeaderSize = 20
     public static let tokenLength = 16
+    public static let gcmTagSize = 16
+    public static let encryptedFlag: UInt8 = 0x01
+    private static let maxNackIndices = 16
 
     private static let maxInFlightFrames = 4
     private static let frameTimeoutMs: UInt64 = 80
@@ -44,6 +50,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
         var fragments: [Data?]
         var receivedCount: Int
         var parityPackets: [Int: Data]
+        var nackedFragments: Set<Int>
 
         init(
             frameId: UInt32,
@@ -64,6 +71,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             self.fragments = Array(repeating: nil, count: fragCount)
             self.receivedCount = 0
             self.parityPackets = [:]
+            self.nackedFragments = []
         }
     }
 
@@ -76,6 +84,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     private var cleanupTimer: DispatchSourceTimer?
 
     private var token = Data()
+    private var aesKey: SymmetricKey?
     private var isActive = false
     private var isConnected = false
     private var helloSentCount = 0
@@ -109,7 +118,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    public func start(host: String, port: UInt16, token: Data) {
+    public func start(host: String, port: UInt16, token: Data, aesKey: Data? = nil) {
         guard token.count == Self.tokenLength, port > 0, !host.isEmpty else { return }
 
         queue.async { [weak self] in
@@ -122,6 +131,11 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
             self.sockFd = fd
             self.token = token
+            if let keyData = aesKey, keyData.count == 32 {
+                self.aesKey = SymmetricKey(data: keyData)
+            } else {
+                self.aesKey = nil
+            }
             self.isActive = true
             self.isConnected = false
             self.helloSentCount = 0
@@ -244,6 +258,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
         frames.removeAll()
         lastDeliveredFrameId = nil
         token = Data()
+        aesKey = nil
 
         if notifyDisconnect && wasConnected {
             onConnected?(false)
@@ -354,6 +369,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     private func handleVideoPacketLocked(count: Int, isParity: Bool) {
         guard count >= Self.videoHeaderSize else { return }
 
+        let packetType = recvScratch[3]
         let frameId = (UInt32(recvScratch[4]) << 24)
             | (UInt32(recvScratch[5]) << 16)
             | (UInt32(recvScratch[6]) << 8)
@@ -369,12 +385,39 @@ public final class UdpVideoReceiver: @unchecked Sendable {
         let fragCount = Int(recvScratch[14])
         let fecGroupSize = Int(recvScratch[15])
         let payloadLen = Int((UInt16(recvScratch[16]) << 8) | UInt16(recvScratch[17]))
+        let isEncrypted = (recvScratch[18] & Self.encryptedFlag) != 0
 
-        guard fragCount > 0, count >= Self.videoHeaderSize + payloadLen else { return }
+        guard fragCount > 0 else { return }
 
         // Ignore late packets for already-delivered or older frames
         if let lastId = lastDeliveredFrameId, !Self.isFrameNewer(frameId, than: lastId) {
             return
+        }
+
+        // Decrypt AES-256-GCM payload if encrypted flag is set (header[18] & 0x01)
+        let payload: Data
+        if isEncrypted {
+            guard count >= Self.videoHeaderSize + payloadLen + Self.gcmTagSize,
+                  let key = aesKey else {
+                return
+            }
+            let nonceBytes: [UInt8] = [
+                Self.magic0, Self.magic1, packetType, UInt8(fragIndex),
+                recvScratch[4], recvScratch[5], recvScratch[6], recvScratch[7],
+                recvScratch[8], recvScratch[9], recvScratch[10], recvScratch[11]
+            ]
+            let header20 = Data(bytes: &recvScratch[0], count: Self.videoHeaderSize)
+            let ciphertext = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
+            let tag = Data(bytes: &recvScratch[Self.videoHeaderSize + payloadLen], count: Self.gcmTagSize)
+            guard let nonce = try? AES.GCM.Nonce(data: nonceBytes),
+                  let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag),
+                  let plaintext = try? AES.GCM.open(box, using: key, authenticating: header20) else {
+                return
+            }
+            payload = plaintext
+        } else {
+            guard count >= Self.videoHeaderSize + payloadLen else { return }
+            payload = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
         }
 
         let nowMs = Self.monotonicMs()
@@ -403,8 +446,6 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
         guard var fb = frames[frameId] else { return }
         guard fb.fragCount == fragCount else { return }
-
-        let payload = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
 
         if isParity {
             fb.parityPackets[fragIndex] = payload
@@ -459,7 +500,65 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             )
             onFrame?(packet)
         } else {
+            // Per-fragment NACK (0x12) for earlier missing fragments in this frame
+            if !isParity && fragIndex > 0 {
+                sendMissingNacksLocked(for: &fb, arrivedIndex: fragIndex)
+            }
             frames[frameId] = fb
+        }
+    }
+
+    private func sendMissingNacksLocked(for fb: inout FrameBuffer, arrivedIndex: Int) {
+        guard sockFd >= 0, token.count == Self.tokenLength else { return }
+
+        var missing: [UInt8] = []
+        missing.reserveCapacity(Self.maxNackIndices)
+
+        for i in 0..<arrivedIndex {
+            guard fb.fragments[i] == nil, !fb.nackedFragments.contains(i) else { continue }
+            var shouldNack = (fb.fecGroupSize == 0)
+            if !shouldNack && fb.fecGroupSize > 0 {
+                let g = i / fb.fecGroupSize
+                let start = g * fb.fecGroupSize
+                let end = min(start + fb.fecGroupSize, fb.fragCount)
+                var groupMissing = 0
+                for j in start..<end where fb.fragments[j] == nil {
+                    groupMissing += 1
+                    if groupMissing >= 2 { break }
+                }
+                // NACK when FEC cannot recover (>=2 missing in group) or we've passed the group without recovery
+                if groupMissing >= 2 || arrivedIndex >= end {
+                    shouldNack = true
+                }
+            }
+            if shouldNack {
+                missing.append(UInt8(i))
+                fb.nackedFragments.insert(i)
+                if missing.count >= Self.maxNackIndices { break }
+            }
+        }
+
+        guard !missing.isEmpty else { return }
+
+        // NACK packet: [0x52, 0x55, 0x01, 0x12] + 16B token + frameId(BE4) + count(1B) + missing indices
+        var pkt = [UInt8](repeating: 0, count: 25 + missing.count)
+        pkt[0] = Self.magic0
+        pkt[1] = Self.magic1
+        pkt[2] = Self.version
+        pkt[3] = Self.packetTypeNack
+        token.copyBytes(to: &pkt[4], count: Self.tokenLength)
+        pkt[20] = UInt8((fb.frameId >> 24) & 0xFF)
+        pkt[21] = UInt8((fb.frameId >> 16) & 0xFF)
+        pkt[22] = UInt8((fb.frameId >> 8) & 0xFF)
+        pkt[23] = UInt8(fb.frameId & 0xFF)
+        pkt[24] = UInt8(missing.count)
+        for (idx, fragIdx) in missing.enumerated() {
+            pkt[25 + idx] = fragIdx
+        }
+
+        pkt.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            _ = Darwin.send(sockFd, base, raw.count, 0)
         }
     }
 

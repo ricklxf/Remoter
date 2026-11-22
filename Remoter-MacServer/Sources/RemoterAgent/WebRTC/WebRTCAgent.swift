@@ -781,12 +781,46 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                         detail: "err=\(err.localizedDescription)"
                     )
                     pc.setLocalDescription(sdp) { _ in }
+                    Self.logNegotiatedFEC(from: sdp.sdp)
                     self.onLocalDescription?("answer", sdp.sdp)
                     return
                 }
+                Self.logNegotiatedFEC(from: finalSdp.sdp)
                 self.onLocalDescription?("answer", finalSdp.sdp)
             }
         }
+    }
+
+    /// Logs which FEC mechanisms (`flexfec-03`, `red+ulpfec`, or `none`) were negotiated in Answer `m=video`.
+    private static func logNegotiatedFEC(from sdp: String) {
+        let lineSep = sdp.contains("\r\n") ? "\r\n" : "\n"
+        let lines = sdp.components(separatedBy: lineSep)
+        guard let videoMLineIdx = lines.firstIndex(where: { $0.hasPrefix("m=video ") }) else {
+            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "fec_negotiated", detail: "none")
+            return
+        }
+        let nextMLineIdx = lines[(videoMLineIdx + 1)...].firstIndex(where: { $0.hasPrefix("m=") }) ?? lines.endIndex
+        var hasFlexFec = false
+        var hasRed = false
+        var hasUlpFec = false
+        for i in (videoMLineIdx + 1)..<nextMLineIdx {
+            let line = lines[i]
+            guard line.hasPrefix("a=rtpmap:") else { continue }
+            let body = line.dropFirst("a=rtpmap:".count)
+            let comps = body.split(separator: " ", maxSplits: 1)
+            guard comps.count == 2 else { continue }
+            let codec = comps[1].split(separator: "/").first.map { String($0).lowercased() } ?? ""
+            if codec == "flexfec-03" { hasFlexFec = true }
+            else if codec == "red" { hasRed = true }
+            else if codec == "ulpfec" { hasUlpFec = true }
+        }
+        var modes: [String] = []
+        if hasFlexFec { modes.append("flexfec-03") }
+        if hasRed && hasUlpFec { modes.append("red+ulpfec") }
+        else if hasRed { modes.append("red") }
+        else if hasUlpFec { modes.append("ulpfec") }
+        let detail = modes.isEmpty ? "none" : modes.joined(separator: ",")
+        ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "fec_negotiated", detail: detail)
     }
 
     /// Extracts the RFC5285 extension ID for `playout-delay` from the `m=video` section of an SDP.
@@ -930,9 +964,12 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
         func priority(for pt: String) -> Int {
             let codec = rtpmap[pt] ?? ""
-            if codec == "red" || codec == "ulpfec" || codec == "flexfec-03" || codec == "rtx" {
-                return 90
-            }
+            // Preserve all FEC & retransmission codecs after primary video codecs,
+            // preferring FlexFEC-03 ahead of RED + ULPFEC when both are supported.
+            if codec == "flexfec-03" { return 90 }
+            if codec == "red" { return 91 }
+            if codec == "ulpfec" { return 92 }
+            if codec == "rtx" { return 95 }
             if codec == "vp8" { return 80 }
 
             switch pref {

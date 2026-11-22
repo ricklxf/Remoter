@@ -5,11 +5,19 @@ using Vortice.MediaFoundation;
 
 namespace RemoterWinClient;
 
+public enum DecodedPixelFormat
+{
+    Nv12,
+    P010,
+    Ayuv,
+    Bgra,
+}
+
 /// <summary>
 /// Native Windows Media Foundation H.264 &amp; HEVC/H.265 hardware video decoder.
 /// Uses IMFDXGIDeviceManager bound to D3D11Renderer's ID3D11Device for true GPU
-/// zero-copy NV12 ID3D11Texture2D output, with automatic fallback to CPU-copy NV12
-/// when DXVA hardware decoding is unavailable.
+/// zero-copy NV12 / P010 (10-bit HDR) / AYUV (4:4:4) ID3D11Texture2D output,
+/// with automatic fallback to CPU-copy when DXVA hardware decoding is unavailable.
 /// </summary>
 public sealed class MfVideoDecoder : IDisposable
 {
@@ -34,11 +42,16 @@ public sealed class MfVideoDecoder : IDisposable
 
     public Action<ID3D11Texture2D, int, int, int>? OnGpuNv12Frame;
     public Action<nint, int, int, int>? OnCpuNv12Frame;
+    public Action<ID3D11Texture2D, int, int, int, DecodedPixelFormat>? OnGpuFrame;
+    public Action<nint, int, int, int, int, DecodedPixelFormat>? OnCpuFrame;
     public Action<int, int>? OnResolutionChanged;
     public Action<bool>? OnColorRangeChanged;
     public Action? OnKeyframeNeeded;
 
     public VideoCodecType Codec { get; private set; } = VideoCodecType.H264;
+    public bool PreferHdr { get; set; }
+    public bool Prefer444 { get; set; }
+    public DecodedPixelFormat OutputFormat { get; private set; } = DecodedPixelFormat.Nv12;
     public bool IsHardware { get; private set; }
     public bool IsGpuZeroCopy { get; private set; }
     public bool IsFullRange { get; private set; }
@@ -54,6 +67,8 @@ public sealed class MfVideoDecoder : IDisposable
     private static readonly Guid MftCategoryVideoDecoder = new("d6c02d4b-6833-45b4-971a-05a4b04bab91");
     private static readonly Guid MfMediaTypeVideo        = new("73646976-0000-0010-8000-00aa00389b71");
     private static readonly Guid VideoFormatHevc         = new("43564548-0000-0010-8000-00aa00389b71"); // 'HEVC'
+    private static readonly Guid MFVideoFormat_P010      = new(0x30313050, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71);
+    private static readonly Guid MFVideoFormat_AYUV      = new(0x56555941, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71);
 
     private static readonly Guid MF_MT_MAJOR_TYPE     = new("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
     private static readonly Guid MF_MT_SUBTYPE        = new("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
@@ -265,8 +280,8 @@ public sealed class MfVideoDecoder : IDisposable
             inType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
             mft.SetInputType(0, inType, 0);
 
-            // 4. Select NV12 Output Media Type
-            if (!SelectNv12OutputType(mft, width, height))
+            // 4. Select Output Media Type (P010 for 10-bit HDR, AYUV for 4:4:4, fallback NV12)
+            if (!SelectOutputType(mft, width, height))
             {
                 if (pDxgiMgr != nint.Zero) Marshal.Release(pDxgiMgr);
                 return false;
@@ -302,8 +317,12 @@ public sealed class MfVideoDecoder : IDisposable
         }
     }
 
-    private bool SelectNv12OutputType(IMFTransform mft, int fallbackWidth, int fallbackHeight)
+    private bool SelectOutputType(IMFTransform mft, int fallbackWidth, int fallbackHeight)
     {
+        IMFMediaType? p010Type = null;
+        IMFMediaType? ayuvType = null;
+        IMFMediaType? nv12Type = null;
+
         try
         {
             var comMft = (IMFTransformCom)Marshal.GetObjectForIUnknown(mft.NativePointer);
@@ -313,13 +332,66 @@ public sealed class MfVideoDecoder : IDisposable
                 if (hr == MF_E_NO_MORE_TYPES || hr < 0 || pType == nint.Zero)
                     break;
 
-                using var outType = new IMFMediaType(pType);
-                Guid subtype = TryGetGuid(outType, MF_MT_SUBTYPE);
-                if (subtype == VideoFormatGuids.NV12)
+                var candidate = new IMFMediaType(pType);
+                Guid subtype = TryGetGuid(candidate, MF_MT_SUBTYPE);
+
+                if (subtype == MFVideoFormat_P010 && p010Type == null)
                 {
-                    mft.SetOutputType(0, outType, 0);
-                    ReadOutputGeometry(outType, fallbackWidth, fallbackHeight);
+                    p010Type = candidate;
+                }
+                else if (subtype == MFVideoFormat_AYUV && ayuvType == null)
+                {
+                    ayuvType = candidate;
+                }
+                else if (subtype == VideoFormatGuids.NV12 && nv12Type == null)
+                {
+                    nv12Type = candidate;
+                }
+                else
+                {
+                    candidate.Dispose();
+                }
+            }
+
+            // Priority: PreferHdr -> P010 then NV12; Prefer444 -> AYUV then NV12; default -> NV12
+            IMFMediaType? chosen = null;
+            DecodedPixelFormat chosenFormat = DecodedPixelFormat.Nv12;
+
+            if (PreferHdr && p010Type != null)
+            {
+                chosen = p010Type;
+                chosenFormat = DecodedPixelFormat.P010;
+            }
+            else if (Prefer444 && ayuvType != null)
+            {
+                chosen = ayuvType;
+                chosenFormat = DecodedPixelFormat.Ayuv;
+            }
+            else if (nv12Type != null)
+            {
+                chosen = nv12Type;
+                chosenFormat = DecodedPixelFormat.Nv12;
+            }
+
+            if (chosen != null)
+            {
+                try
+                {
+                    mft.SetOutputType(0, chosen, 0);
+                    OutputFormat = chosenFormat;
+                    ReadOutputGeometry(chosen, fallbackWidth, fallbackHeight);
                     return true;
+                }
+                catch
+                {
+                    // If P010/AYUV SetOutputType failed, safely fall back to NV12
+                    if (chosen != nv12Type && nv12Type != null)
+                    {
+                        mft.SetOutputType(0, nv12Type, 0);
+                        OutputFormat = DecodedPixelFormat.Nv12;
+                        ReadOutputGeometry(nv12Type, fallbackWidth, fallbackHeight);
+                        return true;
+                    }
                 }
             }
         }
@@ -327,15 +399,22 @@ public sealed class MfVideoDecoder : IDisposable
         {
             // Fall through to explicit NV12 type creation
         }
+        finally
+        {
+            p010Type?.Dispose();
+            ayuvType?.Dispose();
+            nv12Type?.Dispose();
+        }
 
         try
         {
-            using var nv12Type = MediaFactory.MFCreateMediaType();
-            nv12Type.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
-            nv12Type.Set(MF_MT_SUBTYPE, VideoFormatGuids.NV12);
-            nv12Type.Set(MF_MT_FRAME_SIZE, PackLong(fallbackWidth, fallbackHeight));
-            nv12Type.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-            mft.SetOutputType(0, nv12Type, 0);
+            using var fallbackType = MediaFactory.MFCreateMediaType();
+            fallbackType.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
+            fallbackType.Set(MF_MT_SUBTYPE, VideoFormatGuids.NV12);
+            fallbackType.Set(MF_MT_FRAME_SIZE, PackLong(fallbackWidth, fallbackHeight));
+            fallbackType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            mft.SetOutputType(0, fallbackType, 0);
+            OutputFormat = DecodedPixelFormat.Nv12;
             Width = fallbackWidth;
             Height = fallbackHeight;
             _outputStride = fallbackWidth;
@@ -346,6 +425,14 @@ public sealed class MfVideoDecoder : IDisposable
             return false;
         }
     }
+
+    private int DefaultStrideForFormat(int width) => OutputFormat switch
+    {
+        DecodedPixelFormat.P010 => width * 2,
+        DecodedPixelFormat.Ayuv => width * 4,
+        DecodedPixelFormat.Bgra => width * 4,
+        _                       => width,
+    };
 
     private void ReadOutputGeometry(IMFMediaType outType, int fallbackWidth, int fallbackHeight)
     {
@@ -374,11 +461,11 @@ public sealed class MfVideoDecoder : IDisposable
         try
         {
             int stride = unchecked((int)outType.GetUInt32(MF_MT_DEFAULT_STRIDE));
-            _outputStride = stride > 0 ? stride : Width;
+            _outputStride = stride > 0 ? stride : DefaultStrideForFormat(Width);
         }
         catch
         {
-            _outputStride = Width;
+            _outputStride = DefaultStrideForFormat(Width);
         }
 
         try
@@ -511,7 +598,14 @@ public sealed class MfVideoDecoder : IDisposable
             IMFSample? outSample = null;
             if (!mftAllocates)
             {
-                int bufSize = streamInfo.Size > 0 ? streamInfo.Size : Width * Height * 3 / 2;
+                int fallbackSize = OutputFormat switch
+                {
+                    DecodedPixelFormat.P010 => Width * Height * 3,
+                    DecodedPixelFormat.Ayuv => Width * Height * 4,
+                    DecodedPixelFormat.Bgra => Width * Height * 4,
+                    _                       => Width * Height * 3 / 2,
+                };
+                int bufSize = streamInfo.Size > 0 ? streamInfo.Size : fallbackSize;
                 using var outBuf = MediaFactory.MFCreateMemoryBuffer(bufSize);
                 outSample = MediaFactory.MFCreateSample();
                 outSample.AddBuffer(outBuf);
@@ -538,11 +632,11 @@ public sealed class MfVideoDecoder : IDisposable
                 outSample?.Dispose();
                 int prevW = Width;
                 int prevH = Height;
-                if (SelectNv12OutputType(_transform, Width, Height))
+                if (SelectOutputType(_transform, Width, Height))
                 {
                     if (Width != prevW || Height != prevH)
                     {
-                        Debug.WriteLine($"[MfVideoDecoder] Dynamic resolution change: {prevW}x{prevH} -> {Width}x{Height}");
+                        Debug.WriteLine($"[MfVideoDecoder] Dynamic resolution change: {prevW}x{prevH} -> {Width}x{Height} fmt={OutputFormat}");
                         OnResolutionChanged?.Invoke(Width, Height);
                     }
                     continue; // Retry ProcessOutput immediately with renegotiated output type
@@ -579,7 +673,7 @@ public sealed class MfVideoDecoder : IDisposable
         using var mediaBuf = sample.ConvertToContiguousBuffer();
 
         // 1. Try true GPU zero-copy path via IMFDXGIBuffer (direct COM vtable — zero RCW leak on DXVA surface pool!)
-        if (IsGpuZeroCopy && OnGpuNv12Frame != null)
+        if (IsGpuZeroCopy && (OnGpuFrame != null || OnGpuNv12Frame != null))
         {
             Guid iidDxgiBuf = IID_IMFDXGIBuffer;
             int hrQi = Marshal.QueryInterface(mediaBuf.NativePointer, in iidDxgiBuf, out nint pDxgiBuf);
@@ -590,7 +684,14 @@ public sealed class MfVideoDecoder : IDisposable
                     if (TryExtractDxgiTexture(pDxgiBuf, out nint pTex, out uint subIdx) && pTex != nint.Zero)
                     {
                         using var texture = new ID3D11Texture2D(pTex);
-                        OnGpuNv12Frame.Invoke(texture, (int)subIdx, Width, Height);
+                        if (OnGpuFrame != null)
+                        {
+                            OnGpuFrame.Invoke(texture, (int)subIdx, Width, Height, OutputFormat);
+                        }
+                        else
+                        {
+                            OnGpuNv12Frame?.Invoke(texture, (int)subIdx, Width, Height);
+                        }
                         return;
                     }
                 }
@@ -601,16 +702,23 @@ public sealed class MfVideoDecoder : IDisposable
             }
         }
 
-        // 2. Fallback: CPU-accessible NV12 buffer
-        if (OnCpuNv12Frame != null)
+        // 2. Fallback: CPU-accessible buffer (NV12 / P010 / AYUV)
+        if (OnCpuFrame != null || OnCpuNv12Frame != null)
         {
             mediaBuf.Lock(out nint pData, out _, out int curLen);
             try
             {
                 if (pData != nint.Zero && curLen > 0)
                 {
-                    int stride = _outputStride > 0 ? _outputStride : Width;
-                    OnCpuNv12Frame.Invoke(pData, stride, Width, Height);
+                    int stride = _outputStride > 0 ? _outputStride : DefaultStrideForFormat(Width);
+                    if (OnCpuFrame != null)
+                    {
+                        OnCpuFrame.Invoke(pData, curLen, stride, Width, Height, OutputFormat);
+                    }
+                    else
+                    {
+                        OnCpuNv12Frame?.Invoke(pData, stride, Width, Height);
+                    }
                 }
             }
             finally
@@ -824,6 +932,7 @@ public sealed class MfVideoDecoder : IDisposable
         IsHardware = false;
         IsGpuZeroCopy = false;
         IsFullRange = false;
+        OutputFormat = DecodedPixelFormat.Nv12;
         _cachedVps = null;
         _cachedSps = null;
         _cachedPps = null;

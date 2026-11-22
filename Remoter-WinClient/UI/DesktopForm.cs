@@ -255,11 +255,13 @@ public sealed class DesktopForm : Form
                 {
                     try
                     {
+                        _mfDecoder.PreferHdr = _settings.HdrEnabled;
+                        _mfDecoder.Prefer444 = _settings.ChromaMode == ChromaMode.Yuv444;
                         var hwDevice = _settings.HardwareDecode ? _renderer.Device : null;
                         _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, hwDevice);
                         _activeDecoderCodec = _streamInfo.Codec;
                         _mfInitialized = true;
-                        LogVideo($"MfVideoDecoder ready: codec={_streamInfo.Codec} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
+                        LogVideo($"MfVideoDecoder ready: codec={_streamInfo.Codec} fmt={_mfDecoder.OutputFormat} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
                     }
                     catch (Exception ex)
                     {
@@ -377,18 +379,42 @@ public sealed class DesktopForm : Form
 
     private void WireDecoderEvents()
     {
-        _mfDecoder.OnGpuNv12Frame = (tex, subIdx, w, h) =>
+        _mfDecoder.OnGpuFrame = (tex, subIdx, w, h, fmt) =>
         {
             // Called synchronously inside _mfDecoder.Decode which already holds _renderLock
             if (_disposed || !_rendererInitialized) return;
-            _renderer.RenderNv12Texture(tex, subIdx, w, h);
+            switch (fmt)
+            {
+                case DecodedPixelFormat.P010:
+                    _renderer.RenderP010Texture(tex, subIdx, w, h);
+                    break;
+                case DecodedPixelFormat.Ayuv:
+                    _renderer.RenderAyuvTexture(tex, subIdx, w, h);
+                    break;
+                default:
+                    _renderer.RenderNv12Texture(tex, subIdx, w, h);
+                    break;
+            }
             UpdateContentRectFromRendererUnsafe();
         };
 
-        _mfDecoder.OnCpuNv12Frame = (ptr, stride, w, h) =>
+        _mfDecoder.OnCpuFrame = (ptr, byteLen, stride, w, h, fmt) =>
         {
             if (_disposed || !_rendererInitialized) return;
-            _renderer.RenderNv12Cpu(ptr, stride, w, h);
+            switch (fmt)
+            {
+                case DecodedPixelFormat.P010:
+                    if (byteLen >= (long)stride * (h + h / 2))
+                        _renderer.RenderP010(ptr, w, h, stride);
+                    break;
+                case DecodedPixelFormat.Ayuv:
+                    if (byteLen >= (long)stride * h)
+                        _renderer.RenderAyuv(ptr, w, h, stride);
+                    break;
+                default:
+                    _renderer.RenderNv12Cpu(ptr, stride, w, h);
+                    break;
+            }
             UpdateContentRectFromRendererUnsafe();
         };
 
@@ -503,6 +529,7 @@ public sealed class DesktopForm : Form
         _toolbar.ChromaToggled += mode =>
         {
             _settings.ChromaMode = mode;
+            _mfDecoder.Prefer444 = mode == ChromaMode.Yuv444;
             DeviceStore.Shared.SaveSettings(_settings);
             _toolbar.UpdateState(chromaMode: mode);
             _conn.SendChroma(mode);
@@ -512,6 +539,7 @@ public sealed class DesktopForm : Form
         {
             _settings.HdrEnabled = enable;
             _settings.ToneMapEnabled = enable;
+            _mfDecoder.PreferHdr = enable;
             DeviceStore.Shared.SaveSettings(_settings);
             _renderer.ToneMap = enable;
             _toolbar.UpdateState(hdrOn: enable, toneMapOn: enable);
@@ -743,6 +771,7 @@ public sealed class DesktopForm : Form
         SafeBeginInvoke(() =>
         {
             _settings.ChromaMode = mode;
+            _mfDecoder.Prefer444 = mode == ChromaMode.Yuv444;
             _toolbar.UpdateState(chromaMode: mode);
         });
     }
@@ -753,6 +782,7 @@ public sealed class DesktopForm : Form
         {
             _settings.HdrEnabled = enabled;
             _settings.ToneMapEnabled = enabled;
+            _mfDecoder.PreferHdr = enabled;
             _renderer.ToneMap = enabled;
             _toolbar.UpdateState(hdrOn: enabled, toneMapOn: enabled);
         });

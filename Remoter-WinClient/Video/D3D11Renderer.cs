@@ -28,6 +28,7 @@ public sealed class D3D11Renderer : IDisposable
 
     private ID3D11VertexShader? _vertexShader;
     private ID3D11PixelShader? _nv12PixelShader;
+    private ID3D11PixelShader? _ayuvPixelShader;
     private ID3D11PixelShader? _bgraPixelShader;
     private ID3D11SamplerState? _linearSampler;
     private ID3D11RasterizerState? _rasterizerState;
@@ -41,9 +42,9 @@ public sealed class D3D11Renderer : IDisposable
         public float Sharpness;
         public int FullRange;
         public int ToneMap;
+        public int ColorMatrixMode; // 0 = BT.709 (NV12/AYUV), 1 = BT.2020 PQ (P010 HDR)
         private int _pad0;
         private int _pad1;
-        private int _pad2;
     }
 
     // Persistent GPU NV12 texture (ArraySize=1, BindFlags.ShaderResource) used as
@@ -56,13 +57,28 @@ public sealed class D3D11Renderer : IDisposable
     private int _nv12Width;
     private int _nv12Height;
 
+    // Persistent GPU P010 (10-bit HDR) textures (R16_UNorm Y + R16G16_UNorm UV).
+    private ID3D11Texture2D? _p010GpuTex;
+    private ID3D11Texture2D? _p010StagingTex;
+    private ID3D11ShaderResourceView? _p010YSrv;
+    private ID3D11ShaderResourceView? _p010UvSrv;
+    private int _p010Width;
+    private int _p010Height;
+
+    // Persistent GPU AYUV (4:4:4 packed V,U,Y,A) textures (R8G8B8A8_UNorm).
+    private ID3D11Texture2D? _ayuvGpuTex;
+    private ID3D11Texture2D? _ayuvStagingTex;
+    private ID3D11ShaderResourceView? _ayuvSrv;
+    private int _ayuvWidth;
+    private int _ayuvHeight;
+
     // Persistent GPU BGRA32 texture for JPEG / software RGB fallback.
     private ID3D11Texture2D? _bgraTex;
     private ID3D11ShaderResourceView? _bgraSrv;
     private int _bgraWidth;
     private int _bgraHeight;
 
-    private enum ActiveSurface { None, Nv12, Bgra }
+    private enum ActiveSurface { None, Nv12, P010, Ayuv, Bgra }
     private ActiveSurface _activeSurface = ActiveSurface.None;
 
     private SwapChainFlags _swapChainFlags;
@@ -190,16 +206,17 @@ public sealed class D3D11Renderer : IDisposable
         }
         """;
 
-    // BT.709 NV12 -> RGB conversion (supports both limited-range & UU full-range)
+    // BT.709 (NV12) & BT.2020/PQ (P010 10-bit HDR) -> RGB conversion
     // + 5-tap optimized Catmull-Rom Bicubic sampling (identity at 1:1, crisp at DPI/windowed scaling)
-    // + AMD FidelityFX CAS 5-tap anti-blur sharpening + ACES Filmic SDR tone-mapping.
+    // + AMD FidelityFX CAS 5-tap anti-blur sharpening + PQ->ACES Filmic SDR tone-mapping.
     private const string Nv12PsHlsl = """
         cbuffer RenderParams : register(b0) {
             float2 texelSize;
             float  sharpness;
             int    fullRange;
             int    toneMap;
-            float3 _pad;
+            int    colorMatrixMode;
+            float2 _pad;
         };
 
         Texture2D<float>  texY  : register(t0);
@@ -220,9 +237,38 @@ public sealed class D3D11Renderer : IDisposable
             return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
         }
 
+        float3 pqToLinearSdr(float3 pq) {
+            const float m1 = 0.1593017578125;
+            const float m2 = 78.84375;
+            const float c1 = 0.8359375;
+            const float c2 = 18.8515625;
+            const float c3 = 18.6875;
+            float3 p = pow(max(pq, float3(0.0, 0.0, 0.0)), 1.0 / m2);
+            float3 num = max(p - c1, float3(0.0, 0.0, 0.0));
+            float3 den = max(c2 - c3 * p, float3(1e-5, 1e-5, 1e-5));
+            float3 linearNorm = pow(num / den, 1.0 / m1);
+            return linearNorm * (10000.0 / 203.0);
+        }
+
         float3 sampleNv12Rgb(float2 coord) {
             float yRaw = texY.Sample(samp, coord).r;
             float2 uv = texUV.Sample(samp, coord).rg - float2(0.5, 0.5);
+
+            if (colorMatrixMode != 0) {
+                // BT.2020 (P010 10-bit HDR)
+                if (fullRange != 0) {
+                    float r = saturate(yRaw + 1.4746 * uv.y);
+                    float g = saturate(yRaw - 0.164553 * uv.x - 0.571353 * uv.y);
+                    float b = saturate(yRaw + 1.8814 * uv.x);
+                    return float3(r, g, b);
+                } else {
+                    float y = (yRaw - 0.06256109) * 1.16780822;
+                    float r = saturate(y + 1.67867411 * uv.y);
+                    float g = saturate(y - 0.18732610 * uv.x - 0.65042432 * uv.y);
+                    float b = saturate(y + 2.14177232 * uv.x);
+                    return float3(r, g, b);
+                }
+            }
 
             if (fullRange != 0) {
                 // BT.709 Full-Range (0..255, matching UU Remote MetalRenderer)
@@ -301,6 +347,127 @@ public sealed class D3D11Renderer : IDisposable
             }
 
             if (toneMap != 0) {
+                if (colorMatrixMode != 0) {
+                    color = pow(acesToneMap(pqToLinearSdr(color)), 1.0 / 2.2);
+                } else {
+                    color = acesToneMap(color);
+                }
+            }
+
+            return float4(color, 1.0);
+        }
+        """;
+
+    // Packed 4:4:4 AYUV (memory bytes on little-endian Windows: V=r, U=g, Y=b, A=a)
+    // + 5-tap optimized Catmull-Rom Bicubic + AMD FidelityFX CAS + ACES Filmic SDR tone-mapping.
+    private const string AyuvPsHlsl = """
+        cbuffer RenderParams : register(b0) {
+            float2 texelSize;
+            float  sharpness;
+            int    fullRange;
+            int    toneMap;
+            int    colorMatrixMode;
+            float2 _pad;
+        };
+
+        Texture2D<float4> texAyuv : register(t0);
+        SamplerState      samp    : register(s0);
+
+        struct PSIn {
+            float4 pos : SV_Position;
+            float2 uv  : TEXCOORD0;
+        };
+
+        float3 acesToneMap(float3 x) {
+            const float a = 2.51;
+            const float b = 0.03;
+            const float c = 2.43;
+            const float d = 0.59;
+            const float e = 0.14;
+            return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+        }
+
+        float3 sampleAyuvRgb(float2 coord) {
+            float4 vuya = texAyuv.Sample(samp, coord);
+            float yRaw = vuya.b;
+            float u = vuya.g - 0.5;
+            float v = vuya.r - 0.5;
+
+            if (fullRange != 0) {
+                float r = saturate(yRaw + 1.5748 * v);
+                float g = saturate(yRaw - 0.1873 * u - 0.4681 * v);
+                float b = saturate(yRaw + 1.8556 * u);
+                return float3(r, g, b);
+            } else {
+                float y = (yRaw - 0.0627451) * 1.16438356;
+                float r = saturate(y + 1.79274107 * v);
+                float g = saturate(y - 0.21324861 * u - 0.53290933 * v);
+                float b = saturate(y + 2.11240179 * u);
+                return float3(r, g, b);
+            }
+        }
+
+        float3 sampleAyuvCatmullRom(float2 uv) {
+            if (texelSize.x <= 0.0 || texelSize.y <= 0.0) {
+                return sampleAyuvRgb(uv);
+            }
+
+            float2 texSize = 1.0 / texelSize;
+            float2 samplePos = uv * texSize;
+            float2 texPos1 = floor(samplePos - 0.5) + 0.5;
+            float2 f = samplePos - texPos1;
+
+            float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+            float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+            float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+            float2 w3 = f * f * (-0.5 + 0.5 * f);
+
+            float2 w12 = w1 + w2;
+            float2 offset12 = w2 / max(w12, float2(1e-6, 1e-6));
+
+            float2 tc0  = (texPos1 - 1.0) * texelSize;
+            float2 tc12 = (texPos1 + offset12) * texelSize;
+            float2 tc3  = (texPos1 + 2.0) * texelSize;
+
+            float wtTop    = w12.x * w0.y;
+            float wtLeft   = w0.x  * w12.y;
+            float wtCenter = w12.x * w12.y;
+            float wtRight  = w3.x  * w12.y;
+            float wtBottom = w12.x * w3.y;
+            float wtSum    = wtTop + wtLeft + wtCenter + wtRight + wtBottom;
+
+            float3 result =
+                sampleAyuvRgb(float2(tc12.x, tc0.y))  * wtTop +
+                sampleAyuvRgb(float2(tc0.x,  tc12.y)) * wtLeft +
+                sampleAyuvRgb(float2(tc12.x, tc12.y)) * wtCenter +
+                sampleAyuvRgb(float2(tc3.x,  tc12.y)) * wtRight +
+                sampleAyuvRgb(float2(tc12.x, tc3.y))  * wtBottom;
+
+            return saturate(result / wtSum);
+        }
+
+        float4 main(PSIn input) : SV_Target {
+            float3 e = sampleAyuvCatmullRom(input.uv);
+            float3 color = e;
+
+            if (sharpness > 0.001) {
+                float3 b = sampleAyuvRgb(input.uv + float2(0.0, -texelSize.y));
+                float3 d = sampleAyuvRgb(input.uv + float2(-texelSize.x, 0.0));
+                float3 f = sampleAyuvRgb(input.uv + float2(texelSize.x, 0.0));
+                float3 h = sampleAyuvRgb(input.uv + float2(0.0, texelSize.y));
+
+                float3 mnRGB = min(min(min(d, e), min(f, b)), h);
+                float3 mxRGB = max(max(max(d, e), max(f, b)), h);
+                float3 rcpMxRGB = 1.0 / max(mxRGB, float3(1e-5, 1e-5, 1e-5));
+                float3 ampRGB = sqrt(saturate(min(mnRGB, 1.0 - mxRGB) * rcpMxRGB));
+
+                float peak = -1.0 / lerp(8.0, 5.0, saturate(sharpness));
+                float3 wRGB = ampRGB * peak;
+                float3 rcpWeight = 1.0 / (1.0 + 4.0 * wRGB);
+                color = saturate(((b + d + f + h) * wRGB + e) * rcpWeight);
+            }
+
+            if (toneMap != 0) {
                 color = acesToneMap(color);
             }
 
@@ -314,7 +481,8 @@ public sealed class D3D11Renderer : IDisposable
             float  sharpness;
             int    fullRange;
             int    toneMap;
-            float3 _pad;
+            int    colorMatrixMode;
+            float2 _pad;
         };
 
         Texture2D<float4> texBgra : register(t0);
@@ -522,10 +690,12 @@ public sealed class D3D11Renderer : IDisposable
     {
         byte[] vsBytecode = CompileHlsl(FullscreenVsHlsl, "main", "vs_5_0");
         byte[] nv12PsBytecode = CompileHlsl(Nv12PsHlsl, "main", "ps_5_0");
+        byte[] ayuvPsBytecode = CompileHlsl(AyuvPsHlsl, "main", "ps_5_0");
         byte[] bgraPsBytecode = CompileHlsl(BgraPsHlsl, "main", "ps_5_0");
 
         _vertexShader = _device!.CreateVertexShader(vsBytecode);
         _nv12PixelShader = _device.CreatePixelShader(nv12PsBytecode);
+        _ayuvPixelShader = _device.CreatePixelShader(ayuvPsBytecode);
         _bgraPixelShader = _device.CreatePixelShader(bgraPsBytecode);
 
         var samplerDesc = new SamplerDescription
@@ -715,6 +885,233 @@ public sealed class D3D11Renderer : IDisposable
     }
 
     /// <summary>
+    /// GPU zero-copy P010 (10-bit HDR) path from DXVA decoder texture array.
+    /// </summary>
+    public void RenderP010Texture(ID3D11Texture2D srcTexture, int subresourceIndex, int videoWidth, int videoHeight)
+    {
+        if (srcTexture == null || videoWidth <= 0 || videoHeight <= 0) return;
+
+        lock (_renderLock)
+        {
+            if (_disposed || _device == null || _context == null || _swapChain == null) return;
+
+            EnsureP010Resources(videoWidth, videoHeight, needStaging: false);
+
+            var srcDesc = srcTexture.Description;
+            int copyW = Math.Min(_p010Width, (int)srcDesc.Width);
+            int copyH = Math.Min(_p010Height, (int)srcDesc.Height);
+            if (copyW <= 0 || copyH <= 0) return;
+
+            var srcBox = new Box(0, 0, 0, copyW, copyH, 1);
+            _context.CopySubresourceRegion(
+                _p010GpuTex!,
+                0,
+                0, 0, 0,
+                srcTexture,
+                subresourceIndex,
+                srcBox);
+
+            VideoWidth = videoWidth;
+            VideoHeight = videoHeight;
+            _activeSurface = ActiveSurface.P010;
+
+            DrawCurrentAndPresent();
+        }
+    }
+
+    /// <summary>
+    /// CPU P010 (10-bit HDR) upload path: 16-bit Y plane (width * 2 bytes/row) followed by
+    /// interleaved 16-bit UV plane (height/2 rows of width * 2 bytes/row).
+    /// </summary>
+    public unsafe void RenderP010(ReadOnlySpan<byte> p010Data, int width, int height, int strideBytes = 0)
+    {
+        if (p010Data.IsEmpty || width <= 0 || height <= 0) return;
+        int minRowBytes = width * 2;
+        if (strideBytes <= 0) strideBytes = minRowBytes;
+        int uvHeight = height / 2;
+        long requiredBytes = (long)strideBytes * (height + uvHeight);
+        if (p010Data.Length < requiredBytes) return;
+
+        fixed (byte* ptr = p010Data)
+        {
+            RenderP010((nint)ptr, width, height, strideBytes);
+        }
+    }
+
+    public unsafe void RenderP010(nint p010Ptr, int width, int height, int strideBytes)
+    {
+        if (p010Ptr == nint.Zero || width <= 0 || height <= 0) return;
+        int rowBytes = width * 2;
+        if (strideBytes <= 0) strideBytes = rowBytes;
+
+        lock (_renderLock)
+        {
+            if (_disposed || _device == null || _context == null || _swapChain == null) return;
+
+            EnsureP010Resources(width, height, needStaging: true);
+
+            var mapped = _context.Map(_p010StagingTex!, 0, MapMode.Write, D3D11MapFlags.None);
+            try
+            {
+                int dstPitch = (int)mapped.RowPitch;
+                byte* srcBase = (byte*)p010Ptr;
+                byte* dstBase = (byte*)mapped.DataPointer;
+
+                int copyRow = Math.Min(rowBytes, Math.Min(strideBytes, dstPitch));
+                if (strideBytes == dstPitch && strideBytes == rowBytes)
+                {
+                    Buffer.MemoryCopy(srcBase, dstBase, (long)dstPitch * height, (long)rowBytes * height);
+                }
+                else
+                {
+                    for (int y = 0; y < height; y++)
+                    {
+                        Buffer.MemoryCopy(
+                            srcBase + (long)y * strideBytes,
+                            dstBase + (long)y * dstPitch,
+                            dstPitch,
+                            copyRow);
+                    }
+                }
+
+                int uvHeight = height / 2;
+                byte* srcUv = srcBase + (long)strideBytes * height;
+                byte* dstUv = dstBase + (long)dstPitch * _p010Height;
+
+                if (strideBytes == dstPitch && strideBytes == rowBytes)
+                {
+                    Buffer.MemoryCopy(srcUv, dstUv, (long)dstPitch * uvHeight, (long)rowBytes * uvHeight);
+                }
+                else
+                {
+                    for (int y = 0; y < uvHeight; y++)
+                    {
+                        Buffer.MemoryCopy(
+                            srcUv + (long)y * strideBytes,
+                            dstUv + (long)y * dstPitch,
+                            dstPitch,
+                            copyRow);
+                    }
+                }
+            }
+            finally
+            {
+                _context.Unmap(_p010StagingTex!, 0);
+            }
+
+            _context.CopyResource(_p010GpuTex!, _p010StagingTex!);
+
+            VideoWidth = width;
+            VideoHeight = height;
+            _activeSurface = ActiveSurface.P010;
+
+            DrawCurrentAndPresent();
+        }
+    }
+
+    /// <summary>
+    /// GPU zero-copy AYUV (4:4:4 packed V,U,Y,A) path from DXVA decoder texture array.
+    /// </summary>
+    public void RenderAyuvTexture(ID3D11Texture2D srcTexture, int subresourceIndex, int videoWidth, int videoHeight)
+    {
+        if (srcTexture == null || videoWidth <= 0 || videoHeight <= 0) return;
+
+        lock (_renderLock)
+        {
+            if (_disposed || _device == null || _context == null || _swapChain == null) return;
+
+            EnsureAyuvResources(videoWidth, videoHeight, needStaging: false);
+
+            var srcDesc = srcTexture.Description;
+            int copyW = Math.Min(_ayuvWidth, (int)srcDesc.Width);
+            int copyH = Math.Min(_ayuvHeight, (int)srcDesc.Height);
+            if (copyW <= 0 || copyH <= 0) return;
+
+            var srcBox = new Box(0, 0, 0, copyW, copyH, 1);
+            _context.CopySubresourceRegion(
+                _ayuvGpuTex!,
+                0,
+                0, 0, 0,
+                srcTexture,
+                subresourceIndex,
+                srcBox);
+
+            VideoWidth = videoWidth;
+            VideoHeight = videoHeight;
+            _activeSurface = ActiveSurface.Ayuv;
+
+            DrawCurrentAndPresent();
+        }
+    }
+
+    /// <summary>
+    /// CPU AYUV (4:4:4 packed V,U,Y,A, 4 bytes/pixel) upload path.
+    /// </summary>
+    public unsafe void RenderAyuv(ReadOnlySpan<byte> ayuvData, int width, int height, int strideBytes = 0)
+    {
+        if (ayuvData.IsEmpty || width <= 0 || height <= 0) return;
+        int rowBytes = width * 4;
+        if (strideBytes <= 0) strideBytes = rowBytes;
+        if (ayuvData.Length < (long)strideBytes * height) return;
+
+        fixed (byte* ptr = ayuvData)
+        {
+            RenderAyuv((nint)ptr, width, height, strideBytes);
+        }
+    }
+
+    public unsafe void RenderAyuv(nint ayuvPtr, int width, int height, int strideBytes)
+    {
+        if (ayuvPtr == nint.Zero || width <= 0 || height <= 0) return;
+        int rowBytes = width * 4;
+        if (strideBytes <= 0) strideBytes = rowBytes;
+
+        lock (_renderLock)
+        {
+            if (_disposed || _device == null || _context == null || _swapChain == null) return;
+
+            EnsureAyuvResources(width, height, needStaging: true);
+
+            var mapped = _context.Map(_ayuvStagingTex!, 0, MapMode.Write, D3D11MapFlags.None);
+            try
+            {
+                int dstPitch = (int)mapped.RowPitch;
+                byte* srcBase = (byte*)ayuvPtr;
+                byte* dstBase = (byte*)mapped.DataPointer;
+                int copyRow = Math.Min(rowBytes, Math.Min(strideBytes, dstPitch));
+
+                if (strideBytes == dstPitch && strideBytes == rowBytes)
+                {
+                    Buffer.MemoryCopy(srcBase, dstBase, (long)dstPitch * height, (long)rowBytes * height);
+                }
+                else
+                {
+                    for (int y = 0; y < height; y++)
+                    {
+                        Buffer.MemoryCopy(
+                            srcBase + (long)y * strideBytes,
+                            dstBase + (long)y * dstPitch,
+                            dstPitch,
+                            copyRow);
+                    }
+                }
+            }
+            finally
+            {
+                _context.Unmap(_ayuvStagingTex!, 0);
+            }
+
+            _context.CopyResource(_ayuvGpuTex!, _ayuvStagingTex!);
+
+            VideoWidth = width;
+            VideoHeight = height;
+            _activeSurface = ActiveSurface.Ayuv;
+
+            DrawCurrentAndPresent();
+        }
+    }
+
+    /// <summary>
     /// Direct BGRA32 span upload path (used by JPEG / software fallback).
     /// </summary>
     public unsafe void RenderBgra(ReadOnlySpan<byte> bgraData, int width, int height, int stride = 0)
@@ -860,6 +1257,111 @@ public sealed class D3D11Renderer : IDisposable
         }
     }
 
+    private void EnsureP010Resources(int width, int height, bool needStaging)
+    {
+        int alignedW = (width + 1) & ~1;
+        int alignedH = (height + 1) & ~1;
+
+        if (_p010GpuTex == null || _p010Width != alignedW || _p010Height != alignedH)
+        {
+            _p010YSrv?.Dispose();
+            _p010UvSrv?.Dispose();
+            _p010GpuTex?.Dispose();
+            _p010StagingTex?.Dispose();
+            _p010YSrv = null;
+            _p010UvSrv = null;
+            _p010GpuTex = null;
+            _p010StagingTex = null;
+
+            _p010Width = alignedW;
+            _p010Height = alignedH;
+
+            _p010GpuTex = _device!.CreateTexture2D(
+                Format.P010,
+                alignedW,
+                alignedH,
+                mipLevels: 1,
+                arraySize: 1,
+                bindFlags: BindFlags.ShaderResource,
+                usage: ResourceUsage.Default);
+
+            var yDesc = new ShaderResourceViewDescription
+            {
+                Format = Format.R16_UNorm,
+                ViewDimension = ShaderResourceViewDimension.Texture2D,
+                Texture2D = new Texture2DShaderResourceView { MostDetailedMip = 0, MipLevels = 1 },
+            };
+            _p010YSrv = _device.CreateShaderResourceView(_p010GpuTex, yDesc);
+
+            var uvDesc = new ShaderResourceViewDescription
+            {
+                Format = Format.R16G16_UNorm,
+                ViewDimension = ShaderResourceViewDimension.Texture2D,
+                Texture2D = new Texture2DShaderResourceView { MostDetailedMip = 0, MipLevels = 1 },
+            };
+            _p010UvSrv = _device.CreateShaderResourceView(_p010GpuTex, uvDesc);
+        }
+
+        if (needStaging && _p010StagingTex == null)
+        {
+            _p010StagingTex = _device!.CreateTexture2D(
+                Format.P010,
+                _p010Width,
+                _p010Height,
+                mipLevels: 1,
+                arraySize: 1,
+                bindFlags: BindFlags.None,
+                usage: ResourceUsage.Staging,
+                cpuAccessFlags: CpuAccessFlags.Write);
+        }
+    }
+
+    private void EnsureAyuvResources(int width, int height, bool needStaging)
+    {
+        if (_ayuvGpuTex == null || _ayuvWidth != width || _ayuvHeight != height)
+        {
+            _ayuvSrv?.Dispose();
+            _ayuvGpuTex?.Dispose();
+            _ayuvStagingTex?.Dispose();
+            _ayuvSrv = null;
+            _ayuvGpuTex = null;
+            _ayuvStagingTex = null;
+
+            _ayuvWidth = width;
+            _ayuvHeight = height;
+
+            _ayuvGpuTex = _device!.CreateTexture2D(
+                Format.R8G8B8A8_UNorm,
+                width,
+                height,
+                mipLevels: 1,
+                arraySize: 1,
+                bindFlags: BindFlags.ShaderResource,
+                usage: ResourceUsage.Default);
+
+            var srvDesc = new ShaderResourceViewDescription
+            {
+                Format = Format.R8G8B8A8_UNorm,
+                ViewDimension = ShaderResourceViewDimension.Texture2D,
+                Texture2D = new Texture2DShaderResourceView { MostDetailedMip = 0, MipLevels = 1 },
+            };
+            _ayuvSrv = _device.CreateShaderResourceView(_ayuvGpuTex, srvDesc);
+        }
+
+        if (needStaging && _ayuvStagingTex == null)
+        {
+            _ayuvStagingTex = _device!.CreateTexture2D(
+                Format.R8G8B8A8_UNorm,
+                _ayuvWidth,
+                _ayuvHeight,
+                mipLevels: 1,
+                arraySize: 1,
+                bindFlags: BindFlags.None,
+                usage: ResourceUsage.Staging,
+                cpuAccessFlags: CpuAccessFlags.Write);
+        }
+    }
+
     private void EnsureBgraResources(int width, int height)
     {
         if (_bgraTex != null && _bgraWidth == width && _bgraHeight == height) return;
@@ -943,6 +1445,22 @@ public sealed class D3D11Renderer : IDisposable
             _context.PSSetShaderResource(0, null!);
             _context.PSSetShaderResource(1, null!);
         }
+        else if (_activeSurface == ActiveSurface.P010 && _p010YSrv != null && _p010UvSrv != null)
+        {
+            _context.PSSetShader(_nv12PixelShader);
+            _context.PSSetShaderResource(0, _p010YSrv);
+            _context.PSSetShaderResource(1, _p010UvSrv);
+            _context.Draw(3, 0);
+            _context.PSSetShaderResource(0, null!);
+            _context.PSSetShaderResource(1, null!);
+        }
+        else if (_activeSurface == ActiveSurface.Ayuv && _ayuvSrv != null)
+        {
+            _context.PSSetShader(_ayuvPixelShader);
+            _context.PSSetShaderResource(0, _ayuvSrv);
+            _context.Draw(3, 0);
+            _context.PSSetShaderResource(0, null!);
+        }
         else if (_activeSurface == ActiveSurface.Bgra && _bgraSrv != null)
         {
             _context.PSSetShader(_bgraPixelShader);
@@ -968,6 +1486,7 @@ public sealed class D3D11Renderer : IDisposable
                 Sharpness = _sharpness,
                 FullRange = _fullRangeColor ? 1 : 0,
                 ToneMap = _toneMap ? 1 : 0,
+                ColorMatrixMode = _activeSurface == ActiveSurface.P010 ? 1 : 0,
             };
         }
         finally
@@ -1156,6 +1675,15 @@ public sealed class D3D11Renderer : IDisposable
             _nv12GpuTex?.Dispose();
             _nv12StagingTex?.Dispose();
 
+            _p010YSrv?.Dispose();
+            _p010UvSrv?.Dispose();
+            _p010GpuTex?.Dispose();
+            _p010StagingTex?.Dispose();
+
+            _ayuvSrv?.Dispose();
+            _ayuvGpuTex?.Dispose();
+            _ayuvStagingTex?.Dispose();
+
             _bgraSrv?.Dispose();
             _bgraTex?.Dispose();
 
@@ -1163,6 +1691,7 @@ public sealed class D3D11Renderer : IDisposable
             _rasterizerState?.Dispose();
             _linearSampler?.Dispose();
             _bgraPixelShader?.Dispose();
+            _ayuvPixelShader?.Dispose();
             _nv12PixelShader?.Dispose();
             _vertexShader?.Dispose();
 
@@ -1182,12 +1711,20 @@ public sealed class D3D11Renderer : IDisposable
             _nv12UvSrv = null;
             _nv12GpuTex = null;
             _nv12StagingTex = null;
+            _p010YSrv = null;
+            _p010UvSrv = null;
+            _p010GpuTex = null;
+            _p010StagingTex = null;
+            _ayuvSrv = null;
+            _ayuvGpuTex = null;
+            _ayuvStagingTex = null;
             _bgraSrv = null;
             _bgraTex = null;
             _paramsBuffer = null;
             _rasterizerState = null;
             _linearSampler = null;
             _bgraPixelShader = null;
+            _ayuvPixelShader = null;
             _nv12PixelShader = null;
             _vertexShader = null;
             _rtv = null;

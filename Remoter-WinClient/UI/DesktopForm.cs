@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using System.Windows.Forms;
 using RemoterWinClient.Input;
+using Vortice.MediaFoundation;
 
 namespace RemoterWinClient.UI;
 
@@ -65,6 +66,8 @@ public sealed class DesktopForm : Form
     private bool _privacyOn;
     private bool _fullscreen;
     private bool _statsHudVisible = true;
+    private bool _codecCapsSent;
+    private bool _hevcFallbackRequested;
     private bool _disposed;
 
     // Saved window geometry for fullscreen toggle
@@ -207,8 +210,64 @@ public sealed class DesktopForm : Form
             _clipboardSync.SyncNow();
         }
         _conn.SendRequestKeyframe();
+        SendCodecCapsOnce();
 
         _videoHost.Focus();
+    }
+
+    private void SendCodecCapsOnce()
+    {
+        if (_codecCapsSent || _disposed) return;
+        _codecCapsSent = true;
+        bool hevcAvailable = ProbeHevcDecoderAvailable();
+        string[] caps = hevcAvailable ? new[] { "h265", "h264" } : new[] { "h264" };
+        LogVideo($"Advertising codec_caps: [{string.Join(", ", caps)}]");
+        _conn.SendCodecCaps(caps);
+    }
+
+    private static bool ProbeHevcDecoderAvailable()
+    {
+        try
+        {
+            MfVideoDecoder.EnsureMediaFoundationStarted();
+            var categoryVideoDecoder = new Guid("d6c02d4b-6833-45b4-971a-05a4b04bab91");
+            var majorVideo = new Guid("73646976-0000-0010-8000-00aa00389b71");
+            var subtypeHevc = new Guid("43564548-0000-0010-8000-00aa00389b71");
+            const uint syncAndSort = 0x00000001 | 0x00000040;
+
+            MediaFactory.MFTEnumEx(
+                categoryVideoDecoder,
+                syncAndSort,
+                inputType: new RegisterTypeInfo { GuidMajorType = majorVideo, GuidSubtype = subtypeHevc },
+                outputType: null,
+                out nint pppActivate,
+                out uint count);
+
+            if (pppActivate != nint.Zero)
+            {
+                try
+                {
+                    for (uint i = 0; i < count; i++)
+                    {
+                        nint pAct = Marshal.ReadIntPtr(pppActivate, (int)i * IntPtr.Size);
+                        if (pAct != nint.Zero)
+                        {
+                            Marshal.Release(pAct);
+                        }
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(pppActivate);
+                }
+            }
+
+            return count > 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void InitializeVideoPipeline()
@@ -342,6 +401,12 @@ public sealed class DesktopForm : Form
                     {
                         _mfInitialized = false;
                         LogVideo($"MfVideoDecoder re-init failed: {ex.Message}");
+                        if (pkt.Codec == VideoCodecType.H265 && !_hevcFallbackRequested)
+                        {
+                            _hevcFallbackRequested = true;
+                            LogVideo("Falling back from H.265 to H.264");
+                            _conn.SendSetCodec(VideoCodecType.H264);
+                        }
                         return;
                     }
                 }

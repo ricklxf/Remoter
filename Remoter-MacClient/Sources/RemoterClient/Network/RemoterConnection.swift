@@ -1435,6 +1435,10 @@ public final class RemoterConnection: @unchecked Sendable {
         enqueueControlJson(ClientMessages.setCodec(codec))
     }
 
+    public func sendCodecCaps(_ codecs: [String]) {
+        enqueueControlJson(ClientMessages.codecCaps(codecs))
+    }
+
     public func sendSetAudio(enabled: Bool) {
         enqueueControlJson(ClientMessages.setAudio(enabled: enabled))
     }

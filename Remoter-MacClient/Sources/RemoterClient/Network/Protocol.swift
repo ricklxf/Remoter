@@ -246,6 +246,10 @@ public enum ClientMessages {
         serialize(["type": "set_codec", "codec": codec.wireString])
     }
 
+    public static func codecCaps(_ codecs: [String]) -> Data {
+        serialize(["type": "codec_caps", "codecs": codecs])
+    }
+
     public static func setAudio(enabled: Bool) -> Data {
         serialize(["type": "set_audio", "enabled": enabled])
     }

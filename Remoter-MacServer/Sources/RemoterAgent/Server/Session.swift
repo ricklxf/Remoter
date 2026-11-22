@@ -57,6 +57,8 @@ final class Session {
     private var currentFps = 30
     private var currentBitrate = 2_000_000
     private var currentCodec: StreamCodec = .h264
+    private var manualCodecSelected = false
+    private var clientSupportsH265 = false
     private var currentChroma: ChromaMode = .yuv420
     private var currentHdr = false
     private var lowLatencyZeroBuffer = false
@@ -656,7 +658,9 @@ final class Session {
                                                 detail: "force_canvas(low_latency=\(enabled))")
             }
             if nowForceCanvas && !wasForceCanvas && !usingJpeg {
-                encoder?.forceKeyframe()
+                if !autoUpgradeToH265IfEligible(reason: "force_canvas_low_latency") {
+                    encoder?.forceKeyframe()
+                }
             }
             sendJson(["type": "force_canvas", "enabled": nowForceCanvas])
             if nowForceCanvas && !wasForceCanvas && !usingJpeg, let last = lastFrame {
@@ -736,6 +740,7 @@ final class Session {
             }
 
         case .setCodec(let codec):
+            manualCodecSelected = true
             if codec == "jpeg" {
                 switchToJpeg()
             } else if let c = StreamCodec(rawValue: codec), c != currentCodec || usingJpeg {
@@ -750,6 +755,21 @@ final class Session {
                 // Codec is baked into the VTCompressionSession at creation, so
                 // like a resolution change this needs the full pipeline rebuild.
                 Task { await rebuildPipeline() }
+            }
+
+        case .codecCaps(let codecs):
+            let supportsHevc = codecs.contains {
+                let lower = $0.lowercased()
+                return lower == "h265" || lower == "hevc"
+            }
+            clientSupportsH265 = supportsHevc
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "codec_caps",
+                detail: "codecs=\(codecs.joined(separator: ",")) manual=\(manualCodecSelected) rtp=\(usingRtpVideo)"
+            )
+            if supportsHevc {
+                _ = autoUpgradeToH265IfEligible(reason: "codec_caps")
             }
 
         case .listDir(let path):
@@ -1089,20 +1109,99 @@ final class Session {
         encoder = enc
     }
 
+    /// Automatically upgrades the encoder to H.265 (HEVC) when the client
+    /// advertised hardware HEVC decode support via `codec_caps`, no manual
+    /// codec was pinned, and the session is on a non-RTP path (native UDP/WS
+    /// or Web `forceCanvasMode`). Falls back safely to H.264 if HEVC init fails.
+    /// Returns `true` if the encoder was rebuilt to H.265.
+    @discardableResult
+    private func autoUpgradeToH265IfEligible(reason: String) -> Bool {
+        guard clientSupportsH265,
+              !manualCodecSelected,
+              !usingJpeg,
+              (!usingRtpVideo || forceCanvasMode),
+              currentCodec != .h265 else {
+            return false
+        }
+
+        let previousCodec = currentCodec
+        currentCodec = .h265
+        guard let c = capturer else {
+            // beginCapture() hasn't finished yet; it will read currentCodec == .h265.
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "codec_auto_negotiated",
+                detail: "h265 reason=\(reason) deferred=true"
+            )
+            return true
+        }
+
+        do {
+            try setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
+            encoder?.forceKeyframe()
+            webrtc?.preferredCodec = StreamCodec.h265.rawValue
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "codec_auto_negotiated",
+                detail: "h265 reason=\(reason)"
+            )
+            sendJson(["type": "codec_changed", "codec": StreamCodec.h265.rawValue])
+            if let last = lastFrame {
+                encoder?.encode(last)
+            }
+            return true
+        } catch {
+            currentCodec = previousCodec
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "codec_auto_negotiated_fallback",
+                detail: "codec=\(previousCodec.rawValue) err=\(error)"
+            )
+            try? setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
+            return false
+        }
+    }
+
     private func applyColorConfig() {
         let forceCanvas = forceCanvasMode
         capturer?.updateColorConfig(chroma: currentChroma, hdr: currentHdr)
+
+        var autoUpgradedHevc = false
+        if forceCanvas && clientSupportsH265 && !manualCodecSelected && !usingJpeg && currentCodec != .h265 {
+            currentCodec = .h265
+            autoUpgradedHevc = true
+        }
 
         if !usingJpeg, let c = capturer {
             do {
                 try setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
                 encoder?.forceKeyframe()
+                if autoUpgradedHevc {
+                    webrtc?.preferredCodec = StreamCodec.h265.rawValue
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "codec_auto_negotiated",
+                        detail: "h265 reason=force_canvas_color"
+                    )
+                    sendJson(["type": "codec_changed", "codec": StreamCodec.h265.rawValue])
+                }
             } catch {
-                ConnectionLogger.shared.logStep(
-                    sessionId: id.uuidString,
-                    step: "color_encoder_rebuild_failed",
-                    detail: "\(error)"
-                )
+                if autoUpgradedHevc {
+                    currentCodec = .h264
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "codec_auto_negotiated_fallback",
+                        detail: "codec=h264 err=\(error)"
+                    )
+                    try? setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
+                    encoder?.forceKeyframe()
+                } else {
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "color_encoder_rebuild_failed",
+                        detail: "\(error)"
+                    )
+                }
             }
         }
 

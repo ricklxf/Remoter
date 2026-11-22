@@ -53,6 +53,19 @@ export class WebRTCClient {
   // 上一次 getStats 采样，用于算增量
   private lastStats = { framesDecoded: 0, bytesReceived: 0, totalDecodeTime: 0, at: 0 }
 
+  static isH265Supported(): boolean {
+    try {
+      const codecs = RTCRtpReceiver.getCapabilities?.('video')?.codecs
+      if (!codecs || codecs.length === 0) return false
+      return codecs.some((c) => {
+        const mime = c.mimeType.toLowerCase()
+        return mime === 'video/h265' || mime === 'video/hevc'
+      })
+    } catch {
+      return false
+    }
+  }
+
   // MARK: - Offer / Answer
 
   async createOffer(config: WebRTCConfig = {}): Promise<string> {

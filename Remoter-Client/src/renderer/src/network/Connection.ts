@@ -2,7 +2,7 @@ import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry, Chr
 import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
-import { VideoCodec } from '../video/Decoder'
+import { VideoCodec, VideoDecoder_ } from '../video/Decoder'
 
 export interface ConnStats {
   fps: number
@@ -71,6 +71,7 @@ export class Connection {
 
   private sendQueue: Promise<void> = Promise.resolve()
   private queueGen = 0        // incremented on disconnect to abort stale queue items
+  private codecCapsSent = false
   private _lastRecvTs = 0    // timestamp of last received WebSocket message
   private _inputLogN = 0
 
@@ -172,6 +173,7 @@ export class Connection {
     this.e2e.reset()
     this.serverOs = ''
     this.queueGen++                       // invalidate any stale queue items from prior connection
+    this.codecCapsSent = false
     this.sendQueue = Promise.resolve()
     this._lastRecvTs = Date.now()
     this._inputLogN = 0
@@ -245,6 +247,7 @@ export class Connection {
   disconnect(): void {
     this.intentionalClose = true
     this.wasStreaming = false
+    this.codecCapsSent = false
     this.reconnectCount = 0
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.webrtcRestartTimer) { clearTimeout(this.webrtcRestartTimer); this.webrtcRestartTimer = null }
@@ -399,6 +402,10 @@ export class Connection {
 
   sendSetCodec(codec: string): void {
     this.sendJson({ type: 'set_codec', codec })
+  }
+
+  sendCodecCaps(codecs: string[]): void {
+    this.sendJson({ type: 'codec_caps', codecs })
   }
 
   sendJson(obj: object): void {
@@ -643,7 +650,8 @@ export class Connection {
     }
     rtc.onICECandidate = (json) => { this.sendJson({ type: 'webrtc_ice', candidate: json }) }
 
-    const offerSdp = await rtc.createOffer({ iceServers: this.turnServers })
+    const preferredCodec = WebRTCClient.isH265Supported() ? 'h265' : 'h264'
+    const offerSdp = await rtc.createOffer({ iceServers: this.turnServers, preferredCodec })
     await this.sendNetHint()
     this.sendJson({ type: 'webrtc_offer', sdp: offerSdp })
   }
@@ -832,6 +840,19 @@ export class Connection {
           display: msg.display as number | undefined,
         }, codec })
         this.startStatsLoop()
+        if (!this.codecCapsSent) {
+          this.codecCapsSent = true
+          const gen = this.queueGen
+          VideoDecoder_.isH265Supported()
+            .then((h265) => {
+              if (this.queueGen !== gen) return
+              this.sendCodecCaps(h265 ? ['h265', 'h264'] : ['h264'])
+            })
+            .catch(() => {
+              if (this.queueGen !== gen) return
+              this.sendCodecCaps(['h264'])
+            })
+        }
         break
       }
 

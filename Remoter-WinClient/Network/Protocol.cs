@@ -251,6 +251,9 @@ public static class ClientMessages
     public static byte[] SetCodec(VideoCodecType codec) =>
         Serialize(new { type = "set_codec", codec = ProtocolHelpers.ToWireString(codec) });
 
+    public static byte[] CodecCaps(string[] codecs) =>
+        Serialize(new { type = "codec_caps", codecs });
+
     public static byte[] SetAudio(bool enabled) =>
         Serialize(new { type = "set_audio", enabled });
 

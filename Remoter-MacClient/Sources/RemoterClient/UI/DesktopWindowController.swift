@@ -1,4 +1,5 @@
 import AppKit
+import VideoToolbox
 
 /// Full dark native macOS remote desktop window (`1280x800`, resizable, native fullscreen).
 /// Hosts `MetalRendererView` inside an input & file-drop container view, wires `VideoDecoder`,
@@ -48,6 +49,8 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private var privacyEnabled = false
     private var isFullscreen = false
     private var statsHudVisible = true
+    private var hasSentCodecCaps = false
+    private var manualCodecSelected = false
     private var displays: [DisplayInfo] = []
     private var activeDisplayId: UInt32 = 0
 
@@ -407,6 +410,14 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                     self.connection.sendLowLatency(true)
                 }
 
+                if !self.hasSentCodecCaps {
+                    self.hasSentCodecCaps = true
+                    if !self.manualCodecSelected {
+                        let hevcHW = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
+                        self.connection.sendCodecCaps(hevcHW ? ["h265", "h264"] : ["h264"])
+                    }
+                }
+
                 if self.settings.audioEnabled {
                     self.audioPlayer.start()
                     self.connection.sendSetAudio(enabled: true)
@@ -676,6 +687,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         toolbar.onCodecChanged = { [weak self] codec in
             guard let self else { return }
+            self.manualCodecSelected = true
             self.settings.preferredCodec = codec
             DeviceStore.shared.saveSettings(self.settings)
             self.connection.sendSetCodec(codec)
@@ -822,10 +834,12 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private func handleConnectionState(_ state: ConnectionState) {
         switch state {
         case .connecting:
+            hasSentCodecCaps = false
             showOverlay(title: "正在连接…", subtitle: "建立 WebSocket 加密通道")
         case .authenticating:
             showOverlay(title: "正在认证…", subtitle: "验证访问凭据与密钥协商")
         case .reconnecting:
+            hasSentCodecCaps = false
             showOverlay(title: "连接中断，正在重连…", subtitle: "自动重试中")
         case .streaming:
             hideOverlay()

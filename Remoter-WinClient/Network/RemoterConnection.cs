@@ -1316,6 +1316,9 @@ public sealed class RemoterConnection : IDisposable
     public void SendSetCodec(VideoCodecType codec) =>
         EnqueueControlJson(ClientMessages.SetCodec(codec));
 
+    public void SendCodecCaps(string[] codecs) =>
+        EnqueueControlJson(ClientMessages.CodecCaps(codecs));
+
     public void SendSetAudio(bool enabled) =>
         EnqueueControlJson(ClientMessages.SetAudio(enabled));
 

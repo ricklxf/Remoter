@@ -86,6 +86,7 @@ final class Session {
     private var usingWebRTCVideo = false  // legacy DataChannel video path active
     private var usingRtpVideo = false     // RTP media-track path active
     private var usingUdpVideo = false     // direct UDP video path active
+    private var udpCleanBitrateStreak = 0 // consecutive 2s windows with lossRatio < 0.01
     private let udpSessionToken: Data = {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<16).map { _ in UInt8.random(in: 0...255, using: &rng) })
@@ -1266,19 +1267,28 @@ final class Session {
             let udpPort = UdpVideoServer.shared.listeningPort
             if udpPort > 0 {
                 let cryptoKey = crypto.rawKeyData
-                UdpVideoServer.shared.registerSession(token: udpSessionToken, aesKey: cryptoKey) { [weak self] active in
-                    guard let self, !self.isClosed else { return }
-                    self.usingUdpVideo = active
-                    ConnectionLogger.shared.logStep(
-                        sessionId: self.id.uuidString,
-                        step: "video_transport",
-                        detail: active ? "udp" : "ws_fallback"
-                    )
-                    self.sendJson(["type": "udp_active", "enabled": active])
-                    if active {
-                        self.encoder?.forceKeyframe()
+                UdpVideoServer.shared.registerSession(
+                    token: udpSessionToken,
+                    aesKey: cryptoKey,
+                    onActivated: { [weak self] active in
+                        guard let self, !self.isClosed else { return }
+                        self.usingUdpVideo = active
+                        if !active { self.udpCleanBitrateStreak = 0 }
+                        ConnectionLogger.shared.logStep(
+                            sessionId: self.id.uuidString,
+                            step: "video_transport",
+                            detail: active ? "udp" : "ws_fallback"
+                        )
+                        self.sendJson(["type": "udp_active", "enabled": active])
+                        if active {
+                            self.encoder?.forceKeyframe()
+                        }
+                    },
+                    onLossFeedback: { [weak self] lossRatio in
+                        guard let self, !self.isClosed else { return }
+                        self.handleUdpLossFeedback(lossRatio)
                     }
-                }
+                )
                 sendJson([
                     "type": "udp_offer",
                     "port": Int(udpPort),
@@ -1522,6 +1532,48 @@ final class Session {
             self.scrollBoostLock.unlock()
             self.encoder?.setBitrate(self.currentBitrate)
             self.webrtc?.setMaxBitrate(self.currentBitrate)
+        }
+    }
+
+    /// Dynamic UDP bitrate adaptation driven by UdpVideoServer's 2s loss feedback:
+    /// - loss >= 5%: step down 20% (floor 4 Mbps)
+    /// - loss < 1% for 3 consecutive windows (6s): step up 25% (ceiling autoBitrateTiers.last)
+    private func handleUdpLossFeedback(_ lossRatio: Double) {
+        guard usingUdpVideo, autoBitrateEnabled else { return }
+        scrollBoostLock.lock()
+        let boosting = scrollBoostActive
+        scrollBoostLock.unlock()
+        guard !boosting else { return }
+
+        if lossRatio >= 0.05 {
+            udpCleanBitrateStreak = 0
+            let floorBps = 4_000_000
+            let nextBps = max(floorBps, Int((Double(currentBitrate) * 0.80).rounded()))
+            if nextBps != currentBitrate {
+                applyBitrate(nextBps, notify: true)
+                ConnectionLogger.shared.logStep(
+                    sessionId: id.uuidString,
+                    step: "udp_bitrate_adapt",
+                    detail: "dir=down loss=\(String(format: "%.3f", lossRatio)) bitrate=\(nextBps)"
+                )
+            }
+        } else if lossRatio < 0.01 {
+            udpCleanBitrateStreak += 1
+            if udpCleanBitrateStreak >= 3 {
+                udpCleanBitrateStreak = 0
+                let ceilingBps = Self.autoBitrateTiers.last ?? 25_000_000
+                let nextBps = min(ceilingBps, Int((Double(currentBitrate) * 1.25).rounded()))
+                if nextBps != currentBitrate {
+                    applyBitrate(nextBps, notify: true)
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "udp_bitrate_adapt",
+                        detail: "dir=up loss=\(String(format: "%.3f", lossRatio)) bitrate=\(nextBps)"
+                    )
+                }
+            }
+        } else {
+            udpCleanBitrateStreak = 0
         }
     }
 

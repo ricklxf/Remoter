@@ -54,6 +54,13 @@ final class UdpVideoServer {
     static let ringBufferCapacity: Int = 128
     static let keepaliveTimeoutSeconds: TimeInterval = 6.0
 
+    private enum FecLevel: String {
+        case suppressed
+        case light
+        case moderate
+        case heavy
+    }
+
     private final class PeerSession {
         var peerAddr: sockaddr_storage?
         var peerLen: socklen_t = 0
@@ -61,6 +68,15 @@ final class UdpVideoServer {
         var lastKeepaliveAt: Date = .distantPast
         var symmetricKey: SymmetricKey?
         var onActivated: (Bool) -> Void
+        var onLossFeedback: ((Double) -> Void)?
+
+        // 2s sliding-window adaptive FEC & loss feedback
+        var windowSentDataPackets: UInt64 = 0
+        var windowNackPackets: UInt64 = 0
+        var cleanWindows: Int = 0
+        var fecLevel: FecLevel = .light
+        var deltaFecGroupSize: UInt8 = 8
+        var keyFecGroupSize: UInt8 = 4
 
         // 128-packet ring buffer keyed by (UInt64(frameId) << 8) | UInt64(fragIndex)
         var ringKeys: [UInt64] = Array(repeating: 0, count: UdpVideoServer.ringBufferCapacity)
@@ -69,11 +85,12 @@ final class UdpVideoServer {
         var ringWriteCursor: Int = 0
         var nackRetransmits: UInt64 = 0
 
-        init(aesKey: Data?, onActivated: @escaping (Bool) -> Void) {
+        init(aesKey: Data?, onActivated: @escaping (Bool) -> Void, onLossFeedback: ((Double) -> Void)?) {
             if let aesKey, aesKey.count == 32 {
                 self.symmetricKey = SymmetricKey(data: aesKey)
             }
             self.onActivated = onActivated
+            self.onLossFeedback = onLossFeedback
         }
 
         func storeInRing(key: UInt64, datagram: Data) {
@@ -136,7 +153,7 @@ final class UdpVideoServer {
         let timer = DispatchSource.makeTimerSource(queue: ioQueue)
         timer.schedule(deadline: .now() + .seconds(2), repeating: .seconds(2))
         timer.setEventHandler { [weak self] in
-            self?.checkKeepaliveTimeouts()
+            self?.runMaintenanceTick()
         }
 
         lock.lock()
@@ -173,17 +190,23 @@ final class UdpVideoServer {
 
     // MARK: - Session registration
 
-    func registerSession(token: Data, aesKey: Data? = nil, onActivated: @escaping (Bool) -> Void) {
+    func registerSession(
+        token: Data,
+        aesKey: Data? = nil,
+        onActivated: @escaping (Bool) -> Void,
+        onLossFeedback: ((Double) -> Void)? = nil
+    ) {
         guard token.count == 16 else { return }
         lock.lock()
         if let existing = sessions[token] {
             // Preserve active UDP peer across pipeline rebuilds (resolution/codec switch)
             existing.onActivated = onActivated
+            existing.onLossFeedback = onLossFeedback
             if let aesKey, aesKey.count == 32 {
                 existing.symmetricKey = SymmetricKey(data: aesKey)
             }
         } else {
-            sessions[token] = PeerSession(aesKey: aesKey, onActivated: onActivated)
+            sessions[token] = PeerSession(aesKey: aesKey, onActivated: onActivated, onLossFeedback: onLossFeedback)
         }
         lock.unlock()
     }
@@ -231,6 +254,8 @@ final class UdpVideoServer {
         }
         let peerLen = session.peerLen
         let symmetricKey = session.symmetricKey
+        let deltaFec = session.deltaFecGroupSize
+        let keyFec = session.keyFecGroupSize
         lock.unlock()
 
         let fragCount = (totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload
@@ -240,7 +265,7 @@ final class UdpVideoServer {
         if fragCount == 1 {
             fecGroupSize = 0
         } else {
-            fecGroupSize = isKeyframe ? 4 : 8
+            fecGroupSize = isKeyframe ? keyFec : deltaFec
         }
 
         let flags: UInt8 = (isKeyframe ? 0x01 : 0x00) | (isHEVC ? 0x02 : 0x00)
@@ -389,6 +414,7 @@ final class UdpVideoServer {
         if !cachedDataPackets.isEmpty {
             lock.lock()
             if let s = sessions[token] {
+                s.windowSentDataPackets += UInt64(cachedDataPackets.count)
                 for (cacheKey, datagram) in cachedDataPackets {
                     s.storeInRing(key: cacheKey, datagram: datagram)
                 }
@@ -625,6 +651,7 @@ final class UdpVideoServer {
 
         lock.lock()
         if let session = sessions[token], session.isActive {
+            session.windowNackPackets += UInt64(count)
             if let boundAddr = session.peerAddr {
                 destAddr = boundAddr
                 destLen = session.peerLen
@@ -656,23 +683,88 @@ final class UdpVideoServer {
         }
     }
 
-    private func checkKeepaliveTimeouts() {
+    private func runMaintenanceTick() {
         let now = Date()
         var deactivated: [(Bool) -> Void] = []
+        var lossCallbacks: [((Double) -> Void, Double)] = []
+        var fecTransitions: [(FecLevel, Double, UInt8, UInt8)] = []
 
         lock.lock()
         for session in sessions.values {
-            if session.isActive && now.timeIntervalSince(session.lastKeepaliveAt) > Self.keepaliveTimeoutSeconds {
+            guard session.isActive else { continue }
+            if now.timeIntervalSince(session.lastKeepaliveAt) > Self.keepaliveTimeoutSeconds {
                 session.isActive = false
                 session.peerAddr = nil
                 session.peerLen = 0
+                session.windowSentDataPackets = 0
+                session.windowNackPackets = 0
+                session.cleanWindows = 0
+                session.fecLevel = .light
+                session.deltaFecGroupSize = 8
+                session.keyFecGroupSize = 4
                 deactivated.append(session.onActivated)
+                continue
+            }
+
+            let sent = session.windowSentDataPackets
+            let nacks = session.windowNackPackets
+            session.windowSentDataPackets = 0
+            session.windowNackPackets = 0
+
+            guard sent > 0 else { continue }
+            let lossRatio = Double(nacks) / Double(max(1, sent))
+            if nacks == 0 {
+                session.cleanWindows += 1
+            } else {
+                session.cleanWindows = 0
+            }
+
+            let newLevel: FecLevel
+            let newDeltaFec: UInt8
+            let newKeyFec: UInt8
+            if lossRatio >= 0.08 {
+                newLevel = .heavy
+                newDeltaFec = 2
+                newKeyFec = 2
+            } else if lossRatio >= 0.03 {
+                newLevel = .moderate
+                newDeltaFec = 4
+                newKeyFec = 2
+            } else if session.cleanWindows >= 3 {
+                newLevel = .suppressed
+                newDeltaFec = 0
+                newKeyFec = 8
+            } else {
+                newLevel = .light
+                newDeltaFec = 8
+                newKeyFec = 4
+            }
+
+            if newLevel != session.fecLevel {
+                session.fecLevel = newLevel
+                session.deltaFecGroupSize = newDeltaFec
+                session.keyFecGroupSize = newKeyFec
+                fecTransitions.append((newLevel, lossRatio, newDeltaFec, newKeyFec))
+            }
+
+            if let cb = session.onLossFeedback {
+                lossCallbacks.append((cb, lossRatio))
             }
         }
         lock.unlock()
 
         for cb in deactivated {
             cb(false)
+        }
+        for (level, lossRatio, deltaFec, keyFec) in fecTransitions {
+            ConnectionLogger.shared.logStep(
+                sessionId: "udp",
+                step: "fec_state",
+                detail: "level=\(level.rawValue) loss=\(String(format: "%.3f", lossRatio)) deltaG=\(deltaFec) keyG=\(keyFec)"
+            )
+        }
+        for (cb, lossRatio) in lossCallbacks {
+            cb(lossRatio)
         }
     }
 

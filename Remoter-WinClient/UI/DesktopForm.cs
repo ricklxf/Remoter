@@ -64,6 +64,7 @@ public sealed class DesktopForm : Form
     private bool _rendererInitialized;
     private bool _audioOn;
     private bool _privacyOn;
+    private bool _virtualDisplayOn;
     private bool _fullscreen;
     private bool _statsHudVisible = true;
     private bool _codecCapsSent;
@@ -627,6 +628,13 @@ public sealed class DesktopForm : Form
             _conn.SendLowLatency(enable);
         };
 
+        _toolbar.VirtualDisplayToggled += enable =>
+        {
+            _virtualDisplayOn = enable;
+            _toolbar.UpdateState(virtualDisplayOn: enable);
+            _conn.SendVirtualDisplay(enable ? "create" : "destroy");
+        };
+
         _toolbar.ResolutionChanged += tierStr =>
         {
             var tier = ParseResolutionTier(tierStr);
@@ -777,6 +785,7 @@ public sealed class DesktopForm : Form
         _conn.QualityActiveChanged += OnQualityActiveChanged;
         _conn.ChromaActiveChanged += OnChromaActiveChanged;
         _conn.HdrActiveChanged += OnHdrActiveChanged;
+        _conn.VirtualDisplayActiveChanged += OnVirtualDisplayActiveChanged;
         _conn.CursorShapeReceived += OnCursorShapeReceived;
         _conn.ClipboardReceived += OnClipboardReceived;
         _conn.StatsUpdated += OnStatsUpdated;
@@ -794,6 +803,7 @@ public sealed class DesktopForm : Form
         _conn.QualityActiveChanged -= OnQualityActiveChanged;
         _conn.ChromaActiveChanged -= OnChromaActiveChanged;
         _conn.HdrActiveChanged -= OnHdrActiveChanged;
+        _conn.VirtualDisplayActiveChanged -= OnVirtualDisplayActiveChanged;
         _conn.CursorShapeReceived -= OnCursorShapeReceived;
         _conn.ClipboardReceived -= OnClipboardReceived;
         _conn.StatsUpdated -= OnStatsUpdated;
@@ -871,6 +881,15 @@ public sealed class DesktopForm : Form
             _mfDecoder.PreferHdr = enabled;
             _renderer.ToneMap = enabled;
             _toolbar.UpdateState(hdrOn: enabled, toneMapOn: enabled);
+        });
+    }
+
+    private void OnVirtualDisplayActiveChanged(bool enabled, int? displayId)
+    {
+        SafeBeginInvoke(() =>
+        {
+            _virtualDisplayOn = enabled;
+            _toolbar.UpdateState(virtualDisplayOn: enabled);
         });
     }
 
@@ -1108,6 +1127,7 @@ public sealed class DesktopForm : Form
             hdrOn: _settings.HdrEnabled,
             toneMapOn: _settings.ToneMapEnabled,
             lowLatencyOn: _settings.LowLatencyEnabled,
+            virtualDisplayOn: _virtualDisplayOn,
             resolution: FormatResolutionTier(_settings.ResolutionTier),
             scaleMode: FormatScaleMode(_settings.ScaleMode),
             fps: _settings.Fps,

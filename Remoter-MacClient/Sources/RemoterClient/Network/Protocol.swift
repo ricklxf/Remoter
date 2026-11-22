@@ -309,6 +309,19 @@ public enum ClientMessages {
     public static func powerAction(_ action: String) -> Data {
         serialize(["type": "power_action", "action": action])
     }
+
+    public static func virtualDisplay(
+        action: String,
+        width: Int? = nil,
+        height: Int? = nil,
+        fps: Int? = nil
+    ) -> Data {
+        var dict: [String: Any] = ["type": "virtual_display", "action": action]
+        if let width { dict["width"] = width }
+        if let height { dict["height"] = height }
+        if let fps { dict["fps"] = fps }
+        return serialize(dict)
+    }
 }
 
 // MARK: - Inbound Agent -> Client JSON Messages
@@ -325,6 +338,7 @@ public enum ServerMessage: Equatable, Sendable {
     case forceCanvas(enabled: Bool)
     case udpOffer(port: Int, sessionTokenHex: String, encrypted: Bool)
     case udpActive(enabled: Bool)
+    case virtualDisplayActive(enabled: Bool, displayId: Int?)
     case inputLockChanged(locked: Bool)
     case cursorShape(CursorShapeInfo)
     case pong(encodeMs: Int)
@@ -398,6 +412,13 @@ public enum ServerMessage: Equatable, Sendable {
 
         case "udp_active":
             return .udpActive(enabled: readBool(root, "enabled"))
+
+        case "virtual_display_active":
+            let displayId: Int? = (root["display_id"] != nil) ? readInt(root, "display_id") : nil
+            return .virtualDisplayActive(
+                enabled: readBool(root, "enabled"),
+                displayId: displayId
+            )
 
         case "input_lock_changed":
             return .inputLockChanged(locked: readBool(root, "locked"))

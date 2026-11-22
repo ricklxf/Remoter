@@ -27,6 +27,7 @@ public final class FloatingToolbarPanel: NSPanel {
     public var onPowerAction: ((String) -> Void)?
     public var onDisplaySelected: ((UInt32) -> Void)?
     public var onCycleDisplay: (() -> Void)?
+    public var onVirtualDisplayToggled: ((Bool) -> Void)?
     public var onAudioToggled: ((Bool) -> Void)?
     public var onVolumeChanged: ((Float) -> Void)?
     public var onPrivacyToggled: ((Bool) -> Void)?
@@ -65,6 +66,7 @@ public final class FloatingToolbarPanel: NSPanel {
     private var isFullscreen: Bool = false
     private var statsHudVisible: Bool = true
     private var isWindowsHost: Bool = false
+    private var virtualDisplayOn: Bool = false
     private var displays: [DisplayInfo] = []
     private var activeDisplayId: UInt32 = 0
 
@@ -349,7 +351,8 @@ public final class FloatingToolbarPanel: NSPanel {
         macWinSwapOn: Bool? = nil,
         clipboardSyncOn: Bool? = nil,
         isFullscreen: Bool? = nil,
-        statsHudVisible: Bool? = nil
+        statsHudVisible: Bool? = nil,
+        virtualDisplayOn: Bool? = nil
     ) {
         var needsMenuRebuild = false
         if let qualityPreset { self.qualityPreset = qualityPreset; needsMenuRebuild = true }
@@ -366,6 +369,7 @@ public final class FloatingToolbarPanel: NSPanel {
         if let bitrateAuto { self.bitrateAuto = bitrateAuto; needsMenuRebuild = true }
         if let codec { self.codec = codec; needsMenuRebuild = true }
         if let statsHudVisible { self.statsHudVisible = statsHudVisible; needsMenuRebuild = true }
+        if let virtualDisplayOn { self.virtualDisplayOn = virtualDisplayOn; needsMenuRebuild = true }
 
         if let audioOn {
             self.audioOn = audioOn
@@ -474,6 +478,11 @@ public final class FloatingToolbarPanel: NSPanel {
         hdrItem.target = self
         hdrItem.state = hdrEnabled ? .on : .off
         qualityMenu.addItem(hdrItem)
+
+        let vdispItem = NSMenuItem(title: "🖥️ 虚拟扩展屏", action: #selector(toggleVirtualDisplayTapped), keyEquivalent: "")
+        vdispItem.target = self
+        vdispItem.state = virtualDisplayOn ? .on : .off
+        qualityMenu.addItem(vdispItem)
 
         let statsHudItem = NSMenuItem(title: "性能浮窗", action: #selector(toggleStatsHudTapped), keyEquivalent: "")
         statsHudItem.target = self
@@ -685,6 +694,10 @@ public final class FloatingToolbarPanel: NSPanel {
 
     @objc private func cycleDisplayTapped() {
         onCycleDisplay?()
+    }
+
+    @objc private func toggleVirtualDisplayTapped() {
+        onVirtualDisplayToggled?(!virtualDisplayOn)
     }
 
     @objc private func selectResolution(_ sender: NSMenuItem) {

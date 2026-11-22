@@ -520,6 +520,7 @@ public final class RemoterConnection: @unchecked Sendable {
     public var onChromaActiveChanged: ((ChromaMode) -> Void)?
     public var onHdrActiveChanged: ((Bool) -> Void)?
     public var onForceCanvasChanged: ((Bool) -> Void)?
+    public var onVirtualDisplayActiveChanged: ((Bool) -> Void)?
     public var onCursorShape: ((CursorShapeInfo) -> Void)?
     public var onClipboardReceived: ((ClipboardData) -> Void)?
     public var onInputLockChanged: ((Bool) -> Void)?
@@ -1145,6 +1146,9 @@ public final class RemoterConnection: @unchecked Sendable {
                 _udpActive = enabled
             }
 
+        case .virtualDisplayActive(let enabled, _):
+            onVirtualDisplayActiveChanged?(enabled)
+
         case .keepalive, .unknown:
             break
         }
@@ -1491,6 +1495,10 @@ public final class RemoterConnection: @unchecked Sendable {
 
     public func sendPowerAction(_ action: String) {
         enqueueControlJson(ClientMessages.powerAction(action))
+    }
+
+    public func sendVirtualDisplay(action: String, width: Int? = nil, height: Int? = nil, fps: Int? = nil) {
+        enqueueControlJson(ClientMessages.virtualDisplay(action: action, width: width, height: height, fps: fps))
     }
 
     /// Sends a 102-byte Wake-on-LAN Magic Packet (`6x 0xFF` + `16x 6-byte MAC`) via UDP broadcast to `255.255.255.255:9`.

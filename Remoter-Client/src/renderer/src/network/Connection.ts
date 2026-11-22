@@ -26,6 +26,7 @@ export type ConnEvent =
   | { type: 'chroma_active'; mode: ChromaMode }
   | { type: 'hdr_active'; enabled: boolean }
   | { type: 'force_canvas'; enabled: boolean }
+  | { type: 'virtual_display_active'; enabled: boolean; displayId?: number }
   | { type: 'audio_frame'; data: ArrayBuffer }
   | { type: 'cursor_shape'; pngBase64: string; hotX: number; hotY: number }
   | { type: 'media_stream'; stream: MediaStream }
@@ -358,6 +359,16 @@ export class Connection {
   }
   sendSetDisplay(id: number): void {
     this.sendJson({ type: 'display', id })
+  }
+
+  sendVirtualDisplay(action: 'create' | 'destroy', width?: number, height?: number, fps?: number): void {
+    this.sendJson({
+      type: 'virtual_display',
+      action,
+      ...(width ? { width } : {}),
+      ...(height ? { height } : {}),
+      ...(fps ? { fps } : {}),
+    })
   }
 
   // Forces the encoder to emit a keyframe right away instead of waiting for
@@ -882,6 +893,15 @@ export class Connection {
 
       case 'hdr_active': {
         this.emit({ type: 'hdr_active', enabled: Boolean(msg.enabled) })
+        break
+      }
+
+      case 'virtual_display_active': {
+        this.emit({
+          type: 'virtual_display_active',
+          enabled: Boolean(msg.enabled),
+          displayId: typeof msg.display_id === 'number' ? msg.display_id : undefined,
+        })
         break
       }
 

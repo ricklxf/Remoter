@@ -50,6 +50,7 @@ public sealed class FloatingToolbar : Form
     private bool _hdrOn;
     private bool _toneMapOn;
     private bool _lowLatencyOn;
+    private bool _virtualDisplayOn;
     private string _resolution = "native";
     private string _scaleMode = "fit";
     private int _fps = 60;
@@ -73,6 +74,7 @@ public sealed class FloatingToolbar : Form
     public event Action<bool>? HdrToggled;
     public event Action<bool>? ToneMapToggled;
     public event Action<bool>? LowLatencyToggled;
+    public event Action<bool>? VirtualDisplayToggled;
     public event Action<bool>? StatsHudToggled;
     public event Action<string>? ResolutionChanged;
     public event Action<string>? ScaleModeChanged;
@@ -286,6 +288,7 @@ public sealed class FloatingToolbar : Form
         bool? hdrOn = null,
         bool? toneMapOn = null,
         bool? lowLatencyOn = null,
+        bool? virtualDisplayOn = null,
         string? resolution = null,
         string? scaleMode = null,
         int? fps = null,
@@ -307,6 +310,7 @@ public sealed class FloatingToolbar : Form
         if (hdrOn.HasValue)         { _hdrOn = hdrOn.Value;                 rebuildMenu = true; }
         if (toneMapOn.HasValue)     { _toneMapOn = toneMapOn.Value;         rebuildMenu = true; }
         if (lowLatencyOn.HasValue)  { _lowLatencyOn = lowLatencyOn.Value;   rebuildMenu = true; }
+        if (virtualDisplayOn.HasValue) { _virtualDisplayOn = virtualDisplayOn.Value; rebuildMenu = true; }
         if (resolution != null)     { _resolution = resolution;             rebuildMenu = true; }
         if (scaleMode != null)      { _scaleMode = scaleMode;               rebuildMenu = true; }
         if (fps.HasValue)           { _fps = fps.Value;                     rebuildMenu = true; }
@@ -427,6 +431,11 @@ public sealed class FloatingToolbar : Form
             "HDR 10-bit",
             _hdrOn,
             () => HdrToggled?.Invoke(!_hdrOn));
+        AddRootCheckItem(
+            _qualityMenu,
+            "🖥️ 虚拟扩展屏",
+            _virtualDisplayOn,
+            () => VirtualDisplayToggled?.Invoke(!_virtualDisplayOn));
         AddRootCheckItem(
             _qualityMenu,
             "性能浮窗",

@@ -27,6 +27,7 @@ enum ClientMessage {
     case lowLatencySet(enabled: Bool)
     case setAudioEnabled(Bool)
     case setPrivacyScreen(Bool)
+    case virtualDisplay(action: String, width: Int?, height: Int?, fps: Int?)
     case displaySet(id: UInt32)
     case ping
     case requestKeyframe
@@ -130,6 +131,13 @@ enum ClientMessage {
             return .setAudioEnabled(json["enabled"] as? Bool ?? false)
         case "set_privacy_screen":
             return .setPrivacyScreen(json["enabled"] as? Bool ?? false)
+        case "virtual_display":
+            return .virtualDisplay(
+                action: json["action"] as? String ?? "create",
+                width: json["width"] as? Int,
+                height: json["height"] as? Int,
+                fps: json["fps"] as? Int
+            )
         case "display":
             return .displaySet(id: UInt32(json["id"] as? Int ?? 0))
         case "ping":

@@ -133,6 +133,7 @@ public sealed class RemoterConnection : IDisposable
     public event Action<ChromaMode>? ChromaActiveChanged;
     public event Action<bool>? HdrActiveChanged;
     public event Action<bool>? ForceCanvasChanged;
+    public event Action<bool, int?>? VirtualDisplayActiveChanged;
     public event Action<CursorShapeInfo>? CursorShapeReceived;
     public event Action<ClipboardData>? ClipboardReceived;
     public event Action<bool>? InputLockChanged;
@@ -969,6 +970,10 @@ public sealed class RemoterConnection : IDisposable
                 }
                 break;
 
+            case ServerMessage.VirtualDisplayActive vda:
+                VirtualDisplayActiveChanged?.Invoke(vda.Enabled, vda.DisplayId);
+                break;
+
             case ServerMessage.Keepalive:
             case ServerMessage.Unknown:
                 break;
@@ -1355,6 +1360,9 @@ public sealed class RemoterConnection : IDisposable
 
     public void SendPowerAction(string action) =>
         EnqueueControlJson(ClientMessages.PowerAction(action));
+
+    public void SendVirtualDisplay(string action, int? width = null, int? height = null, int? fps = null) =>
+        EnqueueControlJson(ClientMessages.VirtualDisplay(action, width, height, fps));
 
     public void SendListDir(string path) =>
         EnqueueControlJson(ClientMessages.ListDir(path));

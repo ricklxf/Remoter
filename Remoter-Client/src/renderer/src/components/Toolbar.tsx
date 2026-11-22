@@ -39,6 +39,8 @@ interface Props {
   onToggleAudio: () => void
   privacyOn?: boolean
   onTogglePrivacy?: () => void
+  virtualDisplayOn?: boolean
+  onToggleVirtualDisplay?: () => void
   inputLocked: boolean
   onToggleInputLock: () => void
   displays: DisplayInfo[]
@@ -115,6 +117,7 @@ export function Toolbar({
   zoom, onZoomChange,
   audioOn, onToggleAudio,
   privacyOn, onTogglePrivacy,
+  virtualDisplayOn, onToggleVirtualDisplay,
   inputLocked, onToggleInputLock,
   displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
@@ -180,6 +183,7 @@ export function Toolbar({
         conn={conn}
         audioOn={audioOn} onToggleAudio={onToggleAudio}
         privacyOn={privacyOn} onTogglePrivacy={onTogglePrivacy}
+        virtualDisplayOn={virtualDisplayOn} onToggleVirtualDisplay={onToggleVirtualDisplay}
         inputLocked={inputLocked} onToggleInputLock={onToggleInputLock}
       />
       <ShortcutMenu conn={conn} />
@@ -617,12 +621,14 @@ function CodecSelect({ value, onChange }: { value: 'h264' | 'h265'; onChange: (c
 
 // ─── Control menu ─────────────────────────────────────────────────────
 
-function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onTogglePrivacy, inputLocked, onToggleInputLock }: {
+function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onTogglePrivacy, virtualDisplayOn = false, onToggleVirtualDisplay, inputLocked, onToggleInputLock }: {
   conn: Connection
   audioOn: boolean
   onToggleAudio: () => void
   privacyOn?: boolean
   onTogglePrivacy?: () => void
+  virtualDisplayOn?: boolean
+  onToggleVirtualDisplay?: () => void
   inputLocked: boolean
   onToggleInputLock: () => void
 }) {
@@ -709,6 +715,13 @@ function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onToggle
             <span style={s.ctrlItemIcon}>🛡️</span>
             <span style={{ flex: 1 }}>开启防窥隐私屏</span>
             <Toggle checked={privacyOn} onToggle={onTogglePrivacy ?? (() => {})} />
+          </div>
+
+          {/* Virtual extended display */}
+          <div style={s.ctrlItem} title="在被控端创建或销毁 HiDPI 虚拟扩展屏，适合无头主机或多屏办公">
+            <span style={s.ctrlItemIcon}>🖥️</span>
+            <span style={{ flex: 1 }}>虚拟扩展屏</span>
+            <Toggle checked={virtualDisplayOn} onToggle={onToggleVirtualDisplay ?? (() => {})} />
           </div>
 
           <div style={s.menuSep} />

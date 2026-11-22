@@ -697,6 +697,59 @@ final class Session {
             selectedDisplayID = did
             Task { await rebuildPipeline() }
 
+        case .virtualDisplay(let action, let w, let h, let fps):
+            switch action.lowercased() {
+            case "create":
+                let targetW = UInt(min(max(w ?? 1920, 640), 5120)) & ~1
+                let targetH = UInt(min(max(h ?? 1080, 480), 2880)) & ~1
+                let targetFps = Double(max(fps ?? max(currentFps, 60), 30))
+                if let vId = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
+                    logicalWidth: targetW,
+                    logicalHeight: targetH,
+                    refreshRate: targetFps,
+                    scaleFactor: 2.0
+                ) {
+                    selectedDisplayID = vId
+                    resolutionMaxDimension = nil
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "virtual_display",
+                        detail: "create id=\(vId) \(targetW)x\(targetH)@\(Int(targetFps))"
+                    )
+                    sendJson([
+                        "type": "virtual_display_active",
+                        "enabled": true,
+                        "display_id": Int(vId)
+                    ])
+                    Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        await rebuildPipeline()
+                    }
+                } else {
+                    sendJson(["type": "virtual_display_active", "enabled": false])
+                }
+
+            case "destroy":
+                let activeVId = VirtualDisplayManager.shared.activeDisplayID
+                VirtualDisplayManager.shared.destroyVirtualDisplay()
+                if let activeVId, selectedDisplayID == activeVId {
+                    selectedDisplayID = nil
+                }
+                ConnectionLogger.shared.logStep(
+                    sessionId: id.uuidString,
+                    step: "virtual_display",
+                    detail: "destroy"
+                )
+                sendJson(["type": "virtual_display_active", "enabled": false])
+                Task {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    await rebuildPipeline()
+                }
+
+            default:
+                break
+            }
+
         case .ping:
             // encode_ms rides on the pong so the client's latency-breakdown
             // panel gets it with zero extra message traffic. On the RTP path
@@ -1276,6 +1329,14 @@ final class Session {
                                               "width": $0.width, "height": $0.height] },
                 "display": Int(selectedDisplayID ?? CGMainDisplayID())
             ])
+
+            if let activeVId = VirtualDisplayManager.shared.activeDisplayID {
+                sendJson([
+                    "type": "virtual_display_active",
+                    "enabled": true,
+                    "display_id": Int(activeVId)
+                ])
+            }
 
             let udpPort = UdpVideoServer.shared.listeningPort
             if udpPort > 0 {

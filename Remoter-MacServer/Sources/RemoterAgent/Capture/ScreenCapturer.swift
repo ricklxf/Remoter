@@ -97,13 +97,34 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
         currentChroma = chroma
         currentHdr = hdr
 
-        let content: SCShareableContent
+        var content: SCShareableContent
         do {
             content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         } catch {
             ConnectionLogger.shared.logStep(sessionId: "capturer", step: "no_capture_permission",
                 detail: "\(error)")
             throw RemoterError.captureUnavailable
+        }
+
+        // Pure headless Mac recovery: if 0 displays exist, automatically spawn a
+        // 1920x1080 HiDPI virtual display and re-fetch SCShareableContent once.
+        if content.displays.isEmpty {
+            let targetFps = max(fps, 60)
+            ConnectionLogger.shared.logStep(
+                sessionId: "capturer",
+                step: "headless_auto_virtual_display",
+                detail: "1920x1080@\(targetFps)"
+            )
+            _ = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
+                logicalWidth: 1920,
+                logicalHeight: 1080,
+                refreshRate: Double(targetFps),
+                scaleFactor: 2.0
+            )
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if let refreshed = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) {
+                content = refreshed
+            }
         }
 
         // Human-readable display names come from NSScreen (SCDisplay has

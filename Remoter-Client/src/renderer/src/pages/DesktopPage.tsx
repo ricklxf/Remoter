@@ -70,6 +70,7 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
   // Lifted out of RemoteCanvas so the toolbar's icon button can drive it.
   const [imeCalibrating, setImeCalibrating] = useState(false)
   const [privacyOn, setPrivacyOn] = useState(false)
+  const [virtualDisplayOn, setVirtualDisplayOn] = useState(false)
   const [showStatsHud, setShowStatsHud] = useState<boolean>(() => {
     return localStorage.getItem('remoter_show_stats_hud') !== 'false'
   })
@@ -226,6 +227,9 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
       if (e.type === 'force_canvas') {
         setForceCanvas(e.enabled)
       }
+      if (e.type === 'virtual_display_active') {
+        setVirtualDisplayOn(e.enabled)
+      }
       if (e.type === 'audio_frame') {
         audioPlayerRef.current?.push(e.data)
       }
@@ -265,6 +269,12 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     const next = !privacyOn
     setPrivacyOn(next)
     conn.sendSetPrivacyScreen(next)
+  }
+
+  function handleToggleVirtualDisplay() {
+    const next = !virtualDisplayOn
+    setVirtualDisplayOn(next)
+    conn.sendVirtualDisplay(next ? 'create' : 'destroy')
   }
 
   function handleFpsChange(f: number, auto: boolean) {
@@ -376,6 +386,8 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
             onToggleAudio={handleToggleAudio}
             privacyOn={privacyOn}
             onTogglePrivacy={handleTogglePrivacy}
+            virtualDisplayOn={virtualDisplayOn}
+            onToggleVirtualDisplay={handleToggleVirtualDisplay}
             inputLocked={inputLocked}
             onToggleInputLock={handleToggleInputLock}
             displays={streamInfo.displays ?? []}

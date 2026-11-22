@@ -298,6 +298,9 @@ public static class ClientMessages
 
     public static byte[] PowerAction(string action) =>
         Serialize(new { type = "power_action", action });
+
+    public static byte[] VirtualDisplay(string action, int? width = null, int? height = null, int? fps = null) =>
+        Serialize(new { type = "virtual_display", action, width, height, fps });
 }
 
 /// <summary>
@@ -324,6 +327,7 @@ public abstract record ServerMessage
     public sealed record ForceCanvas(bool Enabled) : ServerMessage;
     public sealed record UdpOffer(int Port, string SessionTokenHex, bool Encrypted = false) : ServerMessage;
     public sealed record UdpActive(bool Enabled) : ServerMessage;
+    public sealed record VirtualDisplayActive(bool Enabled, int? DisplayId = null) : ServerMessage;
     public sealed record InputLockChanged(bool Locked) : ServerMessage;
     public sealed record CursorShape(CursorShapeInfo Cursor) : ServerMessage;
     public sealed record Pong(int EncodeMs) : ServerMessage;
@@ -381,6 +385,10 @@ public abstract record ServerMessage
                 Encrypted: root.ReadBool("encrypted", defaultValue: false)),
 
             "udp_active" => new UdpActive(root.ReadBool("enabled")),
+
+            "virtual_display_active" => new VirtualDisplayActive(
+                Enabled: root.ReadBool("enabled"),
+                DisplayId: root.TryGetProperty("display_id", out var vdProp) && vdProp.ValueKind == JsonValueKind.Number && vdProp.TryGetInt32(out int vdId) ? vdId : null),
 
             "input_lock_changed" => new InputLockChanged(root.ReadBool("locked")),
 

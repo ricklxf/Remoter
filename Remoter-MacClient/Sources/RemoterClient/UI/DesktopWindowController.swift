@@ -47,6 +47,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private var isTornDown = false
     private var closeErrorMessage: String?
     private var privacyEnabled = false
+    private var virtualDisplayEnabled = false
     private var isFullscreen = false
     private var statsHudVisible = true
     private var hasSentCodecCaps = false
@@ -473,6 +474,15 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             // Native Metal renderer always draws via Metal; acknowledged cleanly.
         }
 
+        connection.onVirtualDisplayActiveChanged = { [weak self] enabled in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.virtualDisplayEnabled = enabled
+                self.toolbarPanel?.updateState(virtualDisplayOn: enabled)
+                self.showToast(enabled ? "虚拟扩展屏已开启" : "虚拟扩展屏已关闭")
+            }
+        }
+
         connection.onCursorShape = { _ in
             // Intentionally keep the local controller's native cursor instead of
             // replacing it with the remote machine's cursor shape.
@@ -730,6 +740,11 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             self.toolbarPanel?.updateDisplays(self.displays, activeId: next.id)
             self.connection.sendSetDisplay(next.id)
             self.showToast("切换显示器: \(next.name)")
+        }
+
+        toolbar.onVirtualDisplayToggled = { [weak self] enabled in
+            guard let self else { return }
+            self.connection.sendVirtualDisplay(action: enabled ? "create" : "destroy")
         }
 
         toolbar.onAudioToggled = { [weak self] enabled in

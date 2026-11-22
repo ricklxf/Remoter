@@ -392,6 +392,10 @@ export class Connection {
     this.sendJson({ type: 'restart' })
   }
 
+  sendPowerAction(action: 'lock' | 'sleep' | 'restart'): void {
+    this.sendJson({ type: 'power_action', action })
+  }
+
   sendListDir(path: string): void {
     this.sendJson({ type: 'list_dir', path })
   }

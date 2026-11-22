@@ -40,6 +40,7 @@ public abstract record ClientMsg
     public record LockScreen : ClientMsg;
     public record Logout : ClientMsg;
     public record Restart : ClientMsg;
+    public record PowerAction(string Action) : ClientMsg;
     public record AuthCredentials(string Username, string Password) : ClientMsg;
     public record AuthToken(string Token) : ClientMsg;
     public record MouseDoubleClick(string Button, double X, double Y) : ClientMsg;
@@ -87,6 +88,7 @@ public abstract record ClientMsg
             "lock_screen"             => new LockScreen(),
             "logout"                  => new Logout(),
             "restart"                 => new Restart(),
+            "power_action"            => new PowerAction(e.Str("action")),
             "auth_credentials"        => new AuthCredentials(e.Str("username"), e.Str("password")),
             "auth_token"              => new AuthToken(e.Str("token")),
             "mouse_double_click"      => new MouseDoubleClick(e.Str("button"), e.Dbl("x"), e.Dbl("y")),

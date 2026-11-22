@@ -744,6 +744,27 @@ public sealed class DesktopForm : Form
 
         _toolbar.FullscreenToggled += ToggleFullscreen;
         _toolbar.CtrlAltDelRequested += () => _conn.SendCtrlAltDel();
+        _toolbar.PowerActionRequested += action =>
+        {
+            if (action == "lock")
+            {
+                _conn.SendPowerAction("lock");
+            }
+            else if (action == "sleep")
+            {
+                if (MessageBox.Show(this, "确定让远程电脑进入休眠吗？", "远程电源控制", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    _conn.SendPowerAction("sleep");
+                }
+            }
+            else if (action == "restart")
+            {
+                if (MessageBox.Show(this, "确定重启远程电脑吗？", "远程电源控制", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                {
+                    _conn.SendPowerAction("restart");
+                }
+            }
+        };
         _toolbar.DisconnectRequested += () => Close();
     }
 

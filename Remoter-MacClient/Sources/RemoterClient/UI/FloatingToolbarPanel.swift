@@ -24,6 +24,7 @@ public final class FloatingToolbarPanel: NSPanel {
     public var onForceKeyframe: (() -> Void)?
     public var onCtrlAltDel: (() -> Void)?
     public var onLockScreen: (() -> Void)?
+    public var onPowerAction: ((String) -> Void)?
     public var onDisplaySelected: ((UInt32) -> Void)?
     public var onCycleDisplay: (() -> Void)?
     public var onAudioToggled: ((Bool) -> Void)?
@@ -86,12 +87,14 @@ public final class FloatingToolbarPanel: NSPanel {
     private let keySwapButton = Theme.makeButton(title: "⌘↔Ctrl", style: .toolbarActive, fontSize: 11.5)
     private let clipboardButton = Theme.makeButton(title: "剪贴板", style: .toolbarActive, fontSize: 11.5)
     private let filesButton = Theme.makeButton(title: "文件", style: .toolbar, fontSize: 11.5)
+    private let powerButton = Theme.makeButton(title: "电源 ▾", style: .toolbar, fontSize: 11.5)
     private let fullscreenButton = Theme.makeButton(title: "全屏", style: .toolbar, fontSize: 11.5)
     private let disconnectButton = Theme.makeButton(title: "断开", style: .danger, fontSize: 11.5, weight: .semibold)
     private let collapseButton = Theme.makeButton(title: "▲", style: .ghost, fontSize: 11)
 
     private let qualityMenu = NSMenu()
     private let displayMenu = NSMenu()
+    private let powerMenu = NSMenu()
 
     public init(ownerWindow: NSWindow) {
         self.ownerWindow = ownerWindow
@@ -182,6 +185,10 @@ public final class FloatingToolbarPanel: NSPanel {
         filesButton.target = self
         filesButton.action = #selector(filesTapped)
 
+        powerButton.target = self
+        powerButton.action = #selector(showPowerMenu)
+        powerButton.toolTip = "远端电源控制（锁屏 / 休眠 / 重启）"
+
         fullscreenButton.target = self
         fullscreenButton.action = #selector(fullscreenTapped)
 
@@ -198,7 +205,7 @@ public final class FloatingToolbarPanel: NSPanel {
         let controls: [NSView] = [
             displayButton, cycleDisplayButton, qualityButton,
             audioButton, volumeSlider,
-            privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton,
+            privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton,
             sep2, fullscreenButton, disconnectButton, collapseButton
         ]
         for view in controls {
@@ -211,7 +218,7 @@ public final class FloatingToolbarPanel: NSPanel {
         barStack.translatesAutoresizingMaskIntoConstraints = false
         rootContainer.addSubview(barStack)
 
-        for btn in [displayButton, cycleDisplayButton, qualityButton, audioButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, fullscreenButton, disconnectButton, collapseButton] {
+        for btn in [displayButton, cycleDisplayButton, qualityButton, audioButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton, fullscreenButton, disconnectButton, collapseButton] {
             btn.heightAnchor.constraint(equalToConstant: 26).isActive = true
         }
         displayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
@@ -223,6 +230,7 @@ public final class FloatingToolbarPanel: NSPanel {
         keySwapButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 56).isActive = true
         clipboardButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
         filesButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        powerButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
         fullscreenButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         disconnectButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
         collapseButton.widthAnchor.constraint(equalToConstant: 26).isActive = true
@@ -240,6 +248,7 @@ public final class FloatingToolbarPanel: NSPanel {
         ])
 
         rebuildQualityMenu()
+        rebuildPowerMenu()
     }
 
     // MARK: - Positioning & Expand/Collapse
@@ -630,6 +639,7 @@ public final class FloatingToolbarPanel: NSPanel {
     @objc private func collapseTapped() { setExpanded(false) }
     @objc private func showQualityMenu() { popMenu(qualityMenu, under: qualityButton) }
     @objc private func showDisplayMenu() { popMenu(displayMenu, under: displayButton) }
+    @objc private func showPowerMenu() { popMenu(powerMenu, under: powerButton) }
     @objc private func audioTapped() { onAudioToggled?(!audioOn) }
     @objc private func volumeSliderChanged() { onVolumeChanged?(volumeSlider.floatValue) }
     @objc private func privacyTapped() { onPrivacyToggled?(!privacyOn) }
@@ -697,6 +707,27 @@ public final class FloatingToolbarPanel: NSPanel {
     @objc private func selectCodec(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let c = VideoCodec(rawValue: raw) {
             onCodecChanged?(c)
+        }
+    }
+
+    private func rebuildPowerMenu() {
+        powerMenu.removeAllItems()
+        let items: [(String, String)] = [
+            ("🔒 锁屏", "lock"),
+            ("🌙 休眠", "sleep"),
+            ("🔄 重启", "restart")
+        ]
+        for (title, action) in items {
+            let item = NSMenuItem(title: title, action: #selector(powerActionTapped(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = action
+            powerMenu.addItem(item)
+        }
+    }
+
+    @objc private func powerActionTapped(_ sender: NSMenuItem) {
+        if let action = sender.representedObject as? String {
+            onPowerAction?(action)
         }
     }
 

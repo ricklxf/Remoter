@@ -46,6 +46,7 @@ enum ClientMessage {
     case lockScreen
     case logout
     case restart
+    case powerAction(action: String)
     case authCredentials(username: String, password: String)
     case authToken(token: String)
     case setInputLock(locked: Bool)
@@ -171,6 +172,8 @@ enum ClientMessage {
             return .logout
         case "restart":
             return .restart
+        case "power_action":
+            return .powerAction(action: json["action"] as? String ?? "")
         case "auth_credentials":
             return .authCredentials(
                 username: json["username"] as? String ?? "",

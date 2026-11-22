@@ -373,6 +373,10 @@ sealed class Session
                 AdjustPrivilege();
                 ExitWindowsEx(0x0002, 0); break; // EWX_REBOOT
 
+            case ClientMsg.PowerAction pa:
+                HandlePowerAction(pa.Action);
+                break;
+
             case ClientMsg.SetMuted m:
                 SetMasterMute(m.Muted); break;
 
@@ -1411,8 +1415,40 @@ sealed class Session
         return ok;
     }
 
+    private void HandlePowerAction(string action)
+    {
+        var normalized = (action ?? "").Trim().ToLowerInvariant();
+        AppLog.Write($"[Session] PowerAction: {normalized}");
+        ConnectionLogger.Shared.LogStep(_id, "power_action", $"action={normalized}");
+        try
+        {
+            switch (normalized)
+            {
+                case "lock":
+                    LockWorkStation();
+                    break;
+                case "sleep":
+                    SetSuspendState(hibernate: false, forceCritical: false, disableWakeEvent: false);
+                    break;
+                case "restart":
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("shutdown", "/r /t 0")
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false,
+                    });
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Session] PowerAction '{normalized}' failed: {ex.Message}");
+        }
+    }
+
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
     [DllImport("user32.dll")] private static extern bool ExitWindowsEx(uint uFlags, uint dwReason);
+    [DllImport("powrprof.dll", SetLastError = true)]
+    private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
 
     // SendSAS is in sas.dll (Windows 7+)
     [DllImport("sas.dll", EntryPoint = "SendSAS", SetLastError = false)]

@@ -305,6 +305,10 @@ public enum ClientMessages {
     public static func restart() -> Data {
         serialize(["type": "restart"])
     }
+
+    public static func powerAction(_ action: String) -> Data {
+        serialize(["type": "power_action", "action": action])
+    }
 }
 
 // MARK: - Inbound Agent -> Client JSON Messages

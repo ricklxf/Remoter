@@ -1489,6 +1489,58 @@ public final class RemoterConnection: @unchecked Sendable {
         enqueueControlJson(ClientMessages.restart())
     }
 
+    public func sendPowerAction(_ action: String) {
+        enqueueControlJson(ClientMessages.powerAction(action))
+    }
+
+    /// Sends a 102-byte Wake-on-LAN Magic Packet (`6x 0xFF` + `16x 6-byte MAC`) via UDP broadcast to `255.255.255.255:9`.
+    @discardableResult
+    public static func sendWakeOnLan(macAddress: String) -> Bool {
+        let hex = macAddress.filter { $0.isHexDigit }
+        guard hex.count == 12 else { return false }
+
+        var macBytes = [UInt8]()
+        macBytes.reserveCapacity(6)
+        var idx = hex.startIndex
+        for _ in 0..<6 {
+            let next = hex.index(idx, offsetBy: 2)
+            guard let byte = UInt8(hex[idx..<next], radix: 16) else { return false }
+            macBytes.append(byte)
+            idx = next
+        }
+
+        var packet = [UInt8](repeating: 0xFF, count: 6)
+        packet.reserveCapacity(102)
+        for _ in 0..<16 {
+            packet.append(contentsOf: macBytes)
+        }
+
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var broadcast: Int32 = 1
+        guard setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            return false
+        }
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(9).bigEndian
+        addr.sin_addr.s_addr = INADDR_BROADCAST.bigEndian
+
+        let sent = packet.withUnsafeBytes { rawBuf -> ssize_t in
+            guard let base = rawBuf.baseAddress else { return -1 }
+            return withUnsafePointer(to: &addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                    sendto(fd, base, packet.count, 0, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        return sent == packet.count
+    }
+
     public func sendListDir(path: String) {
         enqueueControlJson(ClientMessages.listDir(path: path))
     }

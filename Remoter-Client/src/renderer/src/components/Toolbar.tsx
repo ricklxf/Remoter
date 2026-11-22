@@ -713,10 +713,23 @@ function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onToggle
 
           <div style={s.menuSep} />
 
-          {/* Lock screen */}
-          <button style={s.ctrlItem} onClick={() => { conn.sendLockScreen(); setOpen(false) }}>
+          {/* Power actions (lock / sleep / restart via unified power_action) */}
+          <button style={s.ctrlItem} onClick={() => { conn.sendPowerAction('lock'); setOpen(false) }}>
             <span style={s.ctrlItemIcon}>🔒</span>
-            <span>锁定计算机</span>
+            <span>锁屏</span>
+          </button>
+
+          <button
+            style={s.ctrlItem}
+            onClick={() => {
+              if (window.confirm('确定让远程电脑进入休眠吗？')) {
+                conn.sendPowerAction('sleep')
+                setOpen(false)
+              }
+            }}
+          >
+            <span style={s.ctrlItemIcon}>🌙</span>
+            <span>休眠</span>
           </button>
 
           {/* Logout */}
@@ -725,10 +738,17 @@ function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onToggle
             <span>注销计算机</span>
           </button>
 
-          {/* Restart */}
-          <button style={{ ...s.ctrlItem, color: '#dc2626' }} onClick={() => { conn.sendRestart(); setOpen(false) }}>
+          <button
+            style={{ ...s.ctrlItem, color: '#dc2626' }}
+            onClick={() => {
+              if (window.confirm('确定重启远程电脑吗？')) {
+                conn.sendPowerAction('restart')
+                setOpen(false)
+              }
+            }}
+          >
             <span style={s.ctrlItemIcon}>🔄</span>
-            <span>重启计算机</span>
+            <span>重启</span>
           </button>
         </div>
       )}

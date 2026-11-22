@@ -705,8 +705,12 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         }
 
         toolbar.onLockScreen = { [weak self] in
-            self?.connection.sendLockScreen()
+            self?.connection.sendPowerAction("lock")
             self?.showToast("已锁定远端屏幕")
+        }
+
+        toolbar.onPowerAction = { [weak self] action in
+            self?.handlePowerAction(action)
         }
 
         toolbar.onDisplaySelected = { [weak self] displayId in
@@ -923,6 +927,52 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
     @objc private func cancelOverlayTapped() {
         disconnectAndClose(errorMessage: nil)
+    }
+
+    private func handlePowerAction(_ action: String) {
+        switch action {
+        case "lock":
+            connection.sendPowerAction("lock")
+            showToast("已锁定远端屏幕")
+        case "sleep":
+            confirmPowerAction(
+                title: "休眠远程电脑",
+                message: "确定让远程电脑进入休眠吗？",
+                confirmTitle: "休眠"
+            ) { [weak self] in
+                self?.connection.sendPowerAction("sleep")
+                self?.showToast("已发送远端休眠指令")
+            }
+        case "restart":
+            confirmPowerAction(
+                title: "重启远程电脑",
+                message: "确定重启远程电脑吗？未保存的数据可能会丢失。",
+                confirmTitle: "重启"
+            ) { [weak self] in
+                self?.connection.sendPowerAction("restart")
+                self?.showToast("已发送远端重启指令")
+            }
+        default:
+            break
+        }
+    }
+
+    private func confirmPowerAction(title: String, message: String, confirmTitle: String, onConfirm: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "取消")
+        if let win = window {
+            alert.beginSheetModal(for: win) { response in
+                if response == .alertFirstButtonReturn {
+                    onConfirm()
+                }
+            }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            onConfirm()
+        }
     }
 
     // MARK: - Teardown & NSWindowDelegate

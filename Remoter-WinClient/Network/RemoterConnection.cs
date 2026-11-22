@@ -1353,6 +1353,9 @@ public sealed class RemoterConnection : IDisposable
     public void SendRestart() =>
         EnqueueControlJson(ClientMessages.Restart());
 
+    public void SendPowerAction(string action) =>
+        EnqueueControlJson(ClientMessages.PowerAction(action));
+
     public void SendListDir(string path) =>
         EnqueueControlJson(ClientMessages.ListDir(path));
 

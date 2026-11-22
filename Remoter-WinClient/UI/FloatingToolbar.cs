@@ -33,6 +33,7 @@ public sealed class FloatingToolbar : Form
     private readonly Button _clipboardBtn;
     private readonly Button _privacyBtn;
     private readonly Button _pointerLockBtn;
+    private readonly Button _powerBtn;
     private readonly Button _displayBtn;
     private readonly Button _fullscreenBtn;
     private readonly Button _disconnectBtn;
@@ -40,6 +41,7 @@ public sealed class FloatingToolbar : Form
 
     private readonly ContextMenuStrip _qualityMenu;
     private readonly ContextMenuStrip _displayMenu;
+    private readonly ContextMenuStrip _powerMenu;
 
     // Current state
     private QualityPreset _qualityPreset = QualityPreset.Auto;
@@ -85,6 +87,7 @@ public sealed class FloatingToolbar : Form
     public event Action? FullscreenToggled;
     public event Action? DisconnectRequested;
     public event Action? CtrlAltDelRequested;
+    public event Action<string>? PowerActionRequested;
 
     public FloatingToolbar(Form ownerForm)
     {
@@ -145,7 +148,9 @@ public sealed class FloatingToolbar : Form
         // Context menus
         _qualityMenu = CreateDarkMenu();
         _displayMenu = CreateDarkMenu();
+        _powerMenu   = CreateDarkMenu();
         RebuildQualityMenu();
+        RebuildPowerMenu();
 
         // Buttons
         _qualityBtn     = CreateBarButton("画质 ▾", 68);
@@ -156,12 +161,14 @@ public sealed class FloatingToolbar : Form
         SetToggleStyle(_clipboardBtn, _clipboardOn);
         _privacyBtn     = CreateBarButton("隐私屏", 64);
         _pointerLockBtn = CreateBarButton("游戏鼠标", 74);
+        _powerBtn       = CreateBarButton("电源 ▾", 68);
         _fullscreenBtn  = CreateBarButton("全屏", 52);
         _disconnectBtn  = CreateBarButton("断开", 52, danger: true);
         _collapseBtn    = CreateBarButton("▲", 28);
 
         _qualityBtn.Click += (_, _) => ShowMenuUnder(_qualityMenu, _qualityBtn);
         _displayBtn.Click += (_, _) => ShowMenuUnder(_displayMenu, _displayBtn);
+        _powerBtn.Click += (_, _) => ShowMenuUnder(_powerMenu, _powerBtn);
         _audioBtn.Click += (_, _) => AudioToggled?.Invoke(!_audioOn);
         _clipboardBtn.Click += (_, _) => ClipboardToggled?.Invoke(!_clipboardOn);
         _privacyBtn.Click += (_, _) => PrivacyToggled?.Invoke(!_privacyOn);
@@ -176,6 +183,7 @@ public sealed class FloatingToolbar : Form
         _barPanel.Controls.Add(_clipboardBtn);
         _barPanel.Controls.Add(_privacyBtn);
         _barPanel.Controls.Add(_pointerLockBtn);
+        _barPanel.Controls.Add(_powerBtn);
         _barPanel.Controls.Add(CreateSeparator());
         _barPanel.Controls.Add(_fullscreenBtn);
         _barPanel.Controls.Add(_disconnectBtn);
@@ -493,6 +501,23 @@ public sealed class FloatingToolbar : Form
         _qualityMenu.Items.Add(cadItem);
     }
 
+    private void RebuildPowerMenu()
+    {
+        _powerMenu.Items.Clear();
+
+        var lockItem = new ToolStripMenuItem("🔒 锁屏");
+        lockItem.Click += (_, _) => PowerActionRequested?.Invoke("lock");
+        _powerMenu.Items.Add(lockItem);
+
+        var sleepItem = new ToolStripMenuItem("🌙 休眠");
+        sleepItem.Click += (_, _) => PowerActionRequested?.Invoke("sleep");
+        _powerMenu.Items.Add(sleepItem);
+
+        var restartItem = new ToolStripMenuItem("🔄 重启");
+        restartItem.Click += (_, _) => PowerActionRequested?.Invoke("restart");
+        _powerMenu.Items.Add(restartItem);
+    }
+
     private void RebuildDisplayMenu()
     {
         _displayMenu.Items.Clear();
@@ -602,6 +627,7 @@ public sealed class FloatingToolbar : Form
             _autoHideTimer.Dispose();
             _qualityMenu.Dispose();
             _displayMenu.Dispose();
+            _powerMenu.Dispose();
         }
         base.Dispose(disposing);
     }

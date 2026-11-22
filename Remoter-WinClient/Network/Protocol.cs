@@ -295,6 +295,9 @@ public static class ClientMessages
 
     public static byte[] Restart() =>
         Serialize(new { type = "restart" });
+
+    public static byte[] PowerAction(string action) =>
+        Serialize(new { type = "power_action", action });
 }
 
 /// <summary>

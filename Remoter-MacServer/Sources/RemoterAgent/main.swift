@@ -97,6 +97,7 @@ final class RemoterAgent {
         wsServer.webDir = webDir
         try wsServer.start(port: config.port)
         UdpVideoServer.shared.start()
+        PowerManager.shared.preventSystemIdleSleep()
 
         Task {
             await PublicIPResolver.shared.setOnRefreshed { ip in
@@ -350,6 +351,7 @@ for sig in [SIGTERM, SIGINT] {
         keybotRetryTimer?.cancel()
         keybotRetryTimer = nil
         UdpVideoServer.shared.stop()
+        PowerManager.shared.releaseAllAssertions()
         KeybotEventTap.shared.stop()
         InputSourceForcer.shared.end()
         InputLocker.shared.setLocked(false)

@@ -31,6 +31,7 @@ final class Session {
 
     private var authenticated = false
     private var isClosed = false
+    private var displayAwakeHeld = false
     private var frameId: UInt32 = 0
     private var inputEnabled = true
     private var jpegQuality: Double = 0.75
@@ -339,6 +340,10 @@ final class Session {
         }
         cursorMonitor?.stop()
         cursorMonitor = nil
+        if displayAwakeHeld {
+            displayAwakeHeld = false
+            PowerManager.shared.setDisplayActive(false)
+        }
         usingUdpVideo = false
         UdpVideoServer.shared.unregisterSession(token: udpSessionToken)
         encoder?.close()
@@ -826,6 +831,10 @@ final class Session {
             let script = "tell application \"System Events\" to restart"
             NSAppleScript(source: script)?.executeAndReturnError(nil)
 
+        case .powerAction(let action):
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "power_action", detail: action)
+            PowerManager.shared.performAction(action)
+
         default:
             break
         }
@@ -1252,6 +1261,10 @@ final class Session {
             try setupVideoEncoder(width: c.screenWidth, height: c.screenHeight)
 
             ConnectionLogger.shared.logConnected(sessionId: sid, codec: currentCodec.rawValue, encrypted: crypto.isReady)
+            if !displayAwakeHeld {
+                displayAwakeHeld = true
+                PowerManager.shared.setDisplayActive(true)
+            }
             startKeepalive()
             // Remote cursor shape sync intentionally disabled so clients keep their native local cursor.
             sendJson([

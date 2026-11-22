@@ -184,6 +184,94 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         return clamp(uniforms.colorMatrix * float3(y, uv.x, uv.y), 0.0, 1.0);
     }
 
+    // 5-tap optimized Catmull-Rom Bicubic sampling leveraging hardware linear filtering.
+    // Exact identity at 1:1 texel centers; razor-sharp at Retina / windowed non-1:1 scaling.
+    inline float3 sampleNV12CatmullRom(
+        texture2d<float, access::sample> yTex,
+        texture2d<float, access::sample> uvTex,
+        sampler s,
+        float2 uvCoord,
+        constant YUVUniforms &uniforms
+    ) {
+        float2 texelSize = uniforms.texelSize;
+        float2 texSize = 1.0 / max(texelSize, float2(1e-6));
+        float2 samplePos = uvCoord * texSize;
+        float2 tc1 = floor(samplePos - 0.5) + 0.5;
+        float2 f = samplePos - tc1;
+        float2 f2 = f * f;
+        float2 f3 = f2 * f;
+
+        float2 w0 = f2 - 0.5 * (f3 + f);
+        float2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+        float2 w3 = 0.5 * (f3 - f2);
+        float2 w2 = 1.0 - w0 - w1 - w3;
+
+        float2 w12 = w1 + w2;
+        float2 offset12 = w2 / max(w12, float2(1e-5));
+
+        float2 tc0  = (tc1 - 1.0) * texelSize;
+        float2 tc3  = (tc1 + 2.0) * texelSize;
+        float2 tc12 = (tc1 + offset12) * texelSize;
+
+        float wtTop    = w12.x * w0.y;
+        float wtLeft   = w0.x  * w12.y;
+        float wtCenter = w12.x * w12.y;
+        float wtRight  = w3.x  * w12.y;
+        float wtBottom = w12.x * w3.y;
+        float wtSum    = wtTop + wtLeft + wtCenter + wtRight + wtBottom;
+
+        float3 result =
+            sampleNV12RGB(yTex, uvTex, s, float2(tc12.x, tc0.y),  uniforms) * wtTop +
+            sampleNV12RGB(yTex, uvTex, s, float2(tc0.x,  tc12.y), uniforms) * wtLeft +
+            sampleNV12RGB(yTex, uvTex, s, float2(tc12.x, tc12.y), uniforms) * wtCenter +
+            sampleNV12RGB(yTex, uvTex, s, float2(tc3.x,  tc12.y), uniforms) * wtRight +
+            sampleNV12RGB(yTex, uvTex, s, float2(tc12.x, tc3.y),  uniforms) * wtBottom;
+
+        return clamp(result / max(wtSum, 1e-5), 0.0, 1.0);
+    }
+
+    inline float3 sampleBGRACatmullRom(
+        texture2d<float, access::sample> bgraTex,
+        sampler s,
+        float2 uvCoord,
+        float2 texelSize
+    ) {
+        float2 texSize = 1.0 / max(texelSize, float2(1e-6));
+        float2 samplePos = uvCoord * texSize;
+        float2 tc1 = floor(samplePos - 0.5) + 0.5;
+        float2 f = samplePos - tc1;
+        float2 f2 = f * f;
+        float2 f3 = f2 * f;
+
+        float2 w0 = f2 - 0.5 * (f3 + f);
+        float2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+        float2 w3 = 0.5 * (f3 - f2);
+        float2 w2 = 1.0 - w0 - w1 - w3;
+
+        float2 w12 = w1 + w2;
+        float2 offset12 = w2 / max(w12, float2(1e-5));
+
+        float2 tc0  = (tc1 - 1.0) * texelSize;
+        float2 tc3  = (tc1 + 2.0) * texelSize;
+        float2 tc12 = (tc1 + offset12) * texelSize;
+
+        float wtTop    = w12.x * w0.y;
+        float wtLeft   = w0.x  * w12.y;
+        float wtCenter = w12.x * w12.y;
+        float wtRight  = w3.x  * w12.y;
+        float wtBottom = w12.x * w3.y;
+        float wtSum    = wtTop + wtLeft + wtCenter + wtRight + wtBottom;
+
+        float3 result =
+            bgraTex.sample(s, float2(tc12.x, tc0.y)).rgb  * wtTop +
+            bgraTex.sample(s, float2(tc0.x,  tc12.y)).rgb * wtLeft +
+            bgraTex.sample(s, float2(tc12.x, tc12.y)).rgb * wtCenter +
+            bgraTex.sample(s, float2(tc3.x,  tc12.y)).rgb * wtRight +
+            bgraTex.sample(s, float2(tc12.x, tc3.y)).rgb  * wtBottom;
+
+        return clamp(result / max(wtSum, 1e-5), 0.0, 1.0);
+    }
+
     vertex VertexOut remoterVertexShader(
         uint vertexID [[vertex_id]],
         constant VertexUniforms &uniforms [[buffer(0)]]
@@ -213,7 +301,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         constant YUVUniforms &uniforms [[buffer(0)]]
     ) {
         constexpr sampler s(address::clamp_to_edge, filter::linear);
-        float3 e = sampleNV12RGB(yTex, uvTex, s, in.texCoords, uniforms);
+        float3 e = sampleNV12CatmullRom(yTex, uvTex, s, in.texCoords, uniforms);
         float3 color = e;
 
         if (uniforms.sharpness > 0.001) {
@@ -238,7 +326,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         constant BGRAUniforms &uniforms [[buffer(0)]]
     ) {
         constexpr sampler s(address::clamp_to_edge, filter::linear);
-        float3 e = bgraTex.sample(s, in.texCoords).rgb;
+        float3 e = sampleBGRACatmullRom(bgraTex, s, in.texCoords, uniforms.texelSize);
         float3 color = e;
 
         if (uniforms.sharpness > 0.001) {

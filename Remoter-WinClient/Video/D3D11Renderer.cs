@@ -191,6 +191,7 @@ public sealed class D3D11Renderer : IDisposable
         """;
 
     // BT.709 NV12 -> RGB conversion (supports both limited-range & UU full-range)
+    // + 5-tap optimized Catmull-Rom Bicubic sampling (identity at 1:1, crisp at DPI/windowed scaling)
     // + AMD FidelityFX CAS 5-tap anti-blur sharpening + ACES Filmic SDR tone-mapping.
     private const string Nv12PsHlsl = """
         cbuffer RenderParams : register(b0) {
@@ -239,8 +240,47 @@ public sealed class D3D11Renderer : IDisposable
             }
         }
 
+        float3 sampleNv12CatmullRom(float2 uv) {
+            if (texelSize.x <= 0.0 || texelSize.y <= 0.0) {
+                return sampleNv12Rgb(uv);
+            }
+
+            float2 texSize = 1.0 / texelSize;
+            float2 samplePos = uv * texSize;
+            float2 texPos1 = floor(samplePos - 0.5) + 0.5;
+            float2 f = samplePos - texPos1;
+
+            float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+            float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+            float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+            float2 w3 = f * f * (-0.5 + 0.5 * f);
+
+            float2 w12 = w1 + w2;
+            float2 offset12 = w2 / max(w12, float2(1e-6, 1e-6));
+
+            float2 tc0  = (texPos1 - 1.0) * texelSize;
+            float2 tc12 = (texPos1 + offset12) * texelSize;
+            float2 tc3  = (texPos1 + 2.0) * texelSize;
+
+            float wtTop    = w12.x * w0.y;
+            float wtLeft   = w0.x  * w12.y;
+            float wtCenter = w12.x * w12.y;
+            float wtRight  = w3.x  * w12.y;
+            float wtBottom = w12.x * w3.y;
+            float wtSum    = wtTop + wtLeft + wtCenter + wtRight + wtBottom;
+
+            float3 result =
+                sampleNv12Rgb(float2(tc12.x, tc0.y))  * wtTop +
+                sampleNv12Rgb(float2(tc0.x,  tc12.y)) * wtLeft +
+                sampleNv12Rgb(float2(tc12.x, tc12.y)) * wtCenter +
+                sampleNv12Rgb(float2(tc3.x,  tc12.y)) * wtRight +
+                sampleNv12Rgb(float2(tc12.x, tc3.y))  * wtBottom;
+
+            return saturate(result / wtSum);
+        }
+
         float4 main(PSIn input) : SV_Target {
-            float3 e = sampleNv12Rgb(input.uv);
+            float3 e = sampleNv12CatmullRom(input.uv);
             float3 color = e;
 
             if (sharpness > 0.001) {
@@ -294,8 +334,47 @@ public sealed class D3D11Renderer : IDisposable
             return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
         }
 
+        float3 sampleBgraCatmullRom(float2 uv) {
+            if (texelSize.x <= 0.0 || texelSize.y <= 0.0) {
+                return texBgra.Sample(samp, uv).rgb;
+            }
+
+            float2 texSize = 1.0 / texelSize;
+            float2 samplePos = uv * texSize;
+            float2 texPos1 = floor(samplePos - 0.5) + 0.5;
+            float2 f = samplePos - texPos1;
+
+            float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+            float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+            float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+            float2 w3 = f * f * (-0.5 + 0.5 * f);
+
+            float2 w12 = w1 + w2;
+            float2 offset12 = w2 / max(w12, float2(1e-6, 1e-6));
+
+            float2 tc0  = (texPos1 - 1.0) * texelSize;
+            float2 tc12 = (texPos1 + offset12) * texelSize;
+            float2 tc3  = (texPos1 + 2.0) * texelSize;
+
+            float wtTop    = w12.x * w0.y;
+            float wtLeft   = w0.x  * w12.y;
+            float wtCenter = w12.x * w12.y;
+            float wtRight  = w3.x  * w12.y;
+            float wtBottom = w12.x * w3.y;
+            float wtSum    = wtTop + wtLeft + wtCenter + wtRight + wtBottom;
+
+            float3 result =
+                texBgra.Sample(samp, float2(tc12.x, tc0.y)).rgb  * wtTop +
+                texBgra.Sample(samp, float2(tc0.x,  tc12.y)).rgb * wtLeft +
+                texBgra.Sample(samp, float2(tc12.x, tc12.y)).rgb * wtCenter +
+                texBgra.Sample(samp, float2(tc3.x,  tc12.y)).rgb * wtRight +
+                texBgra.Sample(samp, float2(tc12.x, tc3.y)).rgb  * wtBottom;
+
+            return saturate(result / wtSum);
+        }
+
         float4 main(PSIn input) : SV_Target {
-            float3 e = texBgra.Sample(samp, input.uv).rgb;
+            float3 e = sampleBgraCatmullRom(input.uv);
             float3 color = e;
 
             if (sharpness > 0.001) {

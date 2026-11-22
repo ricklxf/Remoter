@@ -1,5 +1,6 @@
-// WebGL2 video renderer with AMD FidelityFX CAS (Contrast Adaptive Sharpening)
-// and optional ACES Filmic SDR tone-mapping for HDR streams.
+// WebGL2 video renderer with 5-tap optimized Catmull-Rom Bicubic sampling,
+// AMD FidelityFX CAS (Contrast Adaptive Sharpening), and optional ACES Filmic
+// SDR tone-mapping for HDR streams.
 // Supports both WebCodecs VideoFrame and WebRTC <video> zero-copy texture upload,
 // with automatic fallback to 2D canvas if WebGL2 is unavailable.
 
@@ -46,6 +47,36 @@ uniform int uToneMap;
 in vec2 vUv;
 out vec4 fragColor;
 
+// 5-tap optimized Catmull-Rom Bicubic sampling leveraging hardware bilinear filtering.
+// Identity at exact 1:1 texel centers (0 degradation), razor-sharp at non-1:1 / DPI scaling.
+vec3 sampleCatmullRom5(sampler2D tex, vec2 uv, vec2 texSize, vec2 texelSize) {
+  vec2 samplePos = uv * texSize;
+  vec2 texPos1 = floor(samplePos - 0.5) + 0.5;
+  vec2 f = samplePos - texPos1;
+
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+
+  vec2 w12 = w1 + w2;
+  vec2 offset12 = w2 / max(w12, vec2(1e-5));
+
+  vec2 texPos0  = (texPos1 - 1.0) * texelSize;
+  vec2 texPos3  = (texPos1 + 2.0) * texelSize;
+  vec2 texPos12 = (texPos1 + offset12) * texelSize;
+
+  vec3 result = vec3(0.0);
+  result += texture(tex, vec2(texPos12.x, texPos0.y)).rgb  * (w12.x * w0.y);
+  result += texture(tex, vec2(texPos0.x,  texPos12.y)).rgb * (w0.x  * w12.y);
+  result += texture(tex, vec2(texPos12.x, texPos12.y)).rgb * (w12.x * w12.y);
+  result += texture(tex, vec2(texPos3.x,  texPos12.y)).rgb * (w3.x  * w12.y);
+  result += texture(tex, vec2(texPos12.x, texPos3.y)).rgb  * (w12.x * w3.y);
+
+  float weightSum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+  return clamp(result / max(weightSum, 1e-5), 0.0, 1.0);
+}
+
 // ACES Filmic SDR tone-mapping (Narkowicz 2015 fit)
 vec3 acesFilmic(vec3 x) {
   const float a = 2.51;
@@ -57,7 +88,8 @@ vec3 acesFilmic(vec3 x) {
 }
 
 void main() {
-  vec3 e = texture(uTexture, vUv).rgb;
+  vec2 texSize = vec2(textureSize(uTexture, 0));
+  vec3 e = sampleCatmullRom5(uTexture, vUv, texSize, uTexelSize);
   vec3 color = e;
 
   // AMD FidelityFX CAS (Contrast Adaptive Sharpening) 5-tap cross filter

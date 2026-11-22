@@ -91,6 +91,9 @@ public sealed class VideoHostControl : Control
     /// <summary>Fired on WM_KILLFOCUS so pressed keys &amp; pointer lock can be cleanly released.</summary>
     public event Action? FocusLost;
 
+    /// <summary>Fired when the user drags files over or away from the viewport.</summary>
+    public event Action<bool>? FileDragHoverChanged;
+
     /// <summary>Fired when the user drops one or more files onto the remote desktop viewport.</summary>
     public event Action<string[]>? FilesDropped;
 
@@ -144,6 +147,7 @@ public sealed class VideoHostControl : Control
         if (drgevent.Data?.GetDataPresent(DataFormats.FileDrop) == true)
         {
             drgevent.Effect = DragDropEffects.Copy;
+            FileDragHoverChanged?.Invoke(true);
         }
         else
         {
@@ -152,8 +156,15 @@ public sealed class VideoHostControl : Control
         base.OnDragEnter(drgevent);
     }
 
+    protected override void OnDragLeave(EventArgs e)
+    {
+        FileDragHoverChanged?.Invoke(false);
+        base.OnDragLeave(e);
+    }
+
     protected override void OnDragDrop(DragEventArgs drgevent)
     {
+        FileDragHoverChanged?.Invoke(false);
         if (drgevent.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
         {
             FilesDropped?.Invoke(files);

@@ -40,6 +40,11 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     // Floating IME composition echo pill (bottom-center, matching Web RemoteCanvas.tsx)
     private let imeEchoCard = Theme.makeCard(background: Theme.elevated.withAlphaComponent(0.95), cornerRadius: 8)
     private let imeEchoLabel = Theme.makeLabel("", size: 14, weight: .medium, color: Theme.textPrimary)
+
+    // Translucent Drag & Drop upload overlay
+    private let dropOverlayView = NSView()
+    private let dropOverlayCard = Theme.makeCard(background: Theme.surface.withAlphaComponent(0.92), cornerRadius: 14)
+    private let dropOverlayLabel = Theme.makeLabel("📁 松开即上传文件到远端", size: 16, weight: .semibold, color: Theme.textPrimary)
     private var imeEchoBottomConstraint: NSLayoutConstraint?
 
     // Session state
@@ -145,6 +150,12 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         rendererView.translatesAutoresizingMaskIntoConstraints = false
         rendererView.inputManager = inputManager
+        rendererView.onFileDragHoverChanged = { [weak self] hovering in
+            self?.setDropOverlayVisible(hovering)
+        }
+        rendererView.onFilesDropped = { [weak self] urls in
+            self?.handleDroppedFiles(urls)
+        }
         rendererView.scaleMode = settings.scaleMode
         rendererView.sharpness = settings.sharpness
         rendererView.toneMap = settings.toneMapEnabled
@@ -175,6 +186,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         setupOverlayBanner(in: contentView)
         setupToast(in: contentView)
         setupImeEcho(in: contentView)
+        setupDropOverlay(in: contentView)
 
         if let win = window {
             let toolbar = FloatingToolbarPanel(ownerWindow: win)
@@ -258,6 +270,38 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             imeEchoCard.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             bottomConstraint,
         ])
+    }
+
+    private func setupDropOverlay(in container: NSView) {
+        dropOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        dropOverlayView.wantsLayer = true
+        dropOverlayView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        dropOverlayView.isHidden = true
+
+        dropOverlayCard.layer?.borderColor = Theme.accent.cgColor
+        dropOverlayCard.layer?.borderWidth = 2
+        dropOverlayCard.addSubview(dropOverlayLabel)
+        dropOverlayView.addSubview(dropOverlayCard)
+        container.addSubview(dropOverlayView)
+
+        NSLayoutConstraint.activate([
+            dropOverlayView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            dropOverlayView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            dropOverlayView.topAnchor.constraint(equalTo: container.topAnchor),
+            dropOverlayView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            dropOverlayLabel.leadingAnchor.constraint(equalTo: dropOverlayCard.leadingAnchor, constant: 28),
+            dropOverlayLabel.trailingAnchor.constraint(equalTo: dropOverlayCard.trailingAnchor, constant: -28),
+            dropOverlayLabel.topAnchor.constraint(equalTo: dropOverlayCard.topAnchor, constant: 18),
+            dropOverlayLabel.bottomAnchor.constraint(equalTo: dropOverlayCard.bottomAnchor, constant: -18),
+
+            dropOverlayCard.centerXAnchor.constraint(equalTo: dropOverlayView.centerXAnchor),
+            dropOverlayCard.centerYAnchor.constraint(equalTo: dropOverlayView.centerYAnchor),
+        ])
+    }
+
+    private func setDropOverlayVisible(_ visible: Bool) {
+        dropOverlayView.isHidden = !visible
     }
 
     private func updateImeEchoBottomMargin() {

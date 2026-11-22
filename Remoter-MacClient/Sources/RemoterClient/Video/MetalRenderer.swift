@@ -75,6 +75,10 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
     public var onImeCompositionChanged: ((String) -> Void)?
     /// Optional screen-space anchor rect provider for the macOS IME candidate window.
     public var imeCandidateAnchorRectProvider: (() -> NSRect?)?
+    /// Fired when a local file drag enters/exits the video view.
+    public var onFileDragHoverChanged: ((Bool) -> Void)?
+    /// Fired when regular local files are dropped onto the video view.
+    public var onFilesDropped: (([URL]) -> Void)?
 
     // MARK: - Private IME State
 
@@ -379,6 +383,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
     public init(frame: NSRect) {
         let metalDevice = MTLCreateSystemDefaultDevice()
         super.init(frame: frame, device: metalDevice)
+        registerForDraggedTypes([.fileURL])
         if let metalDevice {
             configureMetal(device: metalDevice)
         }
@@ -387,6 +392,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
     public required init(coder: NSCoder) {
         let metalDevice = MTLCreateSystemDefaultDevice()
         super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
         self.device = metalDevice
         if let metalDevice {
             configureMetal(device: metalDevice)
@@ -981,6 +987,45 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
             return true
         default:
             return false
+        }
+    }
+
+    // MARK: - Drag & Drop Local File Upload
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard hasFileURLs(in: sender) else { return [] }
+        onFileDragHoverChanged?(true)
+        return .copy
+    }
+
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        onFileDragHoverChanged?(false)
+    }
+
+    public override func draggingEnded(_ sender: NSDraggingInfo) {
+        onFileDragHoverChanged?(false)
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onFileDragHoverChanged?(false)
+        guard let urls = extractRegularFileURLs(from: sender), !urls.isEmpty else { return false }
+        onFilesDropped?(urls)
+        return true
+    }
+
+    private func hasFileURLs(in info: NSDraggingInfo) -> Bool {
+        info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+
+    private func extractRegularFileURLs(from info: NSDraggingInfo) -> [URL]? {
+        guard let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] else {
+            return nil
+        }
+        return urls.filter { url in
+            (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
         }
     }
 }

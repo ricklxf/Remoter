@@ -71,6 +71,8 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
   const [imeCalibrating, setImeCalibrating] = useState(false)
   const [privacyOn, setPrivacyOn] = useState(false)
   const [virtualDisplayOn, setVirtualDisplayOn] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepthRef = useRef(0)
   const [showStatsHud, setShowStatsHud] = useState<boolean>(() => {
     return localStorage.getItem('remoter_show_stats_hud') !== 'false'
   })
@@ -297,8 +299,62 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
 
   const toggleToolbar = useCallback(() => setToolbarVisible(v => !v), [])
 
+  function hasDraggedFiles(dt: DataTransfer | null): boolean {
+    return Boolean(dt && Array.from(dt.types).includes('Files'))
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    if (!hasDraggedFiles(e.dataTransfer)) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current += 1
+    setDragOver(true)
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    if (!hasDraggedFiles(e.dataTransfer)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'copy'
+    if (!dragOver) setDragOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    if (!hasDraggedFiles(e.dataTransfer)) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragOver(false)
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    dragDepthRef.current = 0
+    setDragOver(false)
+    if (!hasDraggedFiles(e.dataTransfer)) return
+    e.preventDefault()
+    e.stopPropagation()
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length === 0) return
+    setShowTransfers(true)
+    ;(async () => {
+      for (const file of files) {
+        try {
+          await conn.sendFile(file)
+        } catch (err) {
+          console.warn('[DesktopPage] drop upload failed:', file.name, err)
+        }
+      }
+    })()
+  }
+
   return (
-    <div style={styles.wrap}>
+    <div
+      style={styles.wrap}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <RemoteCanvas
         conn={conn}
         streamInfo={streamInfo}
@@ -316,6 +372,15 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
       />
 
       <StatsHUD stats={stats} visible={showStatsHud} />
+
+      {dragOver && (
+        <div style={styles.dropOverlay}>
+          <div style={styles.dropHint}>
+            <span style={{ fontSize: 28, lineHeight: 1 }}>📁</span>
+            <span>松开即上传文件到远端</span>
+          </div>
+        </div>
+      )}
 
       {showTransfers && (
         <FileTransferWindow
@@ -477,5 +542,31 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 10,
     padding: '1px 5px',
     lineHeight: '14px',
+  },
+  dropOverlay: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 300,
+    background: 'rgba(13, 148, 136, 0.18)',
+    border: '3px dashed rgba(20, 184, 166, 0.85)',
+    backdropFilter: 'blur(2px)',
+    WebkitBackdropFilter: 'blur(2px)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  dropHint: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 10,
+    padding: '18px 32px',
+    borderRadius: 14,
+    background: 'rgba(15, 23, 42, 0.82)',
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 600,
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.35)',
   },
 }

@@ -26,6 +26,8 @@ public sealed class DesktopForm : Form
 
     private readonly VideoHostControl _videoHost;
     private readonly Label _imeEchoLabel;
+    private readonly Label _dropHintLabel;
+    private readonly System.Windows.Forms.Timer _dropToastTimer;
     private readonly FloatingToolbar _toolbar;
     private readonly StatsHudOverlay _statsHud;
     private readonly RawInputManager _inputManager;
@@ -132,6 +134,50 @@ public sealed class DesktopForm : Form
         _videoHost.Controls.Add(_imeEchoLabel);
         _videoHost.ImeTextCommitted += text => _conn?.SendTextInput(text);
         _videoHost.ImeCompositionChanged += UpdateImeEcho;
+
+        // ── Centered Drag & Drop hint / upload progress toast ──
+        AllowDrop = true;
+        _dropHintLabel = new Label
+        {
+            AutoSize = true,
+            Visible = false,
+            BackColor = Color.FromArgb(24, 30, 42),
+            ForeColor = Color.White,
+            Font = new Font("Microsoft YaHei UI", 12f, FontStyle.Bold),
+            Padding = new Padding(18, 10, 18, 10),
+            BorderStyle = BorderStyle.FixedSingle,
+            Text = "📁 松开即上传文件到远端",
+            TabStop = false,
+        };
+        _videoHost.Controls.Add(_dropHintLabel);
+        _dropToastTimer = new System.Windows.Forms.Timer { Interval = 2500 };
+        _dropToastTimer.Tick += (_, _) =>
+        {
+            _dropToastTimer.Stop();
+            if (!_dropHintLabel.IsDisposed) _dropHintLabel.Visible = false;
+        };
+
+        DragEnter += (_, e) =>
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+            {
+                e.Effect = DragDropEffects.Copy;
+                SetDropOverlayVisible(true);
+            }
+            else
+            {
+                e.Effect = DragDropEffects.None;
+            }
+        };
+        DragLeave += (_, _) => SetDropOverlayVisible(false);
+        DragDrop += (_, e) =>
+        {
+            SetDropOverlayVisible(false);
+            if (e.Data?.GetData(DataFormats.FileDrop) is string[] dropped && dropped.Length > 0)
+            {
+                OnFilesDropped(dropped);
+            }
+        };
         _videoHost.ImeEchoBoundsProvider = () =>
             (!_disposed && !_imeEchoLabel.IsDisposed && _imeEchoLabel.Visible)
                 ? (Rectangle?)_imeEchoLabel.Bounds
@@ -157,6 +203,7 @@ public sealed class DesktopForm : Form
 
         // ── Viewport & Window lifecycle events ──
         _videoHost.ViewportResized += OnViewportResized;
+        _videoHost.FileDragHoverChanged += SetDropOverlayVisible;
         _videoHost.FilesDropped += OnFilesDropped;
 
         // ── Connection & Decoder events ──
@@ -970,6 +1017,7 @@ public sealed class DesktopForm : Form
 
         SyncContentRect();
         PositionImeEchoLabel();
+        PositionDropHintLabel();
         if (_videoHost.IsImeComposing)
         {
             _videoHost.PositionImeWindow();
@@ -1007,15 +1055,81 @@ public sealed class DesktopForm : Form
             Math.Max(margin, h - _imeEchoLabel.Height - bottomClearance));
     }
 
+    private void SetDropOverlayVisible(bool visible)
+    {
+        if (_disposed || _dropHintLabel.IsDisposed) return;
+        _dropToastTimer.Stop();
+        if (visible)
+        {
+            _dropHintLabel.Text = "📁 松开即上传文件到远端";
+            _dropHintLabel.Visible = true;
+            _dropHintLabel.BringToFront();
+            PositionDropHintLabel();
+        }
+        else
+        {
+            _dropHintLabel.Visible = false;
+        }
+    }
+
+    private void ShowUploadToast(string text, bool autoHide = false)
+    {
+        SafeBeginInvoke(() =>
+        {
+            if (_disposed || _dropHintLabel.IsDisposed) return;
+            _dropToastTimer.Stop();
+            _dropHintLabel.Text = text;
+            _dropHintLabel.Visible = true;
+            _dropHintLabel.BringToFront();
+            PositionDropHintLabel();
+            if (autoHide)
+            {
+                _dropToastTimer.Start();
+            }
+        });
+    }
+
+    private void PositionDropHintLabel()
+    {
+        if (_dropHintLabel == null || _dropHintLabel.IsDisposed || !_dropHintLabel.Visible) return;
+        int w = _videoHost.ClientSize.Width;
+        int h = _videoHost.ClientSize.Height;
+        _dropHintLabel.Location = new Point(
+            Math.Max(8, (w - _dropHintLabel.Width) / 2),
+            Math.Max(8, (h - _dropHintLabel.Height) / 2));
+    }
+
     private void OnFilesDropped(string[] files)
     {
-        foreach (string path in files)
+        var validFiles = files.Where(File.Exists).ToList();
+        if (validFiles.Count == 0) return;
+
+        _ = Task.Run(async () =>
         {
-            if (File.Exists(path))
+            int uploaded = 0;
+            for (int i = 0; i < validFiles.Count; i++)
             {
-                _ = _conn.UploadFileAsync(path);
+                if (_disposed) return;
+                string path = validFiles[i];
+                string name = Path.GetFileName(path);
+                ShowUploadToast($"📁 正在上传 ({i + 1}/{validFiles.Count}): {name}");
+                try
+                {
+                    await _conn.UploadFileAsync(path).ConfigureAwait(false);
+                    uploaded++;
+                }
+                catch (Exception ex)
+                {
+                    LogVideo($"File upload failed ({name}): {ex.Message}");
+                }
             }
-        }
+            if (!_disposed)
+            {
+                ShowUploadToast(
+                    uploaded > 0 ? $"✓ 已上传 {uploaded}/{validFiles.Count} 个文件到远端" : "✕ 文件上传失败",
+                    autoHide: true);
+            }
+        });
     }
 
     protected override void OnMove(EventArgs e)
@@ -1314,6 +1428,8 @@ public sealed class DesktopForm : Form
 
             _inputManager.Dispose();
             _clipboardSync.Dispose();
+            _dropToastTimer.Stop();
+            _dropToastTimer.Dispose();
 
             if (!_toolbar.IsDisposed)
             {

@@ -3,143 +3,225 @@ using Vortice.MediaFoundation;
 
 namespace RemoterWin;
 
-// Hardware H.264 encoder via Media Foundation, driven directly through
+public enum WinVideoCodec
+{
+    H264,
+    H265,
+}
+
+// Hardware H.264 / H.265 (HEVC) encoder via Media Foundation, driven directly through
 // IMFTransform (not IMFSinkWriter — the sink writer targets file/container
 // muxing and buffers for that; for live low-latency streaming we want the
 // encoder MFT's raw input→output cadence with no extra buffering).
 //
 // MFTEnumEx picks whatever hardware MFT the driver exposes (NVENC/QuickSync/
-// AMD VCE) automatically; if none is found we fall back to the software H.264
-// MFT that ships with Windows itself, so this never hard-fails to "no encoder".
-//
-// Input: BGRA32 frames (same format ScreenCapturer already produces from the
-// DXGI staging texture). The encoder wants NV12, so each frame is converted
-// CPU-side — still far cheaper than the JPEG encode it replaces.
-//
-// Vortice.MediaFoundation doesn't expose a typed MediaTypeAttributeKeys
-// wrapper (unlike SharpDX.MediaFoundation, which this file was originally
-// modeled after) — media-type attributes are addressed by their well-known
-// native GUID directly via IMFAttributes.Set/Get, same as every other
-// Vortice.MediaFoundation consumer does.
+// AMD VCE) automatically; if HEVC is requested and unavailable, falls back
+// automatically to hardware/software H.264 so encoding never hard-fails.
 sealed class H264Encoder : IDisposable
 {
     private IMFTransform?   _transform;
+    private ICodecAPI?      _codecApi;
     private int             _width, _height;
+    private int             _fps = 60;
+    private int             _bitrateBps = 8_000_000;
     private long            _frameDuration100ns; // 1 / fps in 100ns units
     private bool            _streaming;
     private byte[]          _nv12Buf = [];
     private readonly object _lock = new();
 
     public bool IsHardware { get; private set; }
+    public WinVideoCodec ActiveCodec { get; private set; } = WinVideoCodec.H264;
+    public int CurrentBitrateBps => _bitrateBps;
+    public int CurrentFps => _fps;
 
     private static readonly Guid MftCategoryVideoEncoder = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
     private static readonly Guid MfMediaTypeVideo         = new("73646976-0000-0010-8000-00aa00389b71");
+    private static readonly Guid MFVideoFormat_HEVC       = new(0x43564548, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71);
 
-    // MF_MT_* attribute GUIDs (mfapi.h) — see comment above re: no typed wrapper.
-    private static readonly Guid MF_MT_MAJOR_TYPE     = new("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
-    private static readonly Guid MF_MT_SUBTYPE        = new("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
-    private static readonly Guid MF_MT_AVG_BITRATE    = new("20332624-fb0d-4d9e-bd0d-cbf6786c102e");
-    private static readonly Guid MF_MT_FRAME_SIZE     = new("1652c33d-d6b2-4012-b834-72030849a37d");
-    private static readonly Guid MF_MT_FRAME_RATE     = new("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");
-    private static readonly Guid MF_MT_INTERLACE_MODE = new("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
+    // MF_MT_* attribute GUIDs (mfapi.h)
+    private static readonly Guid MF_MT_MAJOR_TYPE           = new("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
+    private static readonly Guid MF_MT_SUBTYPE              = new("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
+    private static readonly Guid MF_MT_AVG_BITRATE          = new("20332624-fb0d-4d9e-bd0d-cbf6786c102e");
+    private static readonly Guid MF_MT_FRAME_SIZE           = new("1652c33d-d6b2-4012-b834-72030849a37d");
+    private static readonly Guid MF_MT_FRAME_RATE           = new("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");
+    private static readonly Guid MF_MT_INTERLACE_MODE       = new("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
     private static readonly Guid MF_MT_MAX_KEYFRAME_SPACING = new("c16eb52b-73a1-476f-8d62-839d6a020652");
+    private static readonly Guid MF_MT_VIDEO_PRIMARIES      = new("dbfbe4d7-0740-4ee0-8192-850ab0e21935");
+    private static readonly Guid MF_MT_YUV_MATRIX           = new("3e23d450-2c75-4d25-a00e-b91670d12327");
+    private static readonly Guid MF_MT_TRANSFER_FUNCTION    = new("5fb0fce9-be5c-4935-a811-ec838f8eed93");
+    private static readonly Guid MF_MT_VIDEO_NOMINAL_RANGE  = new("c21b8ee5-b956-4071-8daf-325edf5cab11");
+
     private const uint MFVideoInterlace_Progressive = 2;
+    private const uint MFVideoPrimaries_BT709       = 2;
+    private const uint MFVideoTransferMatrix_BT709  = 1;
+    private const uint MFVideoTransFunc_709         = 5;
+    private const uint MFNominalRange_16_235        = 2;
+
+    // CODECAPI_* GUIDs (codecapi.h) for low-latency, 0 B-frames, 2.0x burst headroom, live ABR & keyframe
+    private static readonly Guid CODECAPI_AVEncCommonLowLatency        = new("9d3ecd55-89e8-490a-970a-0c9548d5a56e");
+    private static readonly Guid CODECAPI_AVEncCommonRateControlMode   = new("1c0608e9-370c-4710-8a58-cb6181c42423");
+    private static readonly Guid CODECAPI_AVEncCommonMeanBitRate       = new("f7222374-2144-4815-b550-a37f8e12ee52");
+    private static readonly Guid CODECAPI_AVEncCommonMaxBitRate        = new("9651eae4-39b9-4ebf-85ef-d7f444ec7465");
+    private static readonly Guid CODECAPI_AVEncMPVDefaultBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
+    private static readonly Guid CODECAPI_AVEncVideoForceKeyFrame      = new("398c1b98-8353-475a-9ef2-8f265d260345");
+    private const uint eAVEncCommonRateControlMode_PeakConstrainedVBR  = 3;
 
     // MFT_ENUM_FLAG_* (mfapi.h)
-    private const uint MFT_ENUM_FLAG_SYNCMFT      = 0x00000001;
-    private const uint MFT_ENUM_FLAG_HARDWARE     = 0x00000004;
+    private const uint MFT_ENUM_FLAG_SYNCMFT       = 0x00000001;
+    private const uint MFT_ENUM_FLAG_HARDWARE      = 0x00000004;
     private const uint MFT_ENUM_FLAG_SORTANDFILTER = 0x00000040;
 
     // 调用方需在进程启动时调一次 MediaFactory.MFStartup（main 入口已调用）。
-    public void Initialize(int width, int height, int fps, int bitrateBps)
+    public void Initialize(int width, int height, int fps, int bitrateBps, WinVideoCodec codec = WinVideoCodec.H264)
     {
-        _width  = width;
-        _height = height;
-        _frameDuration100ns = 10_000_000L / Math.Max(fps, 1);
-        _nv12Buf = new byte[width * height * 3 / 2];
-
-        if (!TryCreateTransform(width, height, fps, bitrateBps, hardware: true))
+        lock (_lock)
         {
-            AppLog.Write("[H264Encoder] no hardware MFT found, falling back to software H.264 encoder");
-            if (!TryCreateTransform(width, height, fps, bitrateBps, hardware: false))
-                throw new InvalidOperationException("No H.264 encoder MFT available (hardware or software)");
+            _width      = width;
+            _height     = height;
+            _fps        = Math.Clamp(fps, 1, 120);
+            _bitrateBps = Math.Clamp(bitrateBps, 500_000, 50_000_000);
+            _frameDuration100ns = 10_000_000L / _fps;
+            _nv12Buf = new byte[width * height * 3 / 2];
+
+            bool ok = false;
+            if (codec == WinVideoCodec.H265)
+            {
+                ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H265, hardware: true)
+                  || TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H265, hardware: false);
+                if (!ok)
+                {
+                    AppLog.Write("[H264Encoder] no HEVC encoder MFT available, falling back to H.264");
+                }
+            }
+
+            if (!ok)
+            {
+                ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H264, hardware: true);
+                if (!ok)
+                {
+                    AppLog.Write("[H264Encoder] no hardware H.264 MFT found, falling back to software H.264 encoder");
+                    ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H264, hardware: false);
+                }
+            }
+
+            if (!ok || _transform == null)
+                throw new InvalidOperationException("No H.264/H.265 encoder MFT available (hardware or software)");
+
+            _transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            _transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+            _streaming = true;
+
+            AppLog.Write($"[H264Encoder] ready codec={ActiveCodec} {width}x{height}@{_fps}fps bitrate={_bitrateBps}bps hw={IsHardware}");
         }
-
-        _transform!.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
-        _transform!.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
-        _streaming = true;
-
-        AppLog.Write($"[H264Encoder] ready {width}x{height}@{fps}fps bitrate={bitrateBps}bps hw={IsHardware}");
     }
 
-    private bool TryCreateTransform(int width, int height, int fps, int bitrateBps, bool hardware)
+    private bool TryCreateTransform(int width, int height, int fps, int bitrateBps, WinVideoCodec codec, bool hardware)
     {
+        IMFTransform? candidate = null;
         try
         {
             uint flags = (hardware ? MFT_ENUM_FLAG_HARDWARE : MFT_ENUM_FLAG_SYNCMFT) | MFT_ENUM_FLAG_SORTANDFILTER;
+            Guid outputSubtype = codec == WinVideoCodec.H265 ? MFVideoFormat_HEVC : VideoFormatGuids.H264;
 
-            // MFTEnumEx has no typed wrapper in Vortice.MediaFoundation (unlike e.g.
-            // MFEnumDeviceSources) — it's the raw native signature: an IMFActivate**
-            // array (pppActivate) we own and must free, plus a count.
             MediaFactory.MFTEnumEx(
                 MftCategoryVideoEncoder, flags,
                 inputType:  null,
-                outputType: new RegisterTypeInfo { GuidMajorType = MfMediaTypeVideo, GuidSubtype = VideoFormatGuids.H264 },
+                outputType: new RegisterTypeInfo { GuidMajorType = MfMediaTypeVideo, GuidSubtype = outputSubtype },
                 out nint pppActivate, out uint count);
 
-            if (count == 0)
+            if (count == 0 || pppActivate == nint.Zero)
             {
-                AppLog.Write($"[H264Encoder] MFTEnumEx found 0 candidates (hardware={hardware})");
+                AppLog.Write($"[H264Encoder] MFTEnumEx found 0 candidates (codec={codec}, hardware={hardware})");
                 return false;
             }
 
             try
             {
-                // pppActivate[0] is MFTEnumEx's own quality-sorted pick (SortAndFilter).
-                // Release every other candidate's reference — we only keep the first.
                 using var activate = new IMFActivate(Marshal.ReadIntPtr(pppActivate, 0));
                 for (uint i = 1; i < count; i++)
                 {
-                    Marshal.Release(Marshal.ReadIntPtr(pppActivate, (int)i * IntPtr.Size));
+                    nint pOther = Marshal.ReadIntPtr(pppActivate, (int)i * IntPtr.Size);
+                    if (pOther != nint.Zero) Marshal.Release(pOther);
                 }
 
-                _transform = activate.ActivateObject<IMFTransform>();
-                IsHardware = hardware;
-                AppLog.Write($"[H264Encoder] picked MFT #0/{count} candidates, hardware={hardware}");
+                candidate = activate.ActivateObject<IMFTransform>();
+                AppLog.Write($"[H264Encoder] picked MFT #0/{count} candidates, codec={codec}, hardware={hardware}");
             }
             finally
             {
                 Marshal.FreeCoTaskMem(pppActivate);
             }
 
-            ConfigureTypes(width, height, fps, bitrateBps);
+            _transform = candidate;
+            IsHardware = hardware;
+            ActiveCodec = codec;
+            _codecApi = Marshal.GetObjectForIUnknown(candidate.NativePointer) as ICodecAPI;
+
+            // Configure low-latency rate control before setting media types (some MFTs require this pre-init)
+            ApplyLowLatencyCodecApiLocked(bitrateBps);
+            ConfigureTypes(width, height, fps, bitrateBps, outputSubtype);
+            // Re-apply bitrate & max burst headroom after media types are negotiated
+            ApplyBitrateLocked(bitrateBps);
             return true;
         }
         catch (Exception ex)
         {
-            AppLog.Write($"[H264Encoder] TryCreateTransform(hardware={hardware}) failed: {ex.Message}");
+            AppLog.Write($"[H264Encoder] TryCreateTransform(codec={codec}, hardware={hardware}) failed: {ex.Message}");
+            _codecApi = null;
+            _transform = null;
+            try { candidate?.Dispose(); } catch { }
             return false;
         }
     }
 
-    private void ConfigureTypes(int width, int height, int fps, int bitrateBps)
+    private void ApplyLowLatencyCodecApiLocked(int bitrateBps)
     {
-        // Encoder MFTs need the output (target) type set before the input type —
-        // the transform uses it to decide which input formats it'll accept.
-        // SetOutputType/SetInputType throw on failure (no Result return) — unlike
-        // ProcessOutput below, which does return a checkable Result.
+        if (_codecApi == null) return;
+        TrySetCodecApiValue(CODECAPI_AVEncCommonLowLatency, true);
+        TrySetCodecApiValue(CODECAPI_AVEncMPVDefaultBPictureCount, 0u);
+        TrySetCodecApiValue(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_PeakConstrainedVBR);
+        ApplyBitrateLocked(bitrateBps);
+    }
+
+    private void ApplyBitrateLocked(int bitrateBps)
+    {
+        if (_codecApi == null) return;
+        uint meanBps = (uint)Math.Clamp(bitrateBps, 500_000, 50_000_000);
+        uint maxBps  = (uint)Math.Min((long)meanBps * 2, 50_000_000L);
+        TrySetCodecApiValue(CODECAPI_AVEncCommonMeanBitRate, meanBps);
+        TrySetCodecApiValue(CODECAPI_AVEncCommonMaxBitRate, maxBps);
+    }
+
+    private bool TrySetCodecApiValue(Guid key, object value)
+    {
+        if (_codecApi == null) return false;
+        try
+        {
+            object boxed = value;
+            int hr = _codecApi.SetValue(ref key, ref boxed);
+            return hr >= 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ConfigureTypes(int width, int height, int fps, int bitrateBps, Guid outputSubtype)
+    {
         using var outputType = MediaFactory.MFCreateMediaType();
         outputType.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
-        outputType.Set(MF_MT_SUBTYPE, VideoFormatGuids.H264);
+        outputType.Set(MF_MT_SUBTYPE, outputSubtype);
         outputType.Set(MF_MT_AVG_BITRATE, (uint)bitrateBps);
         outputType.Set(MF_MT_FRAME_SIZE, PackLong(width, height));
         outputType.Set(MF_MT_FRAME_RATE, PackLong(fps, 1));
         outputType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-        // ~10s GOP (in frames), matching the Mac agent: keyframes are 10-20x
-        // a delta frame, and on-demand request_keyframe handles recovery, so
-        // frequent periodic ones just burn bitrate. Without this the MFT
-        // picks a vendor default that can be as low as 2x fps.
         outputType.Set(MF_MT_MAX_KEYFRAME_SPACING, (uint)(fps * 10));
+        // Explicit BT.709 VideoRange (16..235) color metadata
+        outputType.Set(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+        outputType.Set(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+        outputType.Set(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+        outputType.Set(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
         _transform!.SetOutputType(0, outputType, 0);
 
         using var inputType = MediaFactory.MFCreateMediaType();
@@ -148,37 +230,43 @@ sealed class H264Encoder : IDisposable
         inputType.Set(MF_MT_FRAME_SIZE, PackLong(width, height));
         inputType.Set(MF_MT_FRAME_RATE, PackLong(fps, 1));
         inputType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        inputType.Set(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+        inputType.Set(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+        inputType.Set(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+        inputType.Set(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
         _transform!.SetInputType(0, inputType, 0);
     }
 
     private static ulong PackLong(int high, int low) => ((ulong)(uint)high << 32) | (uint)low;
 
-    // 动态调码率（ABR 用）。Vortice.MediaFoundation 没有暴露 ICodecAPI 绑定，
-    // 多数硬件 MFT 也不支持不重建 transform 就改运行时码率，所以这里只记日志、
-    // 不生效——硬编码路径的码率固定在 Initialize 时设置的值，自适应交给 JPEG
-    // fallback 路径（ScreenCapturer.SetQuality）。
     public void SetBitrate(int bps)
     {
-        AppLog.Write($"[H264Encoder] SetBitrate({bps}) ignored — hardware MFT bitrate is fixed at init time");
+        lock (_lock)
+        {
+            _bitrateBps = Math.Clamp(bps, 500_000, 50_000_000);
+            if (_transform == null) return;
+            ApplyBitrateLocked(_bitrateBps);
+        }
     }
 
-    // Forces an immediate keyframe instead of waiting for whatever interval
-    // the MFT picked on its own — used when a client (re)attaches a fresh
-    // decoder (e.g. switching back to a tab) so it isn't stuck on a black
-    // screen until the next one comes around naturally.
-    //
-    // No ICodecAPI here either (same reason as SetBitrate above), so this
-    // can't set CODECAPI_AVEncVideoForceKeyFrame directly. Instead it cycles
-    // NotifyEndOfStream → NotifyBeginStreaming/StartOfStream, which resets the
-    // MFT's internal sequence — encoders treat the first frame of a new
-    // sequence as a keyframe by construction (it has to be, for a decoder to
-    // start from it at all), so this gets the same effect through a message
-    // pair already proven to work (used in Initialize/Dispose).
+    public void SetFps(int fps)
+    {
+        lock (_lock)
+        {
+            _fps = Math.Clamp(fps, 1, 120);
+            _frameDuration100ns = 10_000_000L / _fps;
+        }
+    }
+
     public void ForceKeyframe()
     {
         if (_transform == null) return;
         lock (_lock)
         {
+            if (TrySetCodecApiValue(CODECAPI_AVEncVideoForceKeyFrame, 1u))
+            {
+                return;
+            }
             try
             {
                 _transform.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
@@ -192,11 +280,33 @@ sealed class H264Encoder : IDisposable
         }
     }
 
-    // bgra: tightly-packed BGRA32, width*height*4 bytes (matches the staging
-    // texture ScreenCapturer maps). Returns Annex-B H.264 bytes, or null if the
-    // MFT swallowed the frame without producing output yet (it buffers a little
-    // for B-frame-free low-latency profiles — caller should just send the next
-    // frame and not treat null as an error).
+    /// <summary>
+    /// Encodes a single crisp low-QP refinement frame after motion stops by temporarily
+    /// boosting target bitrate 1.5x (up to 50 Mbps) and immediately restoring baseline bitrate.
+    /// </summary>
+    public byte[]? EncodeRefinementFrame(byte[] bgra, long ptsMs, out bool keyframe) =>
+        EncodeRefinementFrame(bgra.AsSpan(), ptsMs, out keyframe);
+
+    public byte[]? EncodeRefinementFrame(ReadOnlySpan<byte> bgra, long ptsMs, out bool keyframe)
+    {
+        keyframe = false;
+        if (_transform == null || !_streaming) return null;
+
+        lock (_lock)
+        {
+            int boosted = (int)Math.Min((long)_bitrateBps * 3 / 2, 50_000_000L);
+            ApplyBitrateLocked(boosted);
+            try
+            {
+                return EncodeCoreLocked(bgra, ptsMs, out keyframe);
+            }
+            finally
+            {
+                ApplyBitrateLocked(_bitrateBps);
+            }
+        }
+    }
+
     public byte[]? Encode(ReadOnlySpan<byte> bgra, long ptsMs, out bool keyframe)
     {
         keyframe = false;
@@ -204,24 +314,28 @@ sealed class H264Encoder : IDisposable
 
         lock (_lock)
         {
-            BgraToNv12(bgra, _width, _height, _nv12Buf);
-
-            using var buffer = MediaFactory.MFCreateMemoryBuffer(_nv12Buf.Length);
-            buffer.Lock(out nint dst, out _, out _);
-            Marshal.Copy(_nv12Buf, 0, dst, _nv12Buf.Length);
-            buffer.Unlock();
-            buffer.CurrentLength = _nv12Buf.Length;
-
-            using var sample = MediaFactory.MFCreateSample();
-            sample.AddBuffer(buffer);
-            sample.SampleTime     = ptsMs * 10_000; // ms → 100ns units
-            sample.SampleDuration = _frameDuration100ns;
-
-            // ProcessInput throws on failure (no Result return).
-            _transform.ProcessInput(0, sample, 0);
-
-            return DrainOutput(out keyframe);
+            return EncodeCoreLocked(bgra, ptsMs, out keyframe);
         }
+    }
+
+    private byte[]? EncodeCoreLocked(ReadOnlySpan<byte> bgra, long ptsMs, out bool keyframe)
+    {
+        keyframe = false;
+        BgraToNv12(bgra, _width, _height, _nv12Buf);
+
+        using var buffer = MediaFactory.MFCreateMemoryBuffer(_nv12Buf.Length);
+        buffer.Lock(out nint dst, out _, out _);
+        Marshal.Copy(_nv12Buf, 0, dst, _nv12Buf.Length);
+        buffer.Unlock();
+        buffer.CurrentLength = _nv12Buf.Length;
+
+        using var sample = MediaFactory.MFCreateSample();
+        sample.AddBuffer(buffer);
+        sample.SampleTime     = ptsMs * 10_000; // ms → 100ns units
+        sample.SampleDuration = _frameDuration100ns;
+
+        _transform!.ProcessInput(0, sample, 0);
+        return DrainOutput(out keyframe);
     }
 
     private const int MF_E_TRANSFORM_NEED_MORE_INPUT = unchecked((int)0xC00D6D72);
@@ -285,9 +399,8 @@ sealed class H264Encoder : IDisposable
         return bytes;
     }
 
-    // High-performance BT.601 BGRA→NV12 with unsafe pointers, shift division,
-    // and Parallel.For multi-core scaling. Eliminates bounds checking and
-    // drops conversion time from ~25ms to < 1.5ms for 1080p60.
+    // High-performance BT.709 VideoRange (16..235) BGRA→NV12 with unsafe pointers,
+    // shift division, and Parallel.For multi-core scaling (matches BT.709 MF_MT metadata).
     private static unsafe void BgraToNv12(ReadOnlySpan<byte> bgra, int width, int height, byte[] nv12)
     {
         int yPlaneSize = width * height;
@@ -300,7 +413,7 @@ sealed class H264Encoder : IDisposable
             // carry the addresses as nint and cast back inside.
             nint bgraAddr = (nint)pBgra;
             nint nv12Addr = (nint)pNv12;
-            // Multi-threaded Y plane conversion
+            // Multi-threaded Y plane conversion (BT.709 VideoRange 16..235)
             Parallel.For(0, height, y =>
             {
                 byte* srcRow = (byte*)bgraAddr + (long)y * width * 4;
@@ -309,11 +422,11 @@ sealed class H264Encoder : IDisposable
                 {
                     int i = x * 4;
                     byte b = srcRow[i], g = srcRow[i + 1], r = srcRow[i + 2];
-                    dstRow[x] = (byte)((4096 + 66 * r + 129 * g + 25 * b + 128) >> 8);
+                    dstRow[x] = (byte)(((47 * r + 157 * g + 16 * b + 128) >> 8) + 16);
                 }
             });
 
-            // Multi-threaded UV plane conversion (subsampled 2x2)
+            // Multi-threaded UV plane conversion (BT.709 VideoRange, subsampled 2x2)
             int halfHeight = height / 2;
             int halfWidth  = width / 2;
             Parallel.For(0, halfHeight, yHalf =>
@@ -326,10 +439,10 @@ sealed class H264Encoder : IDisposable
                     int x = xHalf * 2;
                     int i = x * 4;
                     byte b = srcRow[i], g = srcRow[i + 1], r = srcRow[i + 2];
-                    int u = (32768 - 38 * r - 74 * g + 112 * b + 128) >> 8;
-                    int v = (32768 + 112 * r - 94 * g - 18 * b + 128) >> 8;
-                    dstUv[x]     = (byte)Math.Clamp(u, 0, 255);
-                    dstUv[x + 1] = (byte)Math.Clamp(v, 0, 255);
+                    int u = ((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128;
+                    int v = ((112 * r - 102 * g - 10 * b + 128) >> 8) + 128;
+                    dstUv[x]     = (byte)Math.Clamp(u, 16, 240);
+                    dstUv[x + 1] = (byte)Math.Clamp(v, 16, 240);
                 }
             });
         }
@@ -337,17 +450,34 @@ sealed class H264Encoder : IDisposable
 
     public void Dispose()
     {
-        try
+        lock (_lock)
         {
-            if (_streaming)
+            try
             {
-                _transform?.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
-                _transform?.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero);
+                if (_streaming)
+                {
+                    _transform?.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
+                    _transform?.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero);
+                }
             }
+            catch (Exception ex) { AppLog.Write($"[H264Encoder] Dispose end-stream failed: {ex.Message}"); }
+            _streaming = false;
+            _codecApi = null;
+            _transform?.Dispose();
+            _transform = null;
         }
-        catch (Exception ex) { AppLog.Write($"[H264Encoder] Dispose end-stream failed: {ex.Message}"); }
-        _streaming = false;
-        _transform?.Dispose();
-        _transform = null;
+    }
+
+    // Minimal vtable-exact Windows SDK ICodecAPI COM interface (strmif.h)
+    [ComImport, Guid("901db4c7-31ce-41a2-85dc-8fa0bf41b8da"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ICodecAPI
+    {
+        [PreserveSig] int IsSupported(ref Guid api);
+        [PreserveSig] int IsModifiable(ref Guid api);
+        [PreserveSig] int GetParameterRange(ref Guid api, [MarshalAs(UnmanagedType.Struct)] out object valueMin, [MarshalAs(UnmanagedType.Struct)] out object valueMax, [MarshalAs(UnmanagedType.Struct)] out object steppingDelta);
+        [PreserveSig] int GetParameterValues(ref Guid api, out nint values, out uint valuesCount);
+        [PreserveSig] int GetDefaultValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] out object value);
+        [PreserveSig] int GetValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] out object value);
+        [PreserveSig] int SetValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] ref object value);
     }
 }

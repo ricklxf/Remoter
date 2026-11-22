@@ -18,7 +18,19 @@ sealed class Session
     private InputController?  _input;
     private FileReceiver?     _fileRecv;
     private H264Encoder?      _encoder;       // null ⇒ JPEG fallback (init failed or unsupported)
-    private int               _targetBitrateBps = 4_000_000;
+    private int               _targetBitrateBps = 8_000_000;
+    private WinVideoCodec     _preferredCodec = WinVideoCodec.H264;
+    private bool              _manualCodecSelected = false;
+    private bool              _useJpeg = false;
+    private bool              _lowLatencyZeroBuffer = false;
+
+    private static readonly int[] AutoFpsTiers     = [30, 60, 90, 120];
+    private static readonly int[] AutoBitrateTiers = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000];
+
+    // Scroll bitrate boost (matches Remoter-MacServer: 1.5x up to 37.5 Mbps for 1.2s)
+    private readonly object _scrollBoostLock = new();
+    private int  _scrollBoostGen = 0;
+    private bool _scrollBoostActive = false;
 
     private AudioCapturer?    _audioCapturer;
     private AudioEncoder?     _audioEncoder;
@@ -57,18 +69,16 @@ sealed class Session
     private DateTime _lastCheckTime = DateTime.UtcNow;
     private const long TARGET_BANDWIDTH = 10L * 1024 * 1024; // 提高到10MB/s，适应更高速网络
     private const int MIN_FPS = 30;  // 提高最低FPS到30，确保流畅度
-    private const int MAX_FPS = 60;
+    private const int MAX_FPS = 120;
     private const int MIN_QUALITY = 30;  // 降低最低质量到30，在带宽不足时优先保证低延迟
     private const int MAX_QUALITY = 80;  // 降低最高质量到80，避免过度消耗带宽
     private bool   _cpuLimitReached = false;
     private bool   _adaptiveEnabled = true;
-    // Client pinned a fixed fps from the quality menu — the built-in
+    // Client pinned a fixed fps/bitrate from the quality menu — the built-in
     // bandwidth-adaptive logic must not fight it. Auto mode re-enables it.
     private bool   _manualFps = false;
-    // The hardware MFT's bitrate is fixed at Initialize() time (no ICodecAPI
-    // in Vortice — see H264Encoder.SetBitrate), so a bitrate change from the
-    // client can only take effect by tearing the encoder down and rebuilding
-    // it. Done on the capture-loop thread (owns the encoder) via this flag.
+    private bool   _manualBitrate = false;
+    // Triggers encoder rebuild on the capture-loop thread (e.g. H.264 <-> H.265 / JPEG switch).
     private volatile bool _rebuildEncoder = false;
     
     // Statistics for overlay
@@ -287,6 +297,7 @@ sealed class Session
             case ClientMsg.MouseScroll m when _inputEnabled:
                 if (m.Px is int px && m.Py is int py) _input?.MouseScrollPixels(px, py);
                 else _input?.MouseScroll(m.Dx, m.Dy);
+                BoostBitrateWhileScrolling();
                 break;
 
             case ClientMsg.KeyEvent k when _inputEnabled:
@@ -382,36 +393,100 @@ sealed class Session
                 _encoder?.ForceKeyframe(); break;
 
             case ClientMsg.QualitySet q:   // legacy clients (≤ v1.0.204) sent fps+bitrate bundled
-                _manualFps  = true;
+                _manualFps = true;
+                _manualBitrate = true;
                 _currentFps = Math.Clamp(q.Fps, 1, MAX_FPS);
+                _encoder?.SetFps(_currentFps);
                 if (q.Bitrate > 0 && q.Bitrate != _targetBitrateBps)
                 {
-                    _targetBitrateBps = q.Bitrate;
-                    _rebuildEncoder = true;
+                    _targetBitrateBps = Math.Clamp(q.Bitrate, 500_000, 50_000_000);
+                    _encoder?.SetBitrate(_targetBitrateBps);
                 }
+                Send(new { type = "quality_active", fps = _currentFps, bitrate = _targetBitrateBps });
                 break;
 
             case ClientMsg.FpsSet f:
                 _manualFps = !f.Auto;
-                if (!f.Auto) _currentFps = Math.Clamp(f.Fps, 1, MAX_FPS);
-                // auto → the built-in bandwidth-adaptive logic resumes control
+                _currentFps = f.Auto ? AutoFpsTiers[^1] : Math.Clamp(f.Fps, 1, MAX_FPS);
+                _encoder?.SetFps(_currentFps);
+                Send(new { type = "quality_active", fps = _currentFps, bitrate = _targetBitrateBps });
                 break;
 
             case ClientMsg.BitrateSet b:
-                if (!b.Auto && b.Bitrate > 0 && b.Bitrate != _targetBitrateBps)
+                _manualBitrate = !b.Auto;
+                if (!b.Auto && b.Bitrate > 0)
                 {
-                    _targetBitrateBps = b.Bitrate;
-                    _rebuildEncoder = true;
+                    _targetBitrateBps = Math.Clamp(b.Bitrate, 500_000, 50_000_000);
+                    _encoder?.SetBitrate(_targetBitrateBps);
                 }
-                // auto → nothing to do: hardware MFT bitrate can't be stepped
-                // live anyway, and the JPEG fallback path already adapts
+                else if (b.Auto)
+                {
+                    _targetBitrateBps = AutoBitrateTiers[^1];
+                    _encoder?.SetBitrate(_targetBitrateBps);
+                }
+                Send(new { type = "quality_active", fps = _currentFps, bitrate = _targetBitrateBps });
                 break;
 
             case ClientMsg.ResolutionSet r:
                 // The Windows capture path (DXGI/GDI) grabs native resolution
                 // with no scaler in front of the encoder — honestly unsupported
                 // rather than silently wrong.
-                AppLog.Write($"[Session] resolution tier '{r.Tier}' ignored — Windows agent captures native resolution only");
+                AppLog.Write($"[Session] resolution tier '{r.Tier}' (scale={r.Scale}) ignored — Windows agent captures native resolution only");
+                break;
+
+            case ClientMsg.ChromaSet:
+                // Windows Media Foundation path currently encodes NV12 4:2:0
+                Send(new { type = "chroma_active", mode = "420" });
+                break;
+
+            case ClientMsg.HdrSet:
+                // Windows DXGI capture path is currently SDR
+                Send(new { type = "hdr_active", enabled = false });
+                break;
+
+            case ClientMsg.LowLatencySet ll:
+                _lowLatencyZeroBuffer = ll.Enabled;
+                Send(new { type = "force_canvas", enabled = _lowLatencyZeroBuffer });
+                if (_lowLatencyZeroBuffer) _encoder?.ForceKeyframe();
+                break;
+
+            case ClientMsg.CodecCaps caps:
+                if (!_manualCodecSelected && !_useJpeg &&
+                    caps.Codecs.Any(c => c.Equals("h265", StringComparison.OrdinalIgnoreCase) ||
+                                         c.Equals("hevc", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (_preferredCodec != WinVideoCodec.H265)
+                    {
+                        _preferredCodec = WinVideoCodec.H265;
+                        _rebuildEncoder = true;
+                        ConnectionLogger.Shared.LogStep(_id, "codec_auto_negotiated", "requested=h265");
+                    }
+                }
+                break;
+
+            case ClientMsg.SetCodec sc:
+                _manualCodecSelected = true;
+                var reqCodec = sc.Codec.ToLowerInvariant();
+                if (reqCodec == "jpeg")
+                {
+                    if (!_useJpeg)
+                    {
+                        _useJpeg = true;
+                        _rebuildEncoder = true;
+                    }
+                }
+                else
+                {
+                    var targetCodec = (reqCodec == "h265" || reqCodec == "hevc")
+                        ? WinVideoCodec.H265
+                        : WinVideoCodec.H264;
+                    if (_useJpeg || _preferredCodec != targetCodec)
+                    {
+                        _useJpeg = false;
+                        _preferredCodec = targetCodec;
+                        _rebuildEncoder = true;
+                    }
+                }
                 break;
 
             case ClientMsg.ListDir ld:
@@ -430,7 +505,6 @@ sealed class Session
             case ClientMsg.WebRtcOffer:
             case ClientMsg.WebRtcIce:
             case ClientMsg.ClientStats:
-            case ClientMsg.SetCodec:
                 break;
         }
     }
@@ -451,18 +525,21 @@ sealed class Session
             _cts        = new CancellationTokenSource();
 
             string codec = "jpeg";
-            try
+            if (!_useJpeg)
             {
-                var enc = new H264Encoder();
-                enc.Initialize(c.Width, c.Height, _currentFps, _targetBitrateBps);
-                _encoder = enc;
-                codec = "h264";
-                AppLog.Write($"[Session] H264Encoder ready (hardware={enc.IsHardware}), using h264 codec");
-            }
-            catch (Exception ex)
-            {
-                AppLog.Write($"[Session] H264Encoder init failed, falling back to jpeg: {ex.Message}");
-                _encoder = null;
+                try
+                {
+                    var enc = new H264Encoder();
+                    enc.Initialize(c.Width, c.Height, _currentFps, _targetBitrateBps, _preferredCodec);
+                    _encoder = enc;
+                    codec = enc.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264";
+                    AppLog.Write($"[Session] H264Encoder ready (hardware={enc.IsHardware}, activeCodec={codec})");
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write($"[Session] H264Encoder init failed, falling back to jpeg: {ex.Message}");
+                    _encoder = null;
+                }
             }
 
             Send(new { type = "stream_started", width = c.Width, height = c.Height, codec, fps = _currentFps });
@@ -524,41 +601,62 @@ sealed class Session
                 break;
             }
             
-            // Apply a client-requested bitrate change: the MFT can't change
-            // bitrate live, so rebuild here on the loop thread that owns the
-            // encoder. The rebuilt encoder's first frame is a keyframe with
-            // in-band SPS/PPS by construction, so the decoder recovers alone.
+            // Rebuild encoder on the capture-loop thread that owns it when
+            // codec changes (H.264 <-> H.265 or JPEG fallback).
             if (_rebuildEncoder)
             {
                 _rebuildEncoder = false;
-                if (_encoder != null && _capturer != null)
+                if (_capturer != null)
                 {
-                    try
+                    if (_useJpeg)
                     {
-                        _encoder.Dispose();
-                        var enc = new H264Encoder();
-                        enc.Initialize(_capturer.Width, _capturer.Height, _currentFps, _targetBitrateBps);
-                        _encoder = enc;
-                        AppLog.Write($"[Session] encoder rebuilt for bitrate={_targetBitrateBps}");
-                    }
-                    catch (Exception ex)
-                    {
-                        AppLog.Write($"[Session] encoder rebuild failed: {ex.Message} — falling back to JPEG");
+                        _encoder?.Dispose();
                         _encoder = null;
+                        AppLog.Write("[Session] switched to JPEG fallback");
                         Send(new { type = "codec_changed", codec = "jpeg" });
+                    }
+                    else
+                    {
+                        try
+                        {
+                            _encoder?.Dispose();
+                            var enc = new H264Encoder();
+                            enc.Initialize(_capturer.Width, _capturer.Height, _currentFps, _targetBitrateBps, _preferredCodec);
+                            _encoder = enc;
+                            var activeCodec = enc.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264";
+                            AppLog.Write($"[Session] encoder rebuilt: codec={activeCodec} hw={enc.IsHardware} bitrate={_targetBitrateBps}");
+                            Send(new { type = "codec_changed", codec = activeCodec });
+                        }
+                        catch (Exception ex)
+                        {
+                            AppLog.Write($"[Session] encoder rebuild failed: {ex.Message} — falling back to JPEG");
+                            _encoder = null;
+                            Send(new { type = "codec_changed", codec = "jpeg" });
+                        }
                     }
                 }
             }
 
             byte[]? payload;
-            bool keyframe = true; // every JPEG is a full frame; h264 overrides below
+            bool keyframe = true; // every JPEG is a full frame; H.264/HEVC overrides below
             var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
             try
             {
                 if (_encoder != null)
                 {
                     var bgra = _capturer.CaptureBgra(timeoutMs: 1);
-                    payload = bgra != null ? _encoder.Encode(bgra, pts, out keyframe) : null;
+                    if (bgra != null)
+                    {
+                        payload = _encoder.Encode(bgra, pts, out keyframe);
+                    }
+                    else if (_capturer.ShouldEmitStaticRefinement(out var staticBgra) && staticBgra != null)
+                    {
+                        payload = _encoder.EncodeRefinementFrame(staticBgra, pts, out keyframe);
+                    }
+                    else
+                    {
+                        payload = null;
+                    }
                 }
                 else
                 {
@@ -633,15 +731,49 @@ sealed class Session
             return $"{bytesPerSecond / (1024 * 1024):F1} MB/s";
     }
     
-    // Maps the existing JPEG-quality knob (30..80) onto an H.264 bitrate range
-    // (2..8 Mbps) so the same ABR loop drives whichever codec is active —
-    // _capturer.SetQuality is a no-op while h264 is active (and vice versa).
+    // Maps the existing JPEG-quality knob (30..80) onto the AutoBitrateTiers
+    // range (2..25 Mbps) unless the client manually pinned a bitrate.
     private void ApplyBitrateFromQuality()
     {
-        if (_encoder == null) return;
+        if (_encoder == null || _manualBitrate) return;
         double t = (double)(_currentQuality - MIN_QUALITY) / (MAX_QUALITY - MIN_QUALITY);
-        _targetBitrateBps = (int)(2_000_000 + t * (8_000_000 - 2_000_000));
+        int minBps = AutoBitrateTiers[0];
+        int maxBps = AutoBitrateTiers[^1];
+        _targetBitrateBps = (int)(minBps + t * (maxBps - minBps));
         _encoder.SetBitrate(_targetBitrateBps);
+    }
+
+    /// Temporarily boosts encoder bitrate by 1.5x (capped at 37.5 Mbps) until
+    /// 1.2s after the last scroll event so scrolling text stays crisp (matches
+    /// Remoter-MacServer's boostBitrateWhileScrolling).
+    private void BoostBitrateWhileScrolling()
+    {
+        if (_encoder == null) return;
+        int gen;
+        bool starting;
+        lock (_scrollBoostLock)
+        {
+            _scrollBoostGen++;
+            gen = _scrollBoostGen;
+            starting = !_scrollBoostActive;
+            _scrollBoostActive = true;
+        }
+
+        if (starting)
+        {
+            int boosted = (int)Math.Min((long)(_targetBitrateBps * 1.5), 37_500_000L);
+            _encoder?.SetBitrate(boosted);
+        }
+
+        _ = Task.Delay(1200).ContinueWith(_ =>
+        {
+            lock (_scrollBoostLock)
+            {
+                if (gen != _scrollBoostGen) return;
+                _scrollBoostActive = false;
+            }
+            _encoder?.SetBitrate(_targetBitrateBps);
+        }, TaskScheduler.Default);
     }
 
     private void AdjustQualityAndFps()

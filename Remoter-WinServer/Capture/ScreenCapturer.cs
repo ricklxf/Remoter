@@ -33,8 +33,19 @@ sealed class ScreenCapturer : IDisposable
     private readonly EncoderParameters _jpegParams;
     // 复用同一个 MemoryStream 编码 JPEG，避免每帧重新分配/扩容内部缓冲区
     private readonly MemoryStream      _jpegBuf = new();
-    // 复用同一块紧密排列的 BGRA 缓冲区（H.264 路径用），避免每帧重新分配
+    // 复用同一块紧密排列的 BGRA 缓冲区（H.264/H.265 路径用），避免每帧重新分配
     private byte[]? _bgraBuf;
+    // Static-frame refinement tracking (fires once 150ms after motion settles)
+    private byte[]? _lastValidBgra;
+    private long    _lastMotionTick;
+    private bool    _staticRefinementPending;
+    private const long StaticRefinementDelayMs = 150;
+
+    /// <summary>
+    /// Fired once ~150ms after screen motion stops, delivering the latest valid BGRA frame
+    /// so the encoder can emit a crisp low-QP refinement frame.
+    /// </summary>
+    public event Action<byte[]>? OnStaticFrameReady;
 
     private const int DXGI_ERROR_WAIT_TIMEOUT = unchecked((int)0x887A0027);
     private const int DXGI_ERROR_ACCESS_LOST  = unchecked((int)0x887A0026);
@@ -122,8 +133,12 @@ sealed class ScreenCapturer : IDisposable
             return null;
         }
 
-        var hr = _dup.AcquireNextFrame(timeoutMs, out _, out var resource);
-        if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT) return null;
+        var hr = _dup.AcquireNextFrame(timeoutMs, out var frameInfo, out var resource);
+        if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT)
+        {
+            CheckStaticRefinement();
+            return null;
+        }
         
         if (hr.Code == DXGI_ERROR_ACCESS_LOST ||
             hr.Code == ERROR_INVALID_HANDLE) 
@@ -140,6 +155,15 @@ sealed class ScreenCapturer : IDisposable
         catch (Exception ex)
         {
             AppLog.Write($"[Capturer] DXGI AcquireNextFrame failed: 0x{hr.Code:X8}, {ex.Message}");
+            return null;
+        }
+
+        // Skip completely idle frames (e.g. cursor-only updates with 0 accumulated frames & 0 metadata)
+        if (frameInfo.AccumulatedFrames == 0 && frameInfo.TotalMetadataBufferSize == 0)
+        {
+            resource.Dispose();
+            _dup.ReleaseFrame();
+            CheckStaticRefinement();
             return null;
         }
 
@@ -170,7 +194,7 @@ sealed class ScreenCapturer : IDisposable
     }
 
     // Same acquire/copy path as CaptureDxgi, but returns tightly-packed BGRA32
-    // bytes instead of a JPEG (for the H.264 encoder, which needs raw pixels).
+    // bytes instead of a JPEG (for the H.264/H.265 encoder, which needs raw pixels).
     private byte[]? CaptureBgraDxgi(int timeoutMs)
     {
         if (_dup == null || _staging == null || _context == null)
@@ -179,8 +203,12 @@ sealed class ScreenCapturer : IDisposable
             return null;
         }
 
-        var hr = _dup.AcquireNextFrame(timeoutMs, out _, out var resource);
-        if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT) return null;
+        var hr = _dup.AcquireNextFrame(timeoutMs, out var frameInfo, out var resource);
+        if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT)
+        {
+            CheckStaticRefinement();
+            return null;
+        }
 
         if (hr.Code == DXGI_ERROR_ACCESS_LOST || hr.Code == ERROR_INVALID_HANDLE)
         {
@@ -193,6 +221,15 @@ sealed class ScreenCapturer : IDisposable
         catch (Exception ex)
         {
             AppLog.Write($"[Capturer] DXGI AcquireNextFrame failed: 0x{hr.Code:X8}, {ex.Message}");
+            return null;
+        }
+
+        // Skip completely idle frames (0 accumulated desktop updates & 0 dirty/move metadata)
+        if (frameInfo.AccumulatedFrames == 0 && frameInfo.TotalMetadataBufferSize == 0)
+        {
+            resource.Dispose();
+            _dup.ReleaseFrame();
+            CheckStaticRefinement();
             return null;
         }
 
@@ -210,6 +247,7 @@ sealed class ScreenCapturer : IDisposable
             {
                 _bgraBuf ??= new byte[Width * Height * 4];
                 CompactRows(mapped.DataPointer, mapped.RowPitch, Width, Height, _bgraBuf);
+                RecordMotionFrame(_bgraBuf);
                 return _bgraBuf;
             }
             finally { _context.Unmap(_staging, 0); }
@@ -219,6 +257,44 @@ sealed class ScreenCapturer : IDisposable
             AppLog.Write($"[Capturer] DXGI BGRA frame processing failed: {ex.Message}");
             return null;
         }
+    }
+
+    private void RecordMotionFrame(byte[] bgra)
+    {
+        if (_lastValidBgra == null || _lastValidBgra.Length != bgra.Length)
+        {
+            _lastValidBgra = new byte[bgra.Length];
+        }
+        Buffer.BlockCopy(bgra, 0, _lastValidBgra, 0, bgra.Length);
+        _lastMotionTick = Environment.TickCount64;
+        _staticRefinementPending = true;
+    }
+
+    private void CheckStaticRefinement()
+    {
+        if (OnStaticFrameReady == null) return;
+        if (ShouldEmitStaticRefinement(out var frame) && frame != null)
+        {
+            OnStaticFrameReady.Invoke(frame);
+        }
+    }
+
+    /// <summary>
+    /// Returns true once >= 150ms after screen motion stops, handing out the retained
+    /// latest BGRA frame so Session can encode a single crisp refinement frame.
+    /// </summary>
+    public bool ShouldEmitStaticRefinement(out byte[]? frame)
+    {
+        if (_staticRefinementPending &&
+            _lastValidBgra != null &&
+            Environment.TickCount64 - _lastMotionTick >= StaticRefinementDelayMs)
+        {
+            _staticRefinementPending = false;
+            frame = _lastValidBgra;
+            return true;
+        }
+        frame = null;
+        return false;
     }
 
     private byte[]? CaptureBgraGdi(int targetFps = 30)

@@ -17,7 +17,11 @@ public abstract record ClientMsg
     public record QualitySet(int Fps, int Bitrate) : ClientMsg;   // legacy clients (≤ v1.0.204)
     public record FpsSet(int Fps, bool Auto) : ClientMsg;
     public record BitrateSet(int Bitrate, bool Auto) : ClientMsg;
-    public record ResolutionSet(string Tier) : ClientMsg;
+    public record ResolutionSet(string Tier, int? Width = null, int? Height = null, double? Scale = null) : ClientMsg;
+    public record ChromaSet(string Mode) : ClientMsg;
+    public record HdrSet(bool Enabled) : ClientMsg;
+    public record LowLatencySet(bool Enabled) : ClientMsg;
+    public record CodecCaps(string[] Codecs) : ClientMsg;
     public record Ping : ClientMsg;
     public record RequestKeyframe : ClientMsg;
     public record WebRtcOffer(string Sdp) : ClientMsg;
@@ -60,7 +64,11 @@ public abstract record ClientMsg
             "quality"           => new QualitySet(e.Int("fps"), e.Int("bitrate")),
             "fps"               => new FpsSet(e.Int("fps"), e.Bool("auto")),
             "bitrate"           => new BitrateSet(e.Int("bitrate"), e.Bool("auto")),
-            "resolution"        => new ResolutionSet(e.Str("tier")),
+            "resolution"        => new ResolutionSet(e.Str("tier"), e.OptInt("width"), e.OptInt("height"), e.OptDbl("scale")),
+            "chroma"            => new ChromaSet(e.Str("mode")),
+            "hdr"               => new HdrSet(e.Bool("enabled")),
+            "low_latency"       => new LowLatencySet(e.Bool("enabled")),
+            "codec_caps"        => new CodecCaps(e.StrArr("codecs")),
             "ping"              => new Ping(),
             "request_keyframe"  => new RequestKeyframe(),
             "webrtc_offer"      => new WebRtcOffer(e.Str("sdp")),
@@ -99,8 +107,12 @@ static class JsonExt
             : defaultValue;
     public static double  Dbl (this JsonElement e, string k) =>
         e.TryGetProperty(k, out var v) ? v.GetDouble() : 0;
+    public static double? OptDbl(this JsonElement e, string k) =>
+        e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
     public static int     Int (this JsonElement e, string k) =>
         e.TryGetProperty(k, out var v) ? v.GetInt32() : 0;
+    public static int?    OptInt(this JsonElement e, string k) =>
+        e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
     public static long    Long(this JsonElement e, string k) =>
         e.TryGetProperty(k, out var v) ? v.GetInt64() : 0;
     public static string[] StrArr(this JsonElement e, string k)

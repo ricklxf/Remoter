@@ -1216,14 +1216,19 @@ public sealed class DesktopForm : Form
     private void RefreshImeEchoVisibility()
     {
         if (_disposed || _imeEchoLabel.IsDisposed) return;
-        bool hasComp = !string.IsNullOrEmpty(_lastImeCompText);
-        if (!hasComp && !_imeCalibrating)
+        // Windows 各类输入法（微信输入法、搜狗、微软拼音等）自身已在 IMM32/TSF 锚点处
+        // 绘制原生拼音组合串并与候选框自动防重叠排版；正常打字时不再叠画自定义 echo 框，
+        // 彻底避免拼音重复显示及不同输入法候选框高度/方向差异导致的遮挡。
+        // 仅在开启「校准输入法位置」时显示可拖动锚点框。
+        if (!_imeCalibrating)
         {
             _imeEchoLabel.Visible = false;
             _imeEchoLabel.Text = "";
             return;
         }
-        _imeEchoLabel.Text = hasComp ? _lastImeCompText : "拖动调整输入法位置";
+        _imeEchoLabel.Text = !string.IsNullOrEmpty(_lastImeCompText)
+            ? _lastImeCompText
+            : "拖动调整输入法位置";
         _imeEchoLabel.Visible = true;
         _imeEchoLabel.BringToFront();
         PositionImeEchoLabel();

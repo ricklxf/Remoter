@@ -179,8 +179,8 @@ public sealed class SavedDevice
 
 public sealed class ImeOffset
 {
-    /// <summary>Horizontal offset in logical px from viewport horizontal center.</summary>
-    public int X { get; set; } = 0;
+    /// <summary>Left-edge horizontal offset in logical px from viewport horizontal center (matches Web calc(50% + x)).</summary>
+    public int X { get; set; } = -120;
 
     /// <summary>Vertical clearance in logical px from viewport bottom (min 80).</summary>
     public int Y { get; set; } = 120;

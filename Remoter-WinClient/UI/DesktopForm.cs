@@ -136,7 +136,7 @@ public sealed class DesktopForm : Form
             Font = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular),
             Padding = new Padding(8, 4, 8, 4),
             BorderStyle = BorderStyle.FixedSingle,
-            TextAlign = ContentAlignment.MiddleCenter,
+            TextAlign = ContentAlignment.MiddleLeft,
             Cursor = Cursors.SizeAll,
             TabStop = false,
         };
@@ -1057,7 +1057,7 @@ public sealed class DesktopForm : Form
         if (_settings.ImeOffsets.TryGetValue(key, out var off)) return off;
         if (_settings.ImeOffsets.TryGetValue("*", out var fallback))
             return new ImeOffset { X = fallback.X, Y = fallback.Y };
-        return new ImeOffset { X = 0, Y = 120 };
+        return new ImeOffset { X = -120, Y = 120 };
     }
 
     private void SetCurrentImeOffset(int x, int y, bool save)
@@ -1127,10 +1127,13 @@ public sealed class DesktopForm : Form
         int dxLogical = (int)Math.Round((now.X - _imeDragStartScreen.X) / scale);
         int dyLogical = (int)Math.Round((now.Y - _imeDragStartScreen.Y) / scale);
 
-        int maxHalfX = Math.Max(100, (int)Math.Round(_videoHost.ClientSize.Width / (2.0 * scale)) - 24);
+        int halfW = (int)Math.Round(_videoHost.ClientSize.Width / (2.0 * scale));
+        int labelW = Math.Max(56, (int)Math.Round(_imeEchoLabel.Width / scale));
+        int minX = -halfW + 8;
+        int maxX = Math.Max(minX, halfW - labelW - 8);
         int maxY = Math.Max(80, (int)Math.Round((_videoHost.ClientSize.Height - _imeEchoLabel.Height) / scale) - 12);
 
-        int newX = Math.Clamp(_imeDragStartOffsetX + dxLogical, -maxHalfX, maxHalfX);
+        int newX = Math.Clamp(_imeDragStartOffsetX + dxLogical, minX, maxX);
         int newY = Math.Clamp(_imeDragStartOffsetY - dyLogical, 80, maxY);
 
         SetCurrentImeOffset(newX, newY, save: false);
@@ -1164,7 +1167,9 @@ public sealed class DesktopForm : Form
         int offsetX = (int)Math.Round(off.X * scale);
         int bottomClearance = (int)Math.Round(Math.Max(80, off.Y) * scale);
 
-        int targetX = (w - estW) / 2 + offsetX;
+        // Pin LEFT edge at (w / 2 + offsetX) so typing longer pinyin grows purely to the right
+        // (matching Web's `left: calc(50% + offset.x)` and keeping the OS candidate window anchored).
+        int targetX = w / 2 + offsetX;
         int targetY = h - estH - bottomClearance;
         int maxX = Math.Max(margin, w - estW - margin);
         int maxY = Math.Max(margin, h - estH - margin);

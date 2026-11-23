@@ -1646,12 +1646,14 @@ final class Session {
     }
 
     /// Dynamic UDP bitrate adaptation driven by UdpVideoServer's 2s loss feedback:
-    /// - loss >= 5%: step down 20% (floor 2 Mbps) and remember a learned safe ceiling
-    ///   (85% of the bitrate that triggered loss) so UDP stops sawtooth-oscillating into loss.
-    /// - loss < 1% with real active traffic (sentPackets >= 60):
-    ///   - below learned ceiling: step up 15% after 3 clean windows (6s)
-    ///   - at learned ceiling: hold steady for at least 30s cooldown + 10 clean windows (20s),
-    ///     then gently probe +10% upward.
+    /// - Resolution-aware quality floor (5 Mbps for >=2K, 4 Mbps for 1080p) so high-res
+    ///   desktops never get crushed down to 2 Mbps blurry mush.
+    /// - UU-style load-gated loss detection: mild random tunnel/Wi-Fi loss (<8%) or loss
+    ///   at low packet volume (sentPackets < 800 in 2s) is absorbed by FEC + NACK without
+    ///   slashing bitrate. Only genuine high-load congestion (loss >= 8% && sentPackets >= 800)
+    ///   steps down 20% and records a learned safe ceiling (85% of triggering bitrate).
+    /// - Below learned ceiling: step up +15% after 3 clean active windows (6s).
+    /// - At learned ceiling: hold for 15s cooldown + 5 clean active windows (10s), then probe +15%.
     private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
         udpLastLossRatio = lossRatio
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
@@ -1661,15 +1663,15 @@ final class Session {
         guard !boosting else { return }
 
         let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
-        let floorBps = 2_000_000
+        let floorBps = ((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000
         let now = CFAbsoluteTimeGetCurrent()
 
-        if lossRatio >= 0.05 {
+        if lossRatio >= 0.08 && sentPackets >= 800 {
             udpCleanBitrateStreak = 0
             udpStableAtCapStreak = 0
             let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
             let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.85).rounded())))
-            udpLearnedCeilingBps = min(udpLearnedCeilingBps ?? hardCeilingBps, learnedCap)
+            udpLearnedCeilingBps = max(floorBps, min(udpLearnedCeilingBps ?? hardCeilingBps, learnedCap))
             udpLossCapSetAt = now
             if nextBps != currentBitrate {
                 applyBitrate(nextBps, notify: true)
@@ -1682,14 +1684,14 @@ final class Session {
         } else if lossRatio < 0.01 {
             // Only ramp up on genuinely active traffic (avoid idle 1fps runaway on tunnels)
             guard sentPackets >= 60 else { return }
-            let effectiveCeiling = min(hardCeilingBps, udpLearnedCeilingBps ?? hardCeilingBps)
+            let effectiveCeiling = max(floorBps, min(hardCeilingBps, udpLearnedCeilingBps ?? hardCeilingBps))
 
             if currentBitrate < effectiveCeiling {
                 udpStableAtCapStreak = 0
                 udpCleanBitrateStreak += 1
                 if udpCleanBitrateStreak >= 3 {
                     udpCleanBitrateStreak = 0
-                    let nextBps = min(effectiveCeiling, Int((Double(currentBitrate) * 1.15).rounded()))
+                    let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.15).rounded())))
                     if nextBps != currentBitrate {
                         applyBitrate(nextBps, notify: true)
                         ConnectionLogger.shared.logStep(
@@ -1700,13 +1702,13 @@ final class Session {
                     }
                 }
             } else if let cap = udpLearnedCeilingBps {
-                // At learned cap: wait 30s cooldown + 10 clean active windows before gently probing +10%
+                // At learned cap: wait 15s cooldown + 5 clean active windows before gently probing +15%
                 udpCleanBitrateStreak = 0
-                guard now - udpLossCapSetAt >= 30.0 else { return }
+                guard now - udpLossCapSetAt >= 15.0 else { return }
                 udpStableAtCapStreak += 1
-                if udpStableAtCapStreak >= 10 {
+                if udpStableAtCapStreak >= 5 {
                     udpStableAtCapStreak = 0
-                    let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.10).rounded()))
+                    let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.15).rounded()))
                     udpLearnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
                     if probedCap > currentBitrate {
                         applyBitrate(probedCap, notify: true)

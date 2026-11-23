@@ -54,7 +54,7 @@ final class UdpVideoServer {
     static let gcmTagSize: Int = 16
     static let ringBufferCapacity: Int = 1024
     static let keepaliveTimeoutSeconds: TimeInterval = 6.0
-    static let maxPacingQueuePackets: Int = 320
+    static let maxPacingQueuePackets: Int = 512
     static let immediateBurstPackets: Int = 8
 
     private enum FecLevel: String {
@@ -331,6 +331,7 @@ final class UdpVideoServer {
         let symmetricKey = session.symmetricKey
         let deltaFec = session.deltaFecGroupSize
         let keyFec = session.keyFecGroupSize
+        let pacerHasBacklog = session.pacingReadIndex < session.pacingQueue.count
         lock.unlock()
 
         let fragCount = (totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload
@@ -352,7 +353,10 @@ final class UdpVideoServer {
         var addrCopy = peerAddr
         var cachedDataPackets: [(UInt64, Data)] = []
         cachedDataPackets.reserveCapacity(fragCount)
-        let usePacing = fragCount > Self.immediateBurstPackets
+        // Maintain strict FIFO ordering: if previous frame packets are still draining in the pacer,
+        // enqueue ALL packets of this frame behind them so P-frames never overtake a keyframe!
+        let usePacing = pacerHasBacklog || (fragCount > Self.immediateBurstPackets)
+        let immediateLimit = pacerHasBacklog ? 0 : Self.immediateBurstPackets
         var pacedPackets: [Data] = []
         if usePacing {
             pacedPackets.reserveCapacity(fragCount + 32)
@@ -405,7 +409,7 @@ final class UdpVideoServer {
                 let cacheKey = (UInt64(frameId) << 8) | UInt64(fragIdx)
                 cachedDataPackets.append((cacheKey, wireData))
 
-                if usePacing && i >= Self.immediateBurstPackets {
+                if usePacing && i >= immediateLimit {
                     pacedPackets.append(wireData)
                 } else {
                     if !sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
@@ -849,9 +853,14 @@ final class UdpVideoServer {
                     : 0.002
                 session.lastPaceTickAt = now
 
-                let paceRateBps = max(Double(session.pacingBitrateBps) * 1.4, 12_000_000.0)
+                // Drain any queued large frame within ~14ms (1 frame interval at 60fps) so
+                // keyframes never time out on the receiver while still smoothing 0.2ms micro-bursts.
+                let pendingCount = session.pacingQueue.count - session.pacingReadIndex
+                let estQueuedBytes = Double(pendingCount) * 1236.0
+                let drainTargetBps = (estQueuedBytes / 0.014) * 8.0
+                let paceRateBps = max(Double(session.pacingBitrateBps) * 2.5, drainTargetBps, 24_000_000.0)
                 let addBytes = (paceRateBps / 8.0) * dt
-                let maxBucket = max(4800.0, (paceRateBps / 8.0) * 0.004)
+                let maxBucket = max(7200.0, (paceRateBps / 8.0) * 0.004)
                 session.pacingBudgetBytes = min(maxBucket, session.pacingBudgetBytes + addBytes)
 
                 var toSend: [Data] = []
@@ -860,7 +869,7 @@ final class UdpVideoServer {
                     session.pacingReadIndex += 1
                     session.pacingBudgetBytes -= Double(pkt.count)
                     toSend.append(pkt)
-                    if toSend.count >= 8 { break }
+                    if toSend.count >= 12 { break }
                 }
 
                 if session.pacingReadIndex >= session.pacingQueue.count {

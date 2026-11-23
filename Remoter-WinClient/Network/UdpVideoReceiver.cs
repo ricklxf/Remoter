@@ -307,7 +307,8 @@ public sealed class UdpVideoReceiver : IDisposable
                         List<uint>? expired = null;
                         foreach (var kvp in _frames)
                         {
-                            if (now - kvp.Value.CreatedAtTick > FrameTimeoutMs)
+                            int timeout = kvp.Value.IsKeyframe ? 180 : FrameTimeoutMs;
+                            if (now - kvp.Value.CreatedAtTick > timeout)
                             {
                                 expired ??= new List<uint>();
                                 expired.Add(kvp.Key);
@@ -430,6 +431,18 @@ public sealed class UdpVideoReceiver : IDisposable
             // Drop late packets belonging to already-completed or older frames
             if (_hasCompletedFrame && (int)(frameId - _lastCompletedFrameId) <= 0)
             {
+                return;
+            }
+
+            // While awaiting a keyframe, ignore P-frame packets completely so they can never
+            // fill _frames and evict an in-progress multi-fragment keyframe!
+            if (_awaitingKeyframe && !isKeyframe)
+            {
+                if (pktType == PacketData)
+                {
+                    _windowRecvPackets++;
+                    _windowRecvBytes += buf.Length;
+                }
                 return;
             }
 

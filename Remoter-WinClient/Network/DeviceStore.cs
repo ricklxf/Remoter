@@ -196,6 +196,11 @@ public sealed class DeviceStore
                 ClipboardSyncEnabled = s.ClipboardSyncEnabled,
                 VSyncEnabled = s.VSyncEnabled,
                 HardwareDecode = s.HardwareDecode,
+                ImeOffsets = s.ImeOffsets != null
+                    ? s.ImeOffsets.ToDictionary(
+                        kv => kv.Key,
+                        kv => new ImeOffset { X = kv.Value.X, Y = kv.Value.Y })
+                    : new Dictionary<string, ImeOffset>(),
                 DownloadDirectory = s.DownloadDirectory,
             };
         }

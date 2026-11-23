@@ -35,6 +35,7 @@ public sealed class FloatingToolbar : Form
     private readonly Button _pointerLockBtn;
     private readonly Button _powerBtn;
     private readonly Button _displayBtn;
+    private readonly Button _imeCalibrateBtn;
     private readonly Button _fullscreenBtn;
     private readonly Button _disconnectBtn;
     private readonly Button _collapseBtn;
@@ -62,6 +63,7 @@ public sealed class FloatingToolbar : Form
     private bool _clipboardOn = true;
     private bool _privacyOn;
     private bool _pointerLocked;
+    private bool _imeCalibrating;
     private bool _fullscreen;
     private bool _statsHudVisible = true;
     private int _activeDisplayId;
@@ -86,6 +88,7 @@ public sealed class FloatingToolbar : Form
     public event Action<bool>? PrivacyToggled;
     public event Action? PointerLockToggled;
     public event Action<int>? DisplaySelected;
+    public event Action? ImeCalibrateToggled;
     public event Action? FullscreenToggled;
     public event Action? DisconnectRequested;
     public event Action? CtrlAltDelRequested;
@@ -164,6 +167,7 @@ public sealed class FloatingToolbar : Form
         _privacyBtn     = CreateBarButton("隐私屏", 64);
         _pointerLockBtn = CreateBarButton("游戏鼠标", 74);
         _powerBtn       = CreateBarButton("电源 ▾", 68);
+        _imeCalibrateBtn = CreateBarButton("输入法位置", 82);
         _fullscreenBtn  = CreateBarButton("全屏", 52);
         _disconnectBtn  = CreateBarButton("断开", 52, danger: true);
         _collapseBtn    = CreateBarButton("▲", 28);
@@ -175,6 +179,7 @@ public sealed class FloatingToolbar : Form
         _clipboardBtn.Click += (_, _) => ClipboardToggled?.Invoke(!_clipboardOn);
         _privacyBtn.Click += (_, _) => PrivacyToggled?.Invoke(!_privacyOn);
         _pointerLockBtn.Click += (_, _) => PointerLockToggled?.Invoke();
+        _imeCalibrateBtn.Click += (_, _) => ImeCalibrateToggled?.Invoke();
         _fullscreenBtn.Click += (_, _) => FullscreenToggled?.Invoke();
         _disconnectBtn.Click += (_, _) => DisconnectRequested?.Invoke();
         _collapseBtn.Click += (_, _) => SetExpanded(false);
@@ -187,6 +192,7 @@ public sealed class FloatingToolbar : Form
         _barPanel.Controls.Add(_pointerLockBtn);
         _barPanel.Controls.Add(_powerBtn);
         _barPanel.Controls.Add(CreateSeparator());
+        _barPanel.Controls.Add(_imeCalibrateBtn);
         _barPanel.Controls.Add(_fullscreenBtn);
         _barPanel.Controls.Add(_disconnectBtn);
         _barPanel.Controls.Add(_collapseBtn);
@@ -300,6 +306,7 @@ public sealed class FloatingToolbar : Form
         bool? clipboardOn = null,
         bool? privacyOn = null,
         bool? pointerLocked = null,
+        bool? imeCalibrating = null,
         bool? fullscreen = null,
         bool? statsHudVisible = null)
     {
@@ -342,6 +349,12 @@ public sealed class FloatingToolbar : Form
             _pointerLocked = pointerLocked.Value;
             _pointerLockBtn.Text = _pointerLocked ? "锁定中" : "游戏鼠标";
             SetToggleStyle(_pointerLockBtn, _pointerLocked);
+        }
+        if (imeCalibrating.HasValue)
+        {
+            _imeCalibrating = imeCalibrating.Value;
+            _imeCalibrateBtn.Text = _imeCalibrating ? "完成校准" : "输入法位置";
+            SetToggleStyle(_imeCalibrateBtn, _imeCalibrating);
         }
         if (fullscreen.HasValue)
         {

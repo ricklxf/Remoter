@@ -177,6 +177,15 @@ public sealed class SavedDevice
         $"{Host}:{Port}";
 }
 
+public sealed class ImeOffset
+{
+    /// <summary>Horizontal offset in logical px from viewport horizontal center.</summary>
+    public int X { get; set; } = 0;
+
+    /// <summary>Vertical clearance in logical px from viewport bottom (min 80).</summary>
+    public int Y { get; set; } = 120;
+}
+
 public sealed class ClientSettings
 {
     [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -211,6 +220,7 @@ public sealed class ClientSettings
     // Default false: avoids Windows GPU driver DXVA H.264 macroblock garbling on fast scroll
     // while keeping ~1ms CPU MediaFoundation decode + full D3D11 GPU NV12 shader rendering.
     public bool HardwareDecode { get; set; } = false;
+    public Dictionary<string, ImeOffset> ImeOffsets { get; set; } = new();
     public string? DownloadDirectory { get; set; }
 }
 

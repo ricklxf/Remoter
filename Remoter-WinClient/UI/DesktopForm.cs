@@ -68,6 +68,12 @@ public sealed class DesktopForm : Form
     private bool _privacyOn;
     private bool _virtualDisplayOn;
     private bool _fullscreen;
+    private bool _imeCalibrating;
+    private bool _imeDragging;
+    private Point _imeDragStartScreen;
+    private int _imeDragStartOffsetX;
+    private int _imeDragStartOffsetY;
+    private string _lastImeCompText = "";
     private bool _statsHudVisible = true;
     private bool _codecCapsSent;
     private bool _hevcFallbackRequested;
@@ -119,18 +125,24 @@ public sealed class DesktopForm : Form
         };
         Controls.Add(_videoHost);
 
-        // ── Bottom-center IME composition echo pill (hidden when empty) ──
+        // ── Draggable IME composition echo pill (hidden when empty & not calibrating) ──
         _imeEchoLabel = new Label
         {
             AutoSize = true,
+            MinimumSize = new Size(56, 28),
             Visible = false,
             BackColor = Color.White,
             ForeColor = Color.FromArgb(17, 17, 17),
             Font = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular),
             Padding = new Padding(8, 4, 8, 4),
             BorderStyle = BorderStyle.FixedSingle,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.SizeAll,
             TabStop = false,
         };
+        _imeEchoLabel.MouseDown += OnImeEchoMouseDown;
+        _imeEchoLabel.MouseMove += OnImeEchoMouseMove;
+        _imeEchoLabel.MouseUp += OnImeEchoMouseUp;
         _videoHost.Controls.Add(_imeEchoLabel);
         _videoHost.ImeTextCommitted += text => _conn?.SendTextInput(text);
         _videoHost.ImeCompositionChanged += UpdateImeEcho;
@@ -179,9 +191,14 @@ public sealed class DesktopForm : Form
             }
         };
         _videoHost.ImeEchoBoundsProvider = () =>
-            (!_disposed && !_imeEchoLabel.IsDisposed && _imeEchoLabel.Visible)
-                ? (Rectangle?)_imeEchoLabel.Bounds
-                : null;
+        {
+            if (_disposed || _imeEchoLabel.IsDisposed) return null;
+            if (_imeEchoLabel.Visible && _imeEchoLabel.Width > 0 && _imeEchoLabel.Height > 0)
+                return _imeEchoLabel.Bounds;
+            // Even before the echo pill becomes visible (WM_IME_STARTCOMPOSITION),
+            // anchor the OS candidate window directly at the calibrated per-resolution offset.
+            return ComputeCalibratedImeAnchorRect();
+        };
 
         // ── Input & Clipboard ──
         _inputManager = new RawInputManager(_videoHost);
@@ -797,6 +814,7 @@ public sealed class DesktopForm : Form
             _statsHud.SetHudVisible(visible);
         };
 
+        _toolbar.ImeCalibrateToggled += ToggleImeCalibration;
         _toolbar.FullscreenToggled += ToggleFullscreen;
         _toolbar.CtrlAltDelRequested += () => _conn.SendCtrlAltDel();
         _toolbar.PowerActionRequested += action =>
@@ -1027,32 +1045,139 @@ public sealed class DesktopForm : Form
         _inputManager?.UpdateClipCursor();
     }
 
+    private string CurrentResolutionKey() => $"{_remoteWidth}x{_remoteHeight}";
+
+    private ImeOffset GetCurrentImeOffset()
+    {
+        _settings.ImeOffsets ??= new Dictionary<string, ImeOffset>();
+        string key = CurrentResolutionKey();
+        if (_settings.ImeOffsets.TryGetValue(key, out var off)) return off;
+        if (_settings.ImeOffsets.TryGetValue("*", out var fallback))
+            return new ImeOffset { X = fallback.X, Y = fallback.Y };
+        return new ImeOffset { X = 0, Y = 120 };
+    }
+
+    private void SetCurrentImeOffset(int x, int y, bool save)
+    {
+        _settings.ImeOffsets ??= new Dictionary<string, ImeOffset>();
+        _settings.ImeOffsets[CurrentResolutionKey()] = new ImeOffset { X = x, Y = Math.Max(80, y) };
+        if (save)
+        {
+            DeviceStore.Shared.SaveSettings(_settings);
+        }
+    }
+
+    private void ToggleImeCalibration()
+    {
+        _imeCalibrating = !_imeCalibrating;
+        _toolbar.UpdateState(imeCalibrating: _imeCalibrating);
+        RefreshImeEchoVisibility();
+        if (_imeCalibrating)
+        {
+            _videoHost.PositionImeWindow();
+        }
+        else
+        {
+            _videoHost.Focus();
+        }
+    }
+
     private void UpdateImeEcho(string compText)
     {
         if (_disposed || _imeEchoLabel.IsDisposed) return;
-        if (string.IsNullOrEmpty(compText))
+        _lastImeCompText = compText ?? "";
+        RefreshImeEchoVisibility();
+    }
+
+    private void RefreshImeEchoVisibility()
+    {
+        if (_disposed || _imeEchoLabel.IsDisposed) return;
+        bool hasComp = !string.IsNullOrEmpty(_lastImeCompText);
+        if (!hasComp && !_imeCalibrating)
         {
             _imeEchoLabel.Visible = false;
             _imeEchoLabel.Text = "";
             return;
         }
-        _imeEchoLabel.Text = compText;
+        _imeEchoLabel.Text = hasComp ? _lastImeCompText : "拖动调整输入法位置";
         _imeEchoLabel.Visible = true;
         _imeEchoLabel.BringToFront();
         PositionImeEchoLabel();
     }
 
-    private void PositionImeEchoLabel()
+    private void OnImeEchoMouseDown(object? sender, MouseEventArgs e)
     {
-        if (_imeEchoLabel == null || _imeEchoLabel.IsDisposed || !_imeEchoLabel.Visible) return;
+        if (e.Button != MouseButtons.Left) return;
+        _imeDragging = true;
+        _imeDragStartScreen = Control.MousePosition;
+        var off = GetCurrentImeOffset();
+        _imeDragStartOffsetX = off.X;
+        _imeDragStartOffsetY = off.Y;
+        _imeEchoLabel.Capture = true;
+    }
+
+    private void OnImeEchoMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (!_imeDragging) return;
+        double scale = Math.Max(1.0, (_videoHost.IsHandleCreated ? _videoHost.DeviceDpi : DeviceDpi) / 96.0);
+        Point now = Control.MousePosition;
+        int dxLogical = (int)Math.Round((now.X - _imeDragStartScreen.X) / scale);
+        int dyLogical = (int)Math.Round((now.Y - _imeDragStartScreen.Y) / scale);
+
+        int maxHalfX = Math.Max(100, (int)Math.Round(_videoHost.ClientSize.Width / (2.0 * scale)) - 24);
+        int maxY = Math.Max(80, (int)Math.Round((_videoHost.ClientSize.Height - _imeEchoLabel.Height) / scale) - 12);
+
+        int newX = Math.Clamp(_imeDragStartOffsetX + dxLogical, -maxHalfX, maxHalfX);
+        int newY = Math.Clamp(_imeDragStartOffsetY - dyLogical, 80, maxY);
+
+        SetCurrentImeOffset(newX, newY, save: false);
+        PositionImeEchoLabel();
+        _videoHost.PositionImeWindow();
+    }
+
+    private void OnImeEchoMouseUp(object? sender, MouseEventArgs e)
+    {
+        if (!_imeDragging) return;
+        _imeDragging = false;
+        _imeEchoLabel.Capture = false;
+        var off = GetCurrentImeOffset();
+        SetCurrentImeOffset(off.X, off.Y, save: true);
+        _videoHost.PositionImeWindow();
+        if (!_imeCalibrating)
+        {
+            _videoHost.Focus();
+        }
+    }
+
+    private Rectangle ComputeCalibratedImeAnchorRect()
+    {
         int w = _videoHost.ClientSize.Width;
         int h = _videoHost.ClientSize.Height;
         double scale = Math.Max(1.0, (_videoHost.IsHandleCreated ? _videoHost.DeviceDpi : DeviceDpi) / 96.0);
         int margin = (int)Math.Round(8 * scale);
-        int bottomClearance = (int)Math.Round(120 * scale);
-        _imeEchoLabel.Location = new Point(
-            Math.Max(margin, (w - _imeEchoLabel.Width) / 2),
-            Math.Max(margin, h - _imeEchoLabel.Height - bottomClearance));
+        int estW = _imeEchoLabel.Width > 0 ? _imeEchoLabel.Width : (int)Math.Round(56 * scale);
+        int estH = _imeEchoLabel.Height > 0 ? _imeEchoLabel.Height : (int)Math.Round(28 * scale);
+        var off = GetCurrentImeOffset();
+        int offsetX = (int)Math.Round(off.X * scale);
+        int bottomClearance = (int)Math.Round(Math.Max(80, off.Y) * scale);
+
+        int targetX = (w - estW) / 2 + offsetX;
+        int targetY = h - estH - bottomClearance;
+        int maxX = Math.Max(margin, w - estW - margin);
+        int maxY = Math.Max(margin, h - estH - margin);
+
+        return new Rectangle(
+            Math.Clamp(targetX, margin, maxX),
+            Math.Clamp(targetY, margin, maxY),
+            estW,
+            estH);
+    }
+
+    private void PositionImeEchoLabel()
+    {
+        if (_imeEchoLabel == null || _imeEchoLabel.IsDisposed || !_imeEchoLabel.Visible) return;
+        var rect = ComputeCalibratedImeAnchorRect();
+        _imeEchoLabel.Location = new Point(rect.Left, rect.Top);
     }
 
     private void SetDropOverlayVisible(bool visible)

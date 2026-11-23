@@ -35,6 +35,8 @@ export class InputHandler {
   // once the browser's native paste ClipboardEvent actually fires — see
   // onKeyDown's KeyV branch for why the two are split apart.
   private pendingPasteMods: string[] = []
+  private pendingPasteTimer: ReturnType<typeof setTimeout> | null = null
+  private pasteHandled = false
 
   // Mouse-move send throttle: native mousemove can fire 100-240Hz, each one
   // synchronously injects a CGEvent on the Mac side (an IPC round-trip to
@@ -74,6 +76,7 @@ export class InputHandler {
     this.imeEl = null
     if (this.locked) document.exitPointerLock?.()
     if (this.pendingMoveTimer) { clearTimeout(this.pendingMoveTimer); this.pendingMoveTimer = null }
+    if (this.pendingPasteTimer) { clearTimeout(this.pendingPasteTimer); this.pendingPasteTimer = null }
     this.pendingMove = null
   }
 
@@ -86,6 +89,7 @@ export class InputHandler {
   deactivate(): void {
     this.hovering = false
     this.captured = false
+    if (this.pendingPasteTimer) { clearTimeout(this.pendingPasteTimer); this.pendingPasteTimer = null }
     this.releaseAllKeys()
     this.imeEl?.blur()
     if (this.locked) document.exitPointerLock?.()
@@ -308,8 +312,21 @@ export class InputHandler {
     // clients (Chrome Remote Desktop, Guacamole) use for exactly this
     // reason. onPaste does the actual sendKey once it has the data.
     if (ke.code === 'KeyV' && (ke.ctrlKey || ke.metaKey)) {
-      this.pendingPasteMods = mapModifiers(collectModifiers(ke), getKeymap())
+      const km = getKeymap()
+      const mods = mapModifiers(collectModifiers(ke), km)
+      this.pendingPasteMods = mods
+      this.pasteHandled = false
       this.pressedKeys.add(ke.code)
+      if (this.pendingPasteTimer) clearTimeout(this.pendingPasteTimer)
+      // Focus now lives on a non-editable <div> (no hidden <textarea> since remote-native IME),
+      // so macOS browsers / Electron often do NOT fire a native `paste` ClipboardEvent on Cmd+V.
+      // Give `onPaste` 30ms to sync clipboard first; if it doesn't fire, send KeyV directly.
+      this.pendingPasteTimer = setTimeout(() => {
+        this.pendingPasteTimer = null
+        if (this.pasteHandled || !this.enabled) return
+        this.pasteHandled = true
+        this.conn.sendKeyViaWS(mapKeyCode('KeyV', getKeymap()), true, mods)
+      }, 30)
       return
     }
 
@@ -332,6 +349,12 @@ export class InputHandler {
   private onPaste = (e: Event): void => {
     if (!this.enabled) return
     if (!this.hovering && !this.locked && !this.captured) return
+    if (this.pendingPasteTimer) {
+      clearTimeout(this.pendingPasteTimer)
+      this.pendingPasteTimer = null
+    }
+    if (this.pasteHandled) return
+    this.pasteHandled = true
     const ce = e as ClipboardEvent
     ce.preventDefault()
 
@@ -376,8 +399,36 @@ export class InputHandler {
     // preventing stuck keys when the mouse drifts out of the canvas.
     if (!this.pressedKeys.has(ke.code)) return
     ke.preventDefault()
-    this.pressedKeys.delete(ke.code)
     const km = getKeymap()
+
+    // Flush pending Cmd+V/Ctrl+V keydown immediately if user releases KeyV or Meta/Ctrl
+    // before the 30ms native-paste grace window expires, preserving strict down->up order.
+    if (this.pendingPasteTimer && (ke.code === 'KeyV' || ke.code === 'MetaLeft' || ke.code === 'MetaRight' || ke.code === 'ControlLeft' || ke.code === 'ControlRight')) {
+      clearTimeout(this.pendingPasteTimer)
+      this.pendingPasteTimer = null
+      if (!this.pasteHandled) {
+        this.pasteHandled = true
+        this.conn.sendKeyViaWS(mapKeyCode('KeyV', km), true, this.pendingPasteMods)
+      }
+    }
+
+    // macOS browsers suppress `keyup` for character keys pressed while Meta (Cmd) is held
+    // (e.g. Cmd+C/V/A/Z). Release any lingering non-modifier keys before releasing Meta
+    // so remote macOS never gets stuck with shortcut keys held down.
+    if (ke.code === 'MetaLeft' || ke.code === 'MetaRight') {
+      const releaseMods = mapModifiers(collectModifiers(ke), km)
+      for (const held of Array.from(this.pressedKeys)) {
+        if (held !== 'MetaLeft' && held !== 'MetaRight' &&
+            held !== 'ControlLeft' && held !== 'ControlRight' &&
+            held !== 'AltLeft' && held !== 'AltRight' &&
+            held !== 'ShiftLeft' && held !== 'ShiftRight') {
+          this.pressedKeys.delete(held)
+          this.conn.sendKey(mapKeyCode(held, km), false, releaseMods)
+        }
+      }
+    }
+
+    this.pressedKeys.delete(ke.code)
     this.conn.sendKey(mapKeyCode(ke.code, km), false, mapModifiers(collectModifiers(ke), km))
   }
 

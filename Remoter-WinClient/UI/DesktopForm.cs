@@ -241,10 +241,18 @@ public sealed class DesktopForm : Form
         InitializeVideoPipeline();
 
         _toolbar.Show();
-        _toolbar.UpdatePosition();
-
         _statsHud.SetHudVisible(_statsHudVisible);
-        _statsHud.UpdatePosition();
+
+        // 默认进入全屏模式（F11 / Ctrl+Alt+F 或工具栏按钮可切回窗口模式）
+        if (!_fullscreen)
+        {
+            ToggleFullscreen();
+        }
+        else
+        {
+            _toolbar.UpdatePosition();
+            _statsHud.UpdatePosition();
+        }
 
         // Sync initial settings with server
         if (_settings.QualityPreset == QualityPreset.Auto)

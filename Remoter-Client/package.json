@@ -1,6 +1,6 @@
 {
   "name": "remoter-client",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Remoter - Remote Desktop Client",
   "main": "out/main/index.js",
   "scripts": {

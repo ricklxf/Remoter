@@ -1029,7 +1029,7 @@ public sealed class RemoterConnection : IDisposable
         {
             long now = Environment.TickCount64;
             long prev = Volatile.Read(ref _lastUdpKeyframeReqTicks);
-            if (now - prev >= 150 &&
+            if (now - prev >= 300 &&
                 Interlocked.CompareExchange(ref _lastUdpKeyframeReqTicks, now, prev) == prev)
             {
                 SendRequestKeyframe();

@@ -51,7 +51,7 @@ final class UdpVideoServer {
     static let maxFragments: Int = 255
     static let headerSize: Int = 20
     static let gcmTagSize: Int = 16
-    static let ringBufferCapacity: Int = 128
+    static let ringBufferCapacity: Int = 1024
     static let keepaliveTimeoutSeconds: TimeInterval = 6.0
 
     private enum FecLevel: String {
@@ -360,6 +360,11 @@ final class UdpVideoServer {
                 if !sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
                                peerAddr: &addrCopy, peerLen: peerLen) {
                     return false
+                }
+                // Micro-pace large frames (keyframes / 2K scroll frames) so WireGuard/router
+                // burst queues don't tail-drop 100+ back-to-back UDP datagrams in <0.2ms.
+                if fragCount > 16 && ((i + 1) & 15) == 0 && (i + 1) < fragCount {
+                    usleep(150)
                 }
             }
 

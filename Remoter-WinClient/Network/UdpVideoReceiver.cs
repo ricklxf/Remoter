@@ -33,9 +33,9 @@ public sealed class UdpVideoReceiver : IDisposable
     private const int VideoHeaderSize = 20;
     private const int GcmTagSize = 16;
     private const int MaxNackIndices = 16;
-    private const int MaxInFlightFrames = 4;
+    private const int MaxInFlightFrames = 8;
     private const int FrameTimeoutMs = 80;
-    private const int CleanupIntervalMs = 40;
+    private const int CleanupIntervalMs = 20;
     private const int ReceiveBufferBytes = 4 * 1024 * 1024;
     private const int HelloRetryCount = 3;
     private const int HelloIntervalMs = 100;
@@ -53,6 +53,7 @@ public sealed class UdpVideoReceiver : IDisposable
         public long CreatedAtTick;
         public byte[]?[] Fragments = Array.Empty<byte[]?>();
         public int ReceivedCount;
+        public bool IsComplete;
         public Dictionary<int, byte[]>? ParityGroups;
         public HashSet<byte>? NackedFrags;
     }
@@ -117,6 +118,7 @@ public sealed class UdpVideoReceiver : IDisposable
 
     public void NotifyExternalFrame(uint frameId, bool isKeyframe)
     {
+        List<VideoFramePacket>? completedPackets = null;
         lock (_lock)
         {
             if (!_hasCompletedFrame || unchecked((int)(frameId - _lastCompletedFrameId)) > 0)
@@ -127,6 +129,15 @@ public sealed class UdpVideoReceiver : IDisposable
             if (isKeyframe)
             {
                 _awaitingKeyframe = false;
+            }
+            _frames.Remove(frameId);
+            FlushConsecutiveCompletedFrames(ref completedPackets);
+        }
+        if (completedPackets != null)
+        {
+            foreach (var pkt in completedPackets)
+            {
+                FrameReceived?.Invoke(pkt);
             }
         }
     }
@@ -369,7 +380,7 @@ public sealed class UdpVideoReceiver : IDisposable
         bool isKeyframe = (flags & 0x01) != 0;
         VideoCodecType codec = (flags & 0x02) != 0 ? VideoCodecType.H265 : VideoCodecType.H264;
 
-        VideoFramePacket? completedPacket = null;
+        List<VideoFramePacket>? completedPackets = null;
         byte[]? nackPacket = null;
         UdpClient? nackUdp = null;
         int droppedCount = 0;
@@ -417,6 +428,11 @@ public sealed class UdpVideoReceiver : IDisposable
                 _frames[frameId] = assembly;
             }
 
+            if (assembly.IsComplete)
+            {
+                return;
+            }
+
             if (pktType == PacketData)
             {
                 if (fragIndex < assembly.FragCount && assembly.Fragments[fragIndex] == null)
@@ -444,64 +460,74 @@ public sealed class UdpVideoReceiver : IDisposable
 
             if (assembly.ReceivedCount == assembly.FragCount)
             {
-                _frames.Remove(frameId);
-
-                // Drop any older incomplete frames
-                List<uint>? stale = null;
-                foreach (uint existingId in _frames.Keys)
-                {
-                    if ((int)(existingId - frameId) < 0)
-                    {
-                        stale ??= new List<uint>();
-                        stale.Add(existingId);
-                    }
-                }
-                if (stale != null)
-                {
-                    foreach (uint id in stale)
-                    {
-                        _frames.Remove(id);
-                        droppedCount++;
-                    }
-                    _awaitingKeyframe = true;
-                }
-
-                // Detect frameId gap on non-keyframe -> require fresh IDR keyframe before decoding P-frames
-                if (_hasCompletedFrame &&
-                    !assembly.IsKeyframe &&
-                    unchecked(frameId - _lastCompletedFrameId) != 1)
-                {
-                    _awaitingKeyframe = true;
-                }
-
-                _hasCompletedFrame = true;
-                _lastCompletedFrameId = frameId;
+                assembly.IsComplete = true;
 
                 if (assembly.IsKeyframe)
                 {
+                    // A fresh keyframe resets the decode chain: drop any older incomplete frames
+                    _frames.Remove(frameId);
+                    List<uint>? stale = null;
+                    foreach (uint existingId in _frames.Keys)
+                    {
+                        if ((int)(existingId - frameId) < 0)
+                        {
+                            stale ??= new List<uint>();
+                            stale.Add(existingId);
+                        }
+                    }
+                    if (stale != null)
+                    {
+                        foreach (uint id in stale)
+                        {
+                            _frames.Remove(id);
+                        }
+                    }
+
+                    _hasCompletedFrame = true;
+                    _lastCompletedFrameId = frameId;
                     _awaitingKeyframe = false;
-                    byte[] assembled = AssembleFrame(assembly);
-                    completedPacket = new VideoFramePacket(
-                        Data: assembled,
+
+                    completedPackets ??= new List<VideoFramePacket>();
+                    completedPackets.Add(new VideoFramePacket(
+                        Data: AssembleFrame(assembly),
                         FrameId: assembly.FrameId,
                         PtsMs: assembly.PtsMs,
-                        IsKeyframe: assembly.IsKeyframe,
-                        Codec: assembly.Codec);
+                        IsKeyframe: true,
+                        Codec: assembly.Codec));
+
+                    // Flush any consecutive completed P-frames that arrived right after this keyframe
+                    FlushConsecutiveCompletedFrames(ref completedPackets);
                 }
                 else if (_awaitingKeyframe)
                 {
                     // Discard P-frame while awaiting keyframe so decoder never smears against a missing reference
+                    _frames.Remove(frameId);
+                    _hasCompletedFrame = true;
+                    _lastCompletedFrameId = frameId;
                     droppedCount = Math.Max(droppedCount, 1);
+                }
+                else if (!_hasCompletedFrame || unchecked(frameId - _lastCompletedFrameId) == 1)
+                {
+                    // Strictly next in-order P-frame: deliver immediately and flush any buffered successors
+                    _frames.Remove(frameId);
+                    _hasCompletedFrame = true;
+                    _lastCompletedFrameId = frameId;
+
+                    completedPackets ??= new List<VideoFramePacket>();
+                    completedPackets.Add(new VideoFramePacket(
+                        Data: AssembleFrame(assembly),
+                        FrameId: assembly.FrameId,
+                        PtsMs: assembly.PtsMs,
+                        IsKeyframe: false,
+                        Codec: assembly.Codec));
+
+                    FlushConsecutiveCompletedFrames(ref completedPackets);
                 }
                 else
                 {
-                    byte[] assembled = AssembleFrame(assembly);
-                    completedPacket = new VideoFramePacket(
-                        Data: assembled,
-                        FrameId: assembly.FrameId,
-                        PtsMs: assembly.PtsMs,
-                        IsKeyframe: assembly.IsKeyframe,
-                        Codec: assembly.Codec);
+                    // Newer P-frame finished while an older frame (e.g. large scroll frame) is still
+                    // awaiting FEC parity or NACK retransmission. Keep it buffered in _frames instead
+                    // of prematurely killing the older frame and triggering a keyframe storm!
                 }
             }
             else if (pktType == PacketData && _udp != null && _token != null && fragIndex > 0)
@@ -565,9 +591,33 @@ public sealed class UdpVideoReceiver : IDisposable
             FrameDropped?.Invoke();
         }
 
-        if (completedPacket.HasValue)
+        if (completedPackets != null)
         {
-            FrameReceived?.Invoke(completedPacket.Value);
+            foreach (var pkt in completedPackets)
+            {
+                FrameReceived?.Invoke(pkt);
+            }
+        }
+    }
+
+    private void FlushConsecutiveCompletedFrames(ref List<VideoFramePacket>? completedPackets)
+    {
+        while (_hasCompletedFrame && !_awaitingKeyframe)
+        {
+            uint nextId = unchecked(_lastCompletedFrameId + 1);
+            if (!_frames.TryGetValue(nextId, out var next) || !next.IsComplete)
+            {
+                break;
+            }
+            _frames.Remove(nextId);
+            _lastCompletedFrameId = nextId;
+            completedPackets ??= new List<VideoFramePacket>();
+            completedPackets.Add(new VideoFramePacket(
+                Data: AssembleFrame(next),
+                FrameId: next.FrameId,
+                PtsMs: next.PtsMs,
+                IsKeyframe: next.IsKeyframe,
+                Codec: next.Codec));
         }
     }
 

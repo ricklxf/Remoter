@@ -14,22 +14,20 @@ trigger: always_on
    - 使用中文 Conventional Commits 格式（`type(scope): 中文描述`）提交并推送到当前分支（`git push origin main`，若遇 HTTP/2 帧报错可用 `git -c http.version=HTTP/1.1 push origin main`）。
 2. **自动编译打包并重启本机 `Remoter-MacServer`（`RemoterAgent.app`）**：
    - `Remoter-MacServer/scripts/build-app.sh` 会自动编译 MacServer 并打包嵌入最新 Web 客户端产物。
-   - 执行命令重启本机服务，确保本机始终运行最新版本：
+   - 执行命令通过 LaunchAgent（`KeepAlive=true` 崩溃自动拉起）重启本机服务，确保本机始终运行最新版本：
      ```bash
      cd /Users/lxf/Code/Remoter/Remoter-MacServer
      bash scripts/build-app.sh
-     pkill RemoterAgent 2>/dev/null || true
-     sleep 1
-     open build/RemoterAgent.app
+     bash scripts/install-launchagent.sh
      ```
    - 启动后确认本机 `RemoterAgent` 进程已正常运行（`pgrep -fl RemoterAgent`）。
-3. **同步通过 SSH 让 `mac2` 拉取最新代码、编译并重启 `RemoterAgent.app`**：
+3. **同步通过 SSH 让 `mac2` 拉取最新代码、编译并重启 `RemoterAgent.app`（LaunchAgent 保活）**：
    ```bash
    ssh -o ConnectTimeout=5 -o BatchMode=yes lxf@Ricks-Mac-mini-2.local '
+     export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
      cd ~/Code/Remoter && git -c http.version=HTTP/1.1 pull --ff-only &&
      cd ~/Code/Remoter/Remoter-MacServer && bash scripts/build-app.sh &&
-     (pkill RemoterAgent 2>/dev/null || true) && sleep 1 &&
-     open build/RemoterAgent.app && sleep 1 && pgrep -fl RemoterAgent
+     bash scripts/install-launchagent.sh
    '
    ```
    - 确认 `mac2` 上 `RemoterAgent` 进程已成功重启运行。

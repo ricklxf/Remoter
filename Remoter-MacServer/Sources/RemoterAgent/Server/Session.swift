@@ -23,7 +23,20 @@ final class Session {
     private var audioEncoder: AudioEncoder?
     private var audioEnabled = false
     private var cursorMonitor: CursorMonitor?
-    private var lastFrame: CVPixelBuffer?
+    private let lastFrameLock = NSLock()
+    private var _lastFrame: CVPixelBuffer?
+    private var lastFrame: CVPixelBuffer? {
+        get {
+            lastFrameLock.lock()
+            defer { lastFrameLock.unlock() }
+            return _lastFrame
+        }
+        set {
+            lastFrameLock.lock()
+            _lastFrame = newValue
+            lastFrameLock.unlock()
+        }
+    }
     private var input: InputController?
     private var fileReceiver: FileReceiver?
     private var webrtc: WebRTCAgent?
@@ -784,8 +797,8 @@ final class Session {
             keyframeRequests += 1
             let now = Date()
             // On UDP, give NACK/FEC breathing room instead of blasting keyframes every 200ms:
-            // 0.6s when link is clean, 1.0s under active packet loss (>=3%) to prevent 2K keyframe storms.
-            let cooldown: TimeInterval = usingUdpVideo ? (udpLastLossRatio >= 0.03 ? 1.0 : 0.6) : 1.0
+            // 0.4s when link is clean, 0.8s under active packet loss (>=3%) to prevent 2K keyframe storms.
+            let cooldown: TimeInterval = usingUdpVideo ? (udpLastLossRatio >= 0.03 ? 0.8 : 0.4) : 1.0
             guard now.timeIntervalSince(lastForcedKeyframeAt) > cooldown else { break }
             lastForcedKeyframeAt = now
             keyframesForced += 1

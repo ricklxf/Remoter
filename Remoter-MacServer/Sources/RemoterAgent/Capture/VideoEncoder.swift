@@ -14,6 +14,7 @@ enum StreamCodec: String {
 final class VideoEncoder {
     var onEncodedFrame: ((Data, Bool) -> Void)?
 
+    private let stateLock = NSLock()
     private var session: VTCompressionSession?
     private var codec: StreamCodec = .h264
     private var frameIndex: Int64 = 0
@@ -66,7 +67,9 @@ final class VideoEncoder {
     /// (re)attaches a fresh decoder, e.g. switching back to a tab, and would
     /// otherwise show a black screen until the next interval.
     func forceKeyframe() {
+        stateLock.lock()
         forceKeyframeNext = true
+        stateLock.unlock()
     }
 
     /// Adjusts the live session's target bitrate without tearing it down —
@@ -75,6 +78,8 @@ final class VideoEncoder {
     /// silently inert, which matters most exactly when it's needed:
     /// a client whose decode can't keep up with the fixed default bitrate.
     func setBitrate(_ bitrateBps: Int) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         currentBitrateBps = bitrateBps
         guard let session else { return }
         guard bitrateBps != appliedBitrateBps else { return }
@@ -107,6 +112,8 @@ final class VideoEncoder {
 
     /// Adjusts the live session's expected frame rate ceiling without tearing it down.
     func setFps(_ fps: Int) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         let clamped = max(1, fps)
         maxFps = clamped
         guard let session else { return }
@@ -123,6 +130,8 @@ final class VideoEncoder {
         chroma444: Bool = false,
         hdr: Bool = false
     ) throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         self.codec = codec
         self.currentBitrateBps = bitrateBps
         self.maxFps = max(1, fps)
@@ -273,6 +282,8 @@ final class VideoEncoder {
     /// Uses cached dynamic ExpectedFrameRate + quality-over-speed without thrashing
     /// AverageBitRate/DataRateLimits synchronously on every idle->motion transition.
     func encodeRefinementFrame(_ pb: CVPixelBuffer) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         guard let session else { return }
         let now = CACurrentMediaTime()
         let floorFps = min(Self.minDynamicExpectedFps, maxFps)
@@ -285,6 +296,8 @@ final class VideoEncoder {
     }
 
     func encode(_ pb: CVPixelBuffer) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         guard let session else { return }
         let now = CACurrentMediaTime()
         updateDynamicRateControl(session, now: now)
@@ -387,9 +400,12 @@ final class VideoEncoder {
     }
 
     func close() {
-        if let s = session {
+        stateLock.lock()
+        let s = session
+        session = nil
+        stateLock.unlock()
+        if let s {
             VTCompressionSessionInvalidate(s)
-            session = nil
         }
     }
 

@@ -105,6 +105,9 @@ final class Session {
     private var udpLossCapSetAt: CFAbsoluteTime = 0
     private var udpStableAtCapStreak = 0
     private var udpLastLossRatio: Double = 0
+    private var udpDelayOveruseStreak = 0
+    private var udpDelayCleanStreak = 0
+    private var udpLastGccAdjustAt: CFAbsoluteTime = 0
     private let udpSessionToken: Data = {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<16).map { _ in UInt8.random(in: 0...255, using: &rng) })
@@ -1409,8 +1412,18 @@ final class Session {
                     onLossFeedback: { [weak self] lossRatio, sentPackets in
                         guard let self, !self.isClosed else { return }
                         self.handleUdpLossFeedback(lossRatio, sentPackets: sentPackets)
+                    },
+                    onTransportFeedback: { [weak self] delayGradMs, lossRatio, jitterMs, recvBps in
+                        guard let self, !self.isClosed else { return }
+                        self.handleUdpTransportFeedback(
+                            delayGradientMs: delayGradMs,
+                            lossRatio: lossRatio,
+                            jitterMs: jitterMs,
+                            recvBps: recvBps
+                        )
                     }
                 )
+                UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: currentBitrate)
                 sendJson([
                     "type": "udp_offer",
                     "port": Int(udpPort),
@@ -1646,6 +1659,7 @@ final class Session {
             let boosted = min(Int(Double(currentBitrate) * 1.5), 37_500_000)
             encoder?.setBitrate(boosted)
             webrtc?.setMaxBitrate(boosted)
+            UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: boosted)
         }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
@@ -1655,6 +1669,7 @@ final class Session {
             self.scrollBoostLock.unlock()
             self.encoder?.setBitrate(self.currentBitrate)
             self.webrtc?.setMaxBitrate(self.currentBitrate)
+            UdpVideoServer.shared.updatePacingBitrate(token: self.udpSessionToken, bitrateBps: self.currentBitrate)
         }
     }
 
@@ -1747,11 +1762,71 @@ final class Session {
         if notify { notifyQualityActive() }
     }
 
+    /// Pre-loss Delay-Gradient GCC (UU/WebRTC-style) driven by 200ms UDP FEEDBACK (0x13) packets:
+    /// reacts to queuing delay buildup (+12ms gradient) BEFORE packets start dropping, trimming
+    /// bitrate smoothly by 10% instead of waiting for a 2s loss spike.
+    private func handleUdpTransportFeedback(
+        delayGradientMs: Double,
+        lossRatio: Double,
+        jitterMs: Double,
+        recvBps: Int
+    ) {
+        guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
+        scrollBoostLock.lock()
+        let boosting = scrollBoostActive
+        scrollBoostLock.unlock()
+        guard !boosting else { return }
+
+        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+        let floorBps = ((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000
+        let now = CFAbsoluteTimeGetCurrent()
+
+        if delayGradientMs >= 12.0 && recvBps >= 2_000_000 {
+            udpDelayCleanStreak = 0
+            udpDelayOveruseStreak += 1
+            if udpDelayOveruseStreak >= 2 && (now - udpLastGccAdjustAt) >= 1.2 {
+                udpDelayOveruseStreak = 0
+                udpLastGccAdjustAt = now
+                let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.90).rounded())))
+                if nextBps != currentBitrate {
+                    applyBitrate(nextBps, notify: true)
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "udp_gcc_delay",
+                        detail: "dir=down gradMs=\(String(format: "%.1f", delayGradientMs)) jitterMs=\(String(format: "%.1f", jitterMs)) recvKbps=\(recvBps/1000) bitrate=\(nextBps)"
+                    )
+                }
+            }
+        } else if delayGradientMs < 4.0 && lossRatio < 0.005 {
+            udpDelayOveruseStreak = 0
+            guard recvBps >= 800_000 else { return }
+            udpDelayCleanStreak += 1
+            let effectiveCeiling = max(floorBps, min(hardCeilingBps, udpLearnedCeilingBps ?? hardCeilingBps))
+            if udpDelayCleanStreak >= 8 && currentBitrate < effectiveCeiling && (now - udpLastGccAdjustAt) >= 1.5 {
+                udpDelayCleanStreak = 0
+                udpLastGccAdjustAt = now
+                let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.08).rounded())))
+                if nextBps != currentBitrate {
+                    applyBitrate(nextBps, notify: true)
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "udp_gcc_delay",
+                        detail: "dir=up gradMs=\(String(format: "%.1f", delayGradientMs)) jitterMs=\(String(format: "%.1f", jitterMs)) recvKbps=\(recvBps/1000) bitrate=\(nextBps)"
+                    )
+                }
+            }
+        } else {
+            udpDelayOveruseStreak = 0
+            udpDelayCleanStreak = 0
+        }
+    }
+
     private func applyBitrate(_ bitrate: Int, notify: Bool = true) {
         currentBitrate = bitrate
         jpegQuality = bitrateToJpegQuality(bitrate)
         encoder?.setBitrate(bitrate)
         webrtc?.setMaxBitrate(bitrate)   // RTP path: sets the GCC ceiling
+        UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: bitrate)
         if notify { notifyQualityActive() }
     }
 

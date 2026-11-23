@@ -45,6 +45,7 @@ final class UdpVideoServer {
     static let packetData: UInt8      = 0x10
     static let packetFecParity: UInt8 = 0x11
     static let packetNack: UInt8      = 0x12
+    static let packetFeedback: UInt8  = 0x13
 
     static let defaultPort: UInt16 = 7789
     static let maxFragmentPayload: Int = 1200
@@ -53,6 +54,8 @@ final class UdpVideoServer {
     static let gcmTagSize: Int = 16
     static let ringBufferCapacity: Int = 1024
     static let keepaliveTimeoutSeconds: TimeInterval = 6.0
+    static let maxPacingQueuePackets: Int = 320
+    static let immediateBurstPackets: Int = 8
 
     private enum FecLevel: String {
         case suppressed
@@ -69,6 +72,14 @@ final class UdpVideoServer {
         var symmetricKey: SymmetricKey?
         var onActivated: (Bool) -> Void
         var onLossFeedback: ((Double, UInt64) -> Void)?
+        var onTransportFeedback: ((Double, Double, Double, Int) -> Void)?
+
+        // 1ms token-bucket pacer state (prevents WireGuard/router burst tail-drops on 2K keyframes)
+        var pacingBitrateBps: Int = 12_000_000
+        var pacingQueue: [Data] = []
+        var pacingReadIndex: Int = 0
+        var pacingBudgetBytes: Double = 0
+        var lastPaceTickAt: CFAbsoluteTime = 0
 
         // 2s sliding-window adaptive FEC & loss feedback
         var windowSentDataPackets: UInt64 = 0
@@ -91,7 +102,8 @@ final class UdpVideoServer {
             aesKey: Data?,
             allowFecSuppression: Bool,
             onActivated: @escaping (Bool) -> Void,
-            onLossFeedback: ((Double, UInt64) -> Void)?
+            onLossFeedback: ((Double, UInt64) -> Void)?,
+            onTransportFeedback: ((Double, Double, Double, Int) -> Void)?
         ) {
             if let aesKey, aesKey.count == 32 {
                 self.symmetricKey = SymmetricKey(data: aesKey)
@@ -99,6 +111,7 @@ final class UdpVideoServer {
             self.allowFecSuppression = allowFecSuppression
             self.onActivated = onActivated
             self.onLossFeedback = onLossFeedback
+            self.onTransportFeedback = onTransportFeedback
         }
 
         func storeInRing(key: UInt64, datagram: Data) {
@@ -127,6 +140,8 @@ final class UdpVideoServer {
     private var isIPv6 = false
     private var readSource: DispatchSourceRead?
     private var timeoutTimer: DispatchSourceTimer?
+    private var pacerTimer: DispatchSourceTimer?
+    private var pacerRunning = false
     private var sessions: [Data: PeerSession] = [:]
 
     private(set) var listeningPort: UInt16 = 0
@@ -164,12 +179,20 @@ final class UdpVideoServer {
             self?.runMaintenanceTick()
         }
 
+        let pacer = DispatchSource.makeTimerSource(queue: ioQueue)
+        pacer.schedule(deadline: .now(), repeating: .milliseconds(1), leeway: .microseconds(250))
+        pacer.setEventHandler { [weak self] in
+            self?.drainPacerTick()
+        }
+
         lock.lock()
         sockfd = fd
         isIPv6 = dualStack
         listeningPort = boundPort
         readSource = reader
         timeoutTimer = timer
+        pacerTimer = pacer
+        pacerRunning = false
         lock.unlock()
 
         reader.resume()
@@ -184,13 +207,21 @@ final class UdpVideoServer {
         lock.lock()
         let reader = readSource
         let timer = timeoutTimer
+        let pacer = pacerTimer
+        let wasPacerRunning = pacerRunning
         readSource = nil
         timeoutTimer = nil
+        pacerTimer = nil
+        pacerRunning = false
         sockfd = -1
         listeningPort = 0
         sessions.removeAll()
         lock.unlock()
 
+        if let pacer {
+            if !wasPacerRunning { pacer.resume() }
+            pacer.cancel()
+        }
         timer?.cancel()
         reader?.cancel()
         ConnectionLogger.shared.logStep(sessionId: "udp", step: "udp_video_stopped")
@@ -203,7 +234,8 @@ final class UdpVideoServer {
         aesKey: Data? = nil,
         allowFecSuppression: Bool = true,
         onActivated: @escaping (Bool) -> Void,
-        onLossFeedback: ((Double, UInt64) -> Void)? = nil
+        onLossFeedback: ((Double, UInt64) -> Void)? = nil,
+        onTransportFeedback: ((Double, Double, Double, Int) -> Void)? = nil
     ) {
         guard token.count == 16 else { return }
         lock.lock()
@@ -211,6 +243,7 @@ final class UdpVideoServer {
             // Preserve active UDP peer across pipeline rebuilds (resolution/codec switch)
             existing.onActivated = onActivated
             existing.onLossFeedback = onLossFeedback
+            existing.onTransportFeedback = onTransportFeedback
             existing.allowFecSuppression = allowFecSuppression
             if !allowFecSuppression && existing.fecLevel == .suppressed {
                 existing.fecLevel = .light
@@ -225,8 +258,17 @@ final class UdpVideoServer {
                 aesKey: aesKey,
                 allowFecSuppression: allowFecSuppression,
                 onActivated: onActivated,
-                onLossFeedback: onLossFeedback
+                onLossFeedback: onLossFeedback,
+                onTransportFeedback: onTransportFeedback
             )
+        }
+        lock.unlock()
+    }
+
+    func updatePacingBitrate(token: Data, bitrateBps: Int) {
+        lock.lock()
+        if let session = sessions[token] {
+            session.pacingBitrateBps = max(2_000_000, bitrateBps)
         }
         lock.unlock()
     }
@@ -310,6 +352,11 @@ final class UdpVideoServer {
         var addrCopy = peerAddr
         var cachedDataPackets: [(UInt64, Data)] = []
         cachedDataPackets.reserveCapacity(fragCount)
+        let usePacing = fragCount > Self.immediateBurstPackets
+        var pacedPackets: [Data] = []
+        if usePacing {
+            pacedPackets.reserveCapacity(fragCount + 32)
+        }
 
         let ok = data.withUnsafeBytes { rawBuf -> Bool in
             guard let basePtr = rawBuf.bindMemory(to: UInt8.self).baseAddress else { return false }
@@ -354,17 +401,17 @@ final class UdpVideoServer {
                     wireLen = Self.headerSize + fragLen
                 }
 
+                let wireData = Data(packetBuf[0..<wireLen])
                 let cacheKey = (UInt64(frameId) << 8) | UInt64(fragIdx)
-                cachedDataPackets.append((cacheKey, Data(packetBuf[0..<wireLen])))
+                cachedDataPackets.append((cacheKey, wireData))
 
-                if !sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
-                               peerAddr: &addrCopy, peerLen: peerLen) {
-                    return false
-                }
-                // Micro-pace large frames (keyframes / 2K scroll frames) so WireGuard/router
-                // burst queues don't tail-drop 100+ back-to-back UDP datagrams in <0.2ms.
-                if fragCount > 16 && ((i + 1) & 15) == 0 && (i + 1) < fragCount {
-                    usleep(150)
+                if usePacing && i >= Self.immediateBurstPackets {
+                    pacedPackets.append(wireData)
+                } else {
+                    if !sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
+                                   peerAddr: &addrCopy, peerLen: peerLen) {
+                        return false
+                    }
                 }
             }
 
@@ -441,23 +488,44 @@ final class UdpVideoServer {
                         wireLen = Self.headerSize + bodyLen
                     }
 
-                    _ = sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
-                                   peerAddr: &addrCopy, peerLen: peerLen)
+                    if usePacing {
+                        pacedPackets.append(Data(packetBuf[0..<wireLen]))
+                    } else {
+                        _ = sendPacket(fd: fd, buffer: packetBuf, length: wireLen,
+                                       peerAddr: &addrCopy, peerLen: peerLen)
+                    }
                 }
             }
 
             return true
         }
 
-        if !cachedDataPackets.isEmpty {
+        var shouldResumePacer = false
+        if !cachedDataPackets.isEmpty || !pacedPackets.isEmpty {
             lock.lock()
             if let s = sessions[token] {
                 s.windowSentDataPackets += UInt64(cachedDataPackets.count)
                 for (cacheKey, datagram) in cachedDataPackets {
                     s.storeInRing(key: cacheKey, datagram: datagram)
                 }
+                if !pacedPackets.isEmpty {
+                    let pending = s.pacingQueue.count - s.pacingReadIndex
+                    if pending + pacedPackets.count > Self.maxPacingQueuePackets {
+                        // Drop stale queued packets if encoder outruns link (never build multi-frame lag)
+                        s.pacingQueue.removeAll(keepingCapacity: true)
+                        s.pacingReadIndex = 0
+                    }
+                    s.pacingQueue.append(contentsOf: pacedPackets)
+                    if !pacerRunning, pacerTimer != nil {
+                        pacerRunning = true
+                        shouldResumePacer = true
+                    }
+                }
             }
             lock.unlock()
+        }
+        if shouldResumePacer {
+            pacerTimer?.resume()
         }
 
         return ok
@@ -611,6 +679,8 @@ final class UdpVideoServer {
                 handleKeepalive(token: token, srcAddr: srcAddr, srcLen: srcLen)
             case Self.packetNack:
                 handleNack(fd: fd, token: token, buf: recvBuf, length: n, srcAddr: srcAddr, srcLen: srcLen)
+            case Self.packetFeedback:
+                handleFeedback(token: token, buf: recvBuf, length: n, srcAddr: srcAddr, srcLen: srcLen)
             default:
                 break
             }
@@ -719,6 +789,112 @@ final class UdpVideoServer {
                 step: "udp_nack_retransmit",
                 detail: "frameId=\(frameId) sent=\(toRetransmit.count)/\(count) total=\(totalRetransmits)"
             )
+        }
+    }
+
+    /// Handles incoming 0x13 FEEDBACK (28 bytes):
+    /// [0x52, 0x55, 0x01, 0x13] + 16B token + delayGradDeciMs(Int16 BE) + lossPermille(UInt16 BE)
+    /// + jitterDeciMs(UInt16 BE) + recvKbps(UInt16 BE)
+    private func handleFeedback(
+        token: Data,
+        buf: [UInt8],
+        length: Int,
+        srcAddr: sockaddr_storage,
+        srcLen: socklen_t
+    ) {
+        guard length >= 28 else { return }
+        let rawDelayGrad = UInt16(buf[20]) << 8 | UInt16(buf[21])
+        let delayGradMs = Double(Int16(bitPattern: rawDelayGrad)) / 10.0
+        let lossPermille = UInt16(buf[22]) << 8 | UInt16(buf[23])
+        let lossRatio = Double(min(1000, Int(lossPermille))) / 1000.0
+        let jitterDeciMs = UInt16(buf[24]) << 8 | UInt16(buf[25])
+        let jitterMs = Double(jitterDeciMs) / 10.0
+        let recvKbps = Int(UInt16(buf[26]) << 8 | UInt16(buf[27]))
+        let recvBps = recvKbps * 1000
+
+        var callback: ((Double, Double, Double, Int) -> Void)?
+        lock.lock()
+        if let session = sessions[token], session.isActive {
+            session.peerAddr = srcAddr
+            session.peerLen = srcLen
+            session.lastKeepaliveAt = Date()
+            callback = session.onTransportFeedback
+        }
+        lock.unlock()
+
+        callback?(delayGradMs, lossRatio, jitterMs, recvBps)
+    }
+
+    /// 1ms token-bucket pacer tick: smoothly drains queued large-frame datagrams at
+    /// `max(pacingBitrateBps * 1.4, 12 Mbps)` so WireGuard/router queues never suffer
+    /// micro-burst tail drops on 2K keyframes or fast scrolling.
+    private func drainPacerTick() {
+        let now = CFAbsoluteTimeGetCurrent()
+        var batch: [(sockaddr_storage, socklen_t, [Data])] = []
+        var fd: Int32 = -1
+        var anyRemaining = false
+        var shouldSuspend = false
+
+        lock.lock()
+        fd = sockfd
+        if fd >= 0 {
+            for session in sessions.values {
+                guard session.isActive,
+                      let addr = session.peerAddr,
+                      session.pacingReadIndex < session.pacingQueue.count else {
+                    continue
+                }
+                let dt = session.lastPaceTickAt > 0
+                    ? min(0.015, max(0.0005, now - session.lastPaceTickAt))
+                    : 0.002
+                session.lastPaceTickAt = now
+
+                let paceRateBps = max(Double(session.pacingBitrateBps) * 1.4, 12_000_000.0)
+                let addBytes = (paceRateBps / 8.0) * dt
+                let maxBucket = max(4800.0, (paceRateBps / 8.0) * 0.004)
+                session.pacingBudgetBytes = min(maxBucket, session.pacingBudgetBytes + addBytes)
+
+                var toSend: [Data] = []
+                while session.pacingReadIndex < session.pacingQueue.count && session.pacingBudgetBytes >= 1.0 {
+                    let pkt = session.pacingQueue[session.pacingReadIndex]
+                    session.pacingReadIndex += 1
+                    session.pacingBudgetBytes -= Double(pkt.count)
+                    toSend.append(pkt)
+                    if toSend.count >= 8 { break }
+                }
+
+                if session.pacingReadIndex >= session.pacingQueue.count {
+                    session.pacingQueue.removeAll(keepingCapacity: true)
+                    session.pacingReadIndex = 0
+                } else {
+                    if session.pacingReadIndex > 64 {
+                        session.pacingQueue.removeFirst(session.pacingReadIndex)
+                        session.pacingReadIndex = 0
+                    }
+                    anyRemaining = true
+                }
+
+                if !toSend.isEmpty {
+                    batch.append((addr, session.peerLen, toSend))
+                }
+            }
+        }
+        if !anyRemaining && pacerRunning {
+            pacerRunning = false
+            shouldSuspend = true
+        }
+        lock.unlock()
+
+        if shouldSuspend {
+            pacerTimer?.suspend()
+        }
+
+        guard fd >= 0 else { return }
+        for (addr, len, packets) in batch {
+            var addrCopy = addr
+            for pkt in packets {
+                sendDataPacket(fd: fd, data: pkt, peerAddr: &addrCopy, peerLen: len)
+            }
         }
     }
 

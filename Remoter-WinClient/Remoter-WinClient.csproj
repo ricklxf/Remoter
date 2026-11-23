@@ -18,6 +18,15 @@
     <PackageReference Include="Vortice.DXGI" Version="3.5.0" />
     <!-- Hardware H.264/H.265 video decoding & AAC audio decoding via Media Foundation -->
     <PackageReference Include="Vortice.MediaFoundation" Version="3.5.0" />
+    <!-- FFmpeg 7.x D3D11VA zero-copy H.264 / H.265 (HEVC) hardware decoding -->
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
+  </ItemGroup>
+
+  <!-- Copy bundled FFmpeg 7.x shared DLLs (avcodec-61.dll, avutil-59.dll, etc.) if fetched -->
+  <ItemGroup Condition="Exists('libs\ffmpeg')">
+    <None Include="libs\ffmpeg\*.dll" Link="ffmpeg\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <!-- Copy Remoter.ico to output for runtime window/taskbar icon -->

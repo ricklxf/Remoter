@@ -26,10 +26,13 @@ public sealed class UdpVideoReceiver : IDisposable
     private const byte PacketData      = 0x10;
     private const byte PacketFecParity = 0x11;
     private const byte PacketNack      = 0x12;
+    private const byte PacketFeedback  = 0x13;
 
     private const byte HeaderFlagEncrypted = 0x01;
 
     private const int ControlPacketSize = 20;
+    private const int FeedbackPacketSize = 28;
+    private const int FeedbackIntervalMs = 200;
     private const int VideoHeaderSize = 20;
     private const int GcmTagSize = 16;
     private const int MaxNackIndices = 16;
@@ -71,6 +74,17 @@ public sealed class UdpVideoReceiver : IDisposable
     private bool _awaitingKeyframe = true;
     private bool _disposed;
 
+    // Delay-gradient GCC telemetry (reported every 200ms via 0x13 FEEDBACK)
+    private bool _hasDelayRef;
+    private uint _prevFeedbackPtsMs;
+    private double _prevFeedbackRecvMs;
+    private double _ewmaDelayGradMs;
+    private double _ewmaJitterMs;
+    private int _windowRecvPackets;
+    private int _windowNackPackets;
+    private long _windowRecvBytes;
+    private long _lastFeedbackSentTick;
+
     public bool IsConnected => Volatile.Read(ref _connected);
 
     public event Action<bool>? ConnectedChanged;
@@ -100,6 +114,13 @@ public sealed class UdpVideoReceiver : IDisposable
             _hasCompletedFrame = false;
             _lastCompletedFrameId = 0;
             _awaitingKeyframe = true;
+            _hasDelayRef = false;
+            _ewmaDelayGradMs = 0;
+            _ewmaJitterMs = 0;
+            _windowRecvPackets = 0;
+            _windowNackPackets = 0;
+            _windowRecvBytes = 0;
+            _lastFeedbackSentTick = Environment.TickCount64;
             _frames.Clear();
 
             var udp = new UdpClient();
@@ -160,6 +181,13 @@ public sealed class UdpVideoReceiver : IDisposable
             wasConnected = _connected;
             _connected = false;
             _awaitingKeyframe = true;
+            _hasDelayRef = false;
+            _ewmaDelayGradMs = 0;
+            _ewmaJitterMs = 0;
+            _windowRecvPackets = 0;
+            _windowNackPackets = 0;
+            _windowRecvBytes = 0;
+            _lastFeedbackSentTick = Environment.TickCount64;
             _frames.Clear();
         }
 
@@ -223,12 +251,24 @@ public sealed class UdpVideoReceiver : IDisposable
                 }
             }
 
-            // Connected: send KEEPALIVE every 2s
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(KeepaliveIntervalMs));
+            // Connected: send 0x13 FEEDBACK every 200ms and KEEPALIVE every 2s
+            int tickCount = 0;
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(FeedbackIntervalMs));
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 if (!Volatile.Read(ref _connected)) return;
-                await udp.SendAsync(keepalivePkt, ct).ConfigureAwait(false);
+                tickCount++;
+
+                byte[]? fbPkt = BuildFeedbackPacketIfActive(token);
+                if (fbPkt != null)
+                {
+                    await udp.SendAsync(fbPkt, ct).ConfigureAwait(false);
+                }
+
+                if (tickCount % (KeepaliveIntervalMs / FeedbackIntervalMs) == 0)
+                {
+                    await udp.SendAsync(keepalivePkt, ct).ConfigureAwait(false);
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -435,6 +475,8 @@ public sealed class UdpVideoReceiver : IDisposable
 
             if (pktType == PacketData)
             {
+                _windowRecvPackets++;
+                _windowRecvBytes += buf.Length;
                 if (fragIndex < assembly.FragCount && assembly.Fragments[fragIndex] == null)
                 {
                     assembly.Fragments[fragIndex] = payload;
@@ -461,6 +503,7 @@ public sealed class UdpVideoReceiver : IDisposable
             if (assembly.ReceivedCount == assembly.FragCount)
             {
                 assembly.IsComplete = true;
+                UpdateDelayGradientSample(assembly.PtsMs);
 
                 if (assembly.IsKeyframe)
                 {
@@ -573,6 +616,7 @@ public sealed class UdpVideoReceiver : IDisposable
 
                 if (missing != null && missing.Count > 0)
                 {
+                    _windowNackPackets += missing.Count;
                     assembly.NackedFrags ??= new HashSet<byte>();
                     foreach (byte idx in missing) assembly.NackedFrags.Add(idx);
                     nackPacket = BuildNackPacket(_token, frameId, missing);
@@ -725,6 +769,83 @@ public sealed class UdpVideoReceiver : IDisposable
             offset += frag.Length;
         }
         return assembled;
+    }
+
+    private void UpdateDelayGradientSample(uint ptsMs)
+    {
+        double nowMs = System.Diagnostics.Stopwatch.GetTimestamp() * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        if (!_hasDelayRef)
+        {
+            _hasDelayRef = true;
+            _prevFeedbackPtsMs = ptsMs;
+            _prevFeedbackRecvMs = nowMs;
+            return;
+        }
+
+        double sendDeltaMs = unchecked((int)(ptsMs - _prevFeedbackPtsMs));
+        double recvDeltaMs = nowMs - _prevFeedbackRecvMs;
+        _prevFeedbackPtsMs = ptsMs;
+        _prevFeedbackRecvMs = nowMs;
+
+        // Ignore idle gaps > 150ms or negative pts wrap so delay gradient tracks active congestion
+        if (sendDeltaMs <= 0 || sendDeltaMs > 150.0 || recvDeltaMs < 0 || recvDeltaMs > 300.0)
+        {
+            _ewmaDelayGradMs *= 0.5;
+            return;
+        }
+
+        double oneWayDelta = Math.Clamp(recvDeltaMs - sendDeltaMs, -40.0, 100.0);
+        _ewmaDelayGradMs = _ewmaDelayGradMs * 0.75 + oneWayDelta * 0.25;
+        _ewmaJitterMs = _ewmaJitterMs * 0.85 + Math.Abs(oneWayDelta) * 0.15;
+    }
+
+    private byte[]? BuildFeedbackPacketIfActive(byte[] token)
+    {
+        long nowTick = Environment.TickCount64;
+        double delayGradMs;
+        double jitterMs;
+        int recvPkts;
+        int nackPkts;
+        long recvBytes;
+        long elapsedMs;
+
+        lock (_lock)
+        {
+            recvPkts = _windowRecvPackets;
+            nackPkts = _windowNackPackets;
+            recvBytes = _windowRecvBytes;
+            delayGradMs = _ewmaDelayGradMs;
+            jitterMs = _ewmaJitterMs;
+            elapsedMs = Math.Max(50, nowTick - _lastFeedbackSentTick);
+
+            _windowRecvPackets = 0;
+            _windowNackPackets = 0;
+            _windowRecvBytes = 0;
+            _lastFeedbackSentTick = nowTick;
+            // Gently decay gradient toward 0 across quiet windows
+            if (recvPkts == 0)
+            {
+                _ewmaDelayGradMs *= 0.5;
+                return null;
+            }
+        }
+
+        int lossPermille = recvPkts > 0 ? Math.Clamp((int)Math.Round(nackPkts * 1000.0 / recvPkts), 0, 1000) : 0;
+        short delayGradDeci = (short)Math.Clamp((int)Math.Round(delayGradMs * 10.0), short.MinValue, short.MaxValue);
+        ushort jitterDeci = (ushort)Math.Clamp((int)Math.Round(jitterMs * 10.0), 0, ushort.MaxValue);
+        ushort recvKbps = (ushort)Math.Clamp((int)Math.Round((recvBytes * 8.0) / elapsedMs), 0, ushort.MaxValue);
+
+        byte[] pkt = new byte[FeedbackPacketSize];
+        pkt[0] = Magic0;
+        pkt[1] = Magic1;
+        pkt[2] = ProtocolVersion;
+        pkt[3] = PacketFeedback;
+        Buffer.BlockCopy(token, 0, pkt, 4, 16);
+        BinaryPrimitives.WriteInt16BigEndian(pkt.AsSpan(20, 2), delayGradDeci);
+        BinaryPrimitives.WriteUInt16BigEndian(pkt.AsSpan(22, 2), (ushort)lossPermille);
+        BinaryPrimitives.WriteUInt16BigEndian(pkt.AsSpan(24, 2), jitterDeci);
+        BinaryPrimitives.WriteUInt16BigEndian(pkt.AsSpan(26, 2), recvKbps);
+        return pkt;
     }
 
     private static byte[] BuildControlPacket(byte pktType, byte[] token)

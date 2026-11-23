@@ -36,3 +36,6 @@ npm-debug.log*
 # Editor / IDE
 .claude/
 .gemini/
+
+# Bundled FFmpeg DLLs (fetched via scripts/fetch-ffmpeg.ps1)
+Remoter-WinClient/libs/

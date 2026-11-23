@@ -34,9 +34,11 @@ public sealed class DesktopForm : Form
     private readonly ClipboardSync _clipboardSync;
 
     private readonly D3D11Renderer _renderer = new();
+    private readonly FfmpegVideoDecoder _ffmpegDecoder = new();
     private readonly MfVideoDecoder _mfDecoder = new();
     private readonly JpegDecoder _jpegDecoder = new();
     private readonly WasapiAudioPlayer _audioPlayer = new();
+    private bool _useFfmpeg;
 
     private readonly object _renderLock = new();
     private readonly object _audioLock = new();
@@ -292,9 +294,9 @@ public sealed class DesktopForm : Form
     {
         if (_codecCapsSent || _disposed) return;
         _codecCapsSent = true;
-        bool hevcAvailable = ProbeHevcDecoderAvailable();
+        bool hevcAvailable = FfmpegVideoDecoder.IsAvailable || ProbeHevcDecoderAvailable();
         string[] caps = hevcAvailable ? new[] { "h265", "h264" } : new[] { "h264" };
-        LogVideo($"Advertising codec_caps: [{string.Join(", ", caps)}]");
+        LogVideo($"Advertising codec_caps: [{string.Join(", ", caps)}] (ffmpeg={FfmpegVideoDecoder.IsAvailable})");
         _conn.SendCodecCaps(caps);
     }
 
@@ -350,7 +352,7 @@ public sealed class DesktopForm : Form
         _videoHostHwnd = _videoHost.Handle;
         _initWidth = Math.Max(1, _videoHost.ClientSize.Width);
         _initHeight = Math.Max(1, _videoHost.ClientSize.Height);
-        _conn.DecodeMsProvider = () => _mfDecoder.LastDecodeMs;
+        _conn.DecodeMsProvider = () => _useFfmpeg ? _ffmpegDecoder.LastDecodeMs : _mfDecoder.LastDecodeMs;
         SyncContentRect();
 
         _videoThread = new Thread(VideoWorkerLoop)
@@ -385,21 +387,7 @@ public sealed class DesktopForm : Form
 
                 if (_streamInfo.Codec != VideoCodecType.Jpeg)
                 {
-                    try
-                    {
-                        _mfDecoder.PreferHdr = _settings.HdrEnabled;
-                        _mfDecoder.Prefer444 = _settings.ChromaMode == ChromaMode.Yuv444;
-                        var hwDevice = _settings.HardwareDecode ? _renderer.Device : null;
-                        _mfDecoder.Initialize(_streamInfo.Codec, _remoteWidth, _remoteHeight, hwDevice);
-                        _activeDecoderCodec = _streamInfo.Codec;
-                        _mfInitialized = true;
-                        LogVideo($"MfVideoDecoder ready: codec={_streamInfo.Codec} fmt={_mfDecoder.OutputFormat} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
-                    }
-                    catch (Exception ex)
-                    {
-                        _mfInitialized = false;
-                        LogVideo($"MfVideoDecoder init failed: {ex.Message}");
-                    }
+                    InitActiveVideoDecoder(_streamInfo.Codec);
                 }
             }
 
@@ -426,6 +414,8 @@ public sealed class DesktopForm : Form
             {
                 _rendererInitialized = false;
                 _mfInitialized = false;
+                _useFfmpeg = false;
+                try { _ffmpegDecoder.Dispose(); } catch { }
                 try { _mfDecoder.Dispose(); } catch { }
                 try { _jpegDecoder.Dispose(); } catch { }
                 try { _renderer.Dispose(); } catch { }
@@ -462,18 +452,8 @@ public sealed class DesktopForm : Form
             {
                 if (!_mfInitialized || _activeDecoderCodec != pkt.Codec)
                 {
-                    try
+                    if (!InitActiveVideoDecoder(pkt.Codec))
                     {
-                        var hwDevice = _settings.HardwareDecode ? _renderer.Device : null;
-                        _mfDecoder.Initialize(pkt.Codec, _remoteWidth, _remoteHeight, hwDevice);
-                        _activeDecoderCodec = pkt.Codec;
-                        _mfInitialized = true;
-                        LogVideo($"MfVideoDecoder re-init: codec={pkt.Codec} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
-                    }
-                    catch (Exception ex)
-                    {
-                        _mfInitialized = false;
-                        LogVideo($"MfVideoDecoder re-init failed: {ex.Message}");
                         if (pkt.Codec == VideoCodecType.H265 && !_hevcFallbackRequested)
                         {
                             _hevcFallbackRequested = true;
@@ -483,18 +463,24 @@ public sealed class DesktopForm : Form
                         return;
                     }
                 }
-                bool decoded = _mfDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L);
+                bool decoded = _useFfmpeg
+                    ? _ffmpegDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L)
+                    : _mfDecoder.Decode(pkt.Data, pkt.IsKeyframe, (long)pkt.PtsMs * 1000L);
+                double lastDecMs = _useFfmpeg ? _ffmpegDecoder.LastDecodeMs : _mfDecoder.LastDecodeMs;
                 if (decoded && !_firstFrameLogged)
                 {
                     _firstFrameLogged = true;
-                    LogVideo($"First {pkt.Codec} frame decoded & rendered (kf={pkt.IsKeyframe}, len={pkt.Data.Length}, decodeMs={_mfDecoder.LastDecodeMs:F1})");
+                    LogVideo($"First {pkt.Codec} frame decoded & rendered via {(_useFfmpeg ? "FFmpeg-D3D11VA" : "MF")} (kf={pkt.IsKeyframe}, len={pkt.Data.Length}, decodeMs={lastDecMs:F1})");
                 }
 
                 long nowTick = Environment.TickCount64;
                 if (nowTick - _lastStatsLogTick >= 3000)
                 {
                     _lastStatsLogTick = nowTick;
-                    LogVideo($"Stats: recv={Interlocked.Read(ref _videoRecvCount)} decoded={_mfDecoder.DecodedFrames} dropped={_mfDecoder.DroppedFrames} renderFps={_renderer.RenderedFps:F1} err='{_mfDecoder.LastError}'");
+                    long decCnt = _useFfmpeg ? _ffmpegDecoder.DecodedFrames : _mfDecoder.DecodedFrames;
+                    long dropCnt = _useFfmpeg ? _ffmpegDecoder.DroppedFrames : _mfDecoder.DroppedFrames;
+                    string errStr = _useFfmpeg ? _ffmpegDecoder.LastError : _mfDecoder.LastError;
+                    LogVideo($"Stats ({(_useFfmpeg ? "FFmpeg" : "MF")}): recv={Interlocked.Read(ref _videoRecvCount)} decoded={decCnt} dropped={dropCnt} renderFps={_renderer.RenderedFps:F1} err='{errStr}'");
                 }
             }
         }
@@ -515,8 +501,80 @@ public sealed class DesktopForm : Form
         catch { }
     }
 
+    private bool InitActiveVideoDecoder(VideoCodecType codec)
+    {
+        // 1. Prefer FFmpeg 7.x D3D11VA zero-copy hardware decoder (H.264 + H.265/HEVC, zero MF MFT quirks)
+        if (FfmpegVideoDecoder.IsAvailable)
+        {
+            try
+            {
+                _ffmpegDecoder.Initialize(codec, _remoteWidth, _remoteHeight, _renderer.Device);
+                _useFfmpeg = true;
+                _activeDecoderCodec = codec;
+                _mfInitialized = true;
+                LogVideo($"FfmpegVideoDecoder ready: codec={codec} fmt={_ffmpegDecoder.OutputFormat} hw={_ffmpegDecoder.IsHardware} zeroCopy={_ffmpegDecoder.IsGpuZeroCopy}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _useFfmpeg = false;
+                LogVideo($"FfmpegVideoDecoder init failed ({ex.Message}), falling back to MfVideoDecoder");
+            }
+        }
+
+        // 2. Fallback to Media Foundation
+        try
+        {
+            _mfDecoder.PreferHdr = _settings.HdrEnabled;
+            _mfDecoder.Prefer444 = _settings.ChromaMode == ChromaMode.Yuv444;
+            var hwDevice = _settings.HardwareDecode ? _renderer.Device : null;
+            _mfDecoder.Initialize(codec, _remoteWidth, _remoteHeight, hwDevice);
+            _useFfmpeg = false;
+            _activeDecoderCodec = codec;
+            _mfInitialized = true;
+            LogVideo($"MfVideoDecoder ready: codec={codec} fmt={_mfDecoder.OutputFormat} hw={_mfDecoder.IsHardware} zeroCopy={_mfDecoder.IsGpuZeroCopy}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _mfInitialized = false;
+            LogVideo($"MfVideoDecoder init failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private void WireDecoderEvents()
     {
+        _ffmpegDecoder.OnGpuFrame = (tex, subIdx, w, h, fmt) =>
+        {
+            if (_disposed || !_rendererInitialized) return;
+            switch (fmt)
+            {
+                case DecodedPixelFormat.P010:
+                    _renderer.RenderP010Texture(tex, subIdx, w, h);
+                    break;
+                case DecodedPixelFormat.Ayuv:
+                    _renderer.RenderAyuvTexture(tex, subIdx, w, h);
+                    break;
+                default:
+                    _renderer.RenderNv12Texture(tex, subIdx, w, h);
+                    break;
+            }
+            UpdateContentRectFromRendererUnsafe();
+        };
+
+        _ffmpegDecoder.OnCpuNv12Frame = (ptr, stride, w, h) =>
+        {
+            if (_disposed || !_rendererInitialized) return;
+            _renderer.RenderNv12Cpu(ptr, stride, w, h);
+            UpdateContentRectFromRendererUnsafe();
+        };
+
+        _ffmpegDecoder.OnKeyframeNeeded = () =>
+        {
+            _conn.SendRequestKeyframe();
+        };
+
         _mfDecoder.OnGpuFrame = (tex, subIdx, w, h, fmt) =>
         {
             // Called synchronously inside _mfDecoder.Decode which already holds _renderLock
@@ -986,8 +1044,9 @@ public sealed class DesktopForm : Form
     private void OnStatsUpdated(ClientStats stats)
     {
         double renderFps = _renderer.RenderedFps > 0 ? _renderer.RenderedFps : stats.Fps;
-        double decodeMs = (stats.Codec != VideoCodecType.Jpeg && _mfDecoder.LastDecodeMs > 0)
-            ? _mfDecoder.LastDecodeMs
+        double activeDecodeMs = _useFfmpeg ? _ffmpegDecoder.LastDecodeMs : _mfDecoder.LastDecodeMs;
+        double decodeMs = (stats.Codec != VideoCodecType.Jpeg && activeDecodeMs > 0)
+            ? activeDecodeMs
             : stats.DecodeMs;
         double frameMs = Math.Max(0, stats.EncodeMs) + Math.Max(0.0, decodeMs);
         bool isRelay = _connectParams.Mode == ConnectMode.Relay;

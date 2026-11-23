@@ -91,6 +91,7 @@ final class Session {
     private var udpLearnedCeilingBps: Int? // learned safe bitrate ceiling after UDP packet loss (anti-sawtooth)
     private var udpLossCapSetAt: CFAbsoluteTime = 0
     private var udpStableAtCapStreak = 0
+    private var udpLastLossRatio: Double = 0
     private let udpSessionToken: Data = {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<16).map { _ in UInt8.random(in: 0...255, using: &rng) })
@@ -782,7 +783,9 @@ final class Session {
             // goes out per second regardless of which path asked for it.
             keyframeRequests += 1
             let now = Date()
-            let cooldown: TimeInterval = usingUdpVideo ? 0.2 : 1.0
+            // On UDP, give NACK/FEC breathing room instead of blasting keyframes every 200ms:
+            // 0.6s when link is clean, 1.0s under active packet loss (>=3%) to prevent 2K keyframe storms.
+            let cooldown: TimeInterval = usingUdpVideo ? (udpLastLossRatio >= 0.03 ? 1.0 : 0.6) : 1.0
             guard now.timeIntervalSince(lastForcedKeyframeAt) > cooldown else { break }
             lastForcedKeyframeAt = now
             keyframesForced += 1
@@ -1366,6 +1369,7 @@ final class Session {
                             self.udpCleanBitrateStreak = 0
                             self.udpLearnedCeilingBps = nil
                             self.udpStableAtCapStreak = 0
+                            self.udpLastLossRatio = 0
                         }
                         ConnectionLogger.shared.logStep(
                             sessionId: self.id.uuidString,
@@ -1649,6 +1653,7 @@ final class Session {
     ///   - at learned ceiling: hold steady for at least 30s cooldown + 10 clean windows (20s),
     ///     then gently probe +10% upward.
     private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
+        udpLastLossRatio = lossRatio
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
         scrollBoostLock.lock()
         let boosting = scrollBoostActive

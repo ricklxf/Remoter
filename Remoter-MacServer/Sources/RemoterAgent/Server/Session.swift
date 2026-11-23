@@ -382,14 +382,8 @@ final class Session {
             authenticated = true
             ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
             notifyUser(connected: true)
-            // Force English input source for as long as any session is
-            // connected — independent of the input-lock toggle below, which
-            // is a different concern (blocking a *local physical user*).
-            // This machine has nobody sitting at it; the actual problem is
-            // the target's own current IME silently altering what Remoter
-            // injects, not a person fighting for control. No-op if another
-            // session already started it.
-            InputSourceForcer.shared.begin()
+            // 不再强制切换被控端输入法为 ABC：控制端普通可打印字符（含中英文与标点）
+            // 统一通过 text_input (CGEventKeyboardSetUnicodeString) 注入，绕过被控端 IME。
             startClipboardMonitor()
             sendJsonRaw(["type": "auth_ok", "token": token, "username": "__pin__"])
             Task { await self.beginCapture() }
@@ -406,7 +400,6 @@ final class Session {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
-                InputSourceForcer.shared.begin()
                 startClipboardMonitor()
                 sendJsonRaw(["type": "auth_ok", "token": token, "username": username])
                 Task { await self.beginCapture() }
@@ -425,7 +418,6 @@ final class Session {
                 authenticated = true
                 ConnectionLogger.shared.logAuthSuccess(sessionId: id.uuidString)
                 notifyUser(connected: true)
-                InputSourceForcer.shared.begin()
                 startClipboardMonitor()
                 sendJsonRaw(["type": "auth_ok"])
                 NSLog("[Session] token auth as %@", username)

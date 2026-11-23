@@ -41,6 +41,7 @@ public sealed class VideoHostControl : Control
 
     private int _suppressImeCharCount;
     private long _suppressImeCharTick;
+    private bool _suppressNextAsciiChar;
 
     /// <summary>True once D3D11 swapchain is actively presenting frames; suppresses GDI fallback clear.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -203,9 +204,11 @@ public sealed class VideoHostControl : Control
                 }
                 if (KeyMessageReceived?.Invoke(true, m.WParam, m.LParam) == true)
                 {
+                    _suppressNextAsciiChar = true;
                     m.Result = nint.Zero;
                     return;
                 }
+                _suppressNextAsciiChar = false;
                 break;
             }
 
@@ -286,9 +289,17 @@ public sealed class VideoHostControl : Control
                 }
                 _suppressImeCharCount = 0;
 
-                // Only forward non-ASCII characters (e.g. Chinese punctuation typed outside composition);
-                // plain ASCII keys are already forwarded via WM_KEYDOWN so sending them here would double-type.
-                if (!char.IsControl(ch) && ch > 0x7F)
+                if (_suppressNextAsciiChar && ch <= 0x7F)
+                {
+                    _suppressNextAsciiChar = false;
+                    m.Result = nint.Zero;
+                    return;
+                }
+                _suppressNextAsciiChar = false;
+
+                // Forward all printable characters (ASCII letters/digits/symbols/space and CJK)
+                // via text_input so host IME state never intercepts plain typing (matches Web & macOS clients).
+                if (!char.IsControl(ch))
                 {
                     CharReceived?.Invoke(ch);
                     ImeTextCommitted?.Invoke(ch.ToString());

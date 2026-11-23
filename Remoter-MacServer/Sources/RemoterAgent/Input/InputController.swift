@@ -305,6 +305,10 @@ final class InputController {
             let chunk = Array(utf16[i..<min(i + 20, utf16.count)])
             guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
                   let up   = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else { return }
+            // Clear inherited modifier flags (e.g. Shift/CapsLock from HID state) so
+            // Unicode text injection is never altered by local modifier state or host IME.
+            down.flags = []
+            up.flags = []
             chunk.withUnsafeBufferPointer { buf in
                 down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: buf.baseAddress)
                 up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: buf.baseAddress)

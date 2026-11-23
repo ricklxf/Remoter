@@ -814,7 +814,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
 
     public override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let hasShortcutMod = flags.contains(.command) || flags.contains(.control)
+        let hasShortcutMod = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
         let isViewOnly = inputManager?.isViewOnly ?? false
         let isPointerLocked = inputManager?.isPointerLocked ?? false
 
@@ -892,16 +892,17 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
             onImeCompositionChanged?("")
         }
 
-        let hasNonASCII = text.unicodeScalars.contains { $0.value > 0x7F }
-        let committedAsync = (currentKeyDownEvent == nil)
-        if committedAsync || wasComposingBeforeKeyDown || hadMarked || hasNonASCII || text.count > 1 {
+        // Route all printable text (ASCII letters/digits/punctuation/space and CJK/IME)
+        // via text_input (Unicode injection) so host IME state never intercepts plain typing.
+        // Shortcuts (Cmd/Ctrl/Opt), control keys, and pointer-locked game input bypass
+        // interpretKeyEvents in keyDown above and continue using raw keycodes.
+        let isPureControl = !text.isEmpty && text.unicodeScalars.allSatisfy { $0.value < 0x20 || $0.value == 0x7F }
+        if !text.isEmpty && !isPureControl {
             imeHandledCurrentKeyDown = true
-            if !text.isEmpty {
-                onImeTextCommitted?(text)
-            }
+            onImeTextCommitted?(text)
+        } else if currentKeyDownEvent == nil || wasComposingBeforeKeyDown || hadMarked {
+            imeHandledCurrentKeyDown = true
         }
-        // Single plain ASCII character while not composing: leave imeHandledCurrentKeyDown = false
-        // so keyDown forwards the exact physical NSEvent via InputManager.handleKeyDown.
     }
 
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {

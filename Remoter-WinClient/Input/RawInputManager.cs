@@ -572,6 +572,24 @@ public sealed class RawInputManager : IDisposable
 
     // ── Keyboard & local hotkeys ─────────────────────────────────────────
 
+    private static readonly HashSet<string> PlainTextSymbolCodes = new(StringComparer.Ordinal)
+    {
+        "Space", "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash",
+        "Semicolon", "Quote", "Comma", "Period", "Slash", "Backquote",
+        "NumpadDecimal", "NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide", "NumpadEqual",
+    };
+
+    private static bool IsPlainTextCode(string code)
+    {
+        if (code.Length == 4 && code.StartsWith("Key", StringComparison.Ordinal) && code[3] is >= 'A' and <= 'Z')
+            return true;
+        if (code.Length == 6 && code.StartsWith("Digit", StringComparison.Ordinal) && code[5] is >= '0' and <= '9')
+            return true;
+        if (code.Length == 7 && code.StartsWith("Numpad", StringComparison.Ordinal) && code[6] is >= '0' and <= '9')
+            return true;
+        return PlainTextSymbolCodes.Contains(code);
+    }
+
     private bool OnKeyMessage(bool down, nint wParam, nint lParam)
     {
         if (!_enabled) return false;
@@ -584,6 +602,7 @@ public sealed class RawInputManager : IDisposable
         {
             bool ctrl = KeyCodeMapper.IsKeyDown(0x11);
             bool alt  = KeyCodeMapper.IsKeyDown(0x12);
+            bool win  = KeyCodeMapper.IsKeyDown(0x5B) || KeyCodeMapper.IsKeyDown(0x5C);
 
             // Ctrl + Alt + Enter -> toggle Pointer Lock (Game Mouse mode)
             if (ctrl && alt && (code == "Enter" || code == "NumpadEnter"))
@@ -607,6 +626,13 @@ public sealed class RawInputManager : IDisposable
                 KeyEvent?.Invoke("CapsLock", true, Array.Empty<string>());
                 KeyEvent?.Invoke("CapsLock", false, Array.Empty<string>());
                 return true;
+            }
+
+            // Plain printable keys (outside pointer-lock game mode and shortcut modifiers)
+            // flow through WM_CHAR -> text_input (Unicode injection), matching Web & macOS clients.
+            if (!_pointerLocked && !ctrl && !alt && !win && IsPlainTextCode(code))
+            {
+                return false;
             }
 
             _pressedKeys.Add(code);

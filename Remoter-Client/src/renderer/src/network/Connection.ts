@@ -15,6 +15,7 @@ export interface ConnStats {
   isHardwareDecoded: boolean
   hasRtt?: boolean   // true once first pong arrives
   hasStats?: boolean // true once first stats sample arrives
+  packetLossPct?: number
 }
 
 export type ConnEvent =
@@ -62,6 +63,7 @@ export class Connection {
   // pick up the already-arrived stream instead of waiting for a new one.
   private lastMediaStream: MediaStream | null = null
   private params: ConnectParams | null = null
+  get isRelay(): boolean { return this.params?.mode === 'relay' }
   private statsTimer: ReturnType<typeof setInterval> | null = null
   private readonly e2e = new E2ECrypto()
   private serverOs = ''

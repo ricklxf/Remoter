@@ -978,20 +978,23 @@ public sealed class DesktopForm : Form
     private void OnStatsUpdated(ClientStats stats)
     {
         double renderFps = _renderer.RenderedFps > 0 ? _renderer.RenderedFps : stats.Fps;
-        double mbps = stats.BitrateKbps / 1000.0;
-        string codec = stats.Codec switch
-        {
-            VideoCodecType.H265 => "H.265",
-            VideoCodecType.Jpeg => "JPEG",
-            _ => "H.264",
-        };
-        bool hw = stats.Codec != VideoCodecType.Jpeg && _mfDecoder.IsHardware;
         double decodeMs = (stats.Codec != VideoCodecType.Jpeg && _mfDecoder.LastDecodeMs > 0)
             ? _mfDecoder.LastDecodeMs
             : stats.DecodeMs;
-        string transport = _connectParams.Mode == ConnectMode.Relay ? "Relay" : stats.Transport;
+        double frameMs = Math.Max(0, stats.EncodeMs) + Math.Max(0.0, decodeMs);
+        bool isRelay = _connectParams.Mode == ConnectMode.Relay;
+        string transport = stats.Transport;
 
-        SafeBeginInvoke(() => _statsHud.UpdateStats(renderFps, mbps, stats.RttMs, codec, hw, decodeMs, transport));
+        SafeBeginInvoke(() => _statsHud.UpdateStats(
+            renderFps,
+            stats.BitrateKbps,
+            stats.RttMs,
+            frameMs,
+            transport,
+            isRelay,
+            packetLossPct: 0.0,
+            width: _remoteWidth,
+            height: _remoteHeight));
     }
 
     private void OnAuthSucceeded(string username, string token)

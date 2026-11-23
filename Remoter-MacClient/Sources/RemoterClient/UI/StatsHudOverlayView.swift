@@ -1,19 +1,13 @@
 import AppKit
 
-/// UU-style translucent black bottom-right performance HUD overlay (matching UURemote's `NetDetailView`).
-/// Plain `NSView` added directly above the remote canvas (NOT an `NSPanel`), 100% click-through via
-/// `hitTest(_:) -> nil`, and immune to Light Mode or bright remote desktop bleed via `wantsUpdateLayer`.
+/// UU Remote 1:1 bottom-right performance HUD overlay (matching UURemote's `NetDetailView`,
+/// Web `StatsHUD.tsx`, and Windows `StatsHudOverlay.cs`).
+/// 8 uniform light-white regular-weight monospace lines, 35% black rounded background,
+/// borderless, 100% click-through via `hitTest(_:) -> nil`.
 public final class StatsHudOverlayView: NSView {
-    private static let hudFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
-    private static let backgroundColor = NSColor.black.withAlphaComponent(0.40)
-    private static let defaultTextColor = NSColor.white.withAlphaComponent(0.82)
-    private static let brightTextColor = NSColor.white.withAlphaComponent(0.85)
-    private static let decodeTextColor = NSColor.white.withAlphaComponent(0.72)
-    private static let mutedTextColor = NSColor.white.withAlphaComponent(0.55)
-    private static let separatorColor = NSColor.white.withAlphaComponent(0.45)
-    private static let goodColor = NSColor(hex: 0x34D399)
-    private static let warnColor = NSColor(hex: 0xF59E0B)
-    private static let dangerColor = NSColor(hex: 0xEF4444)
+    private static let hudFont = NSFont.monospacedSystemFont(ofSize: 12.0, weight: .regular)
+    private static let backgroundColor = NSColor.black.withAlphaComponent(0.35)
+    private static let textColor = NSColor.white.withAlphaComponent(0.88)
 
     private static let paragraphStyle: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
@@ -23,6 +17,13 @@ public final class StatsHudOverlayView: NSView {
     }()
 
     private let label: NSTextField
+    private let sessionStartTime = Date()
+    private var lastStats: ClientStats?
+    private var streamWidth: Int = 0
+    private var streamHeight: Int = 0
+    private var isRelay: Bool = false
+    private var packetLossPct: Double = 0.0
+    private var durationTimer: Timer?
 
     public override init(frame frameRect: NSRect) {
         self.label = NSTextField(wrappingLabelWithString: "")
@@ -33,6 +34,11 @@ public final class StatsHudOverlayView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        durationTimer?.invalidate()
+        durationTimer = nil
     }
 
     // MARK: - Click-through & Layer Backing
@@ -48,7 +54,7 @@ public final class StatsHudOverlayView: NSView {
     public override func updateLayer() {
         guard let layer else { return }
         layer.backgroundColor = Self.backgroundColor.cgColor
-        layer.cornerRadius = 4
+        layer.cornerRadius = 6
         layer.borderWidth = 0
         layer.borderColor = nil
         layer.masksToBounds = true
@@ -68,7 +74,7 @@ public final class StatsHudOverlayView: NSView {
         label.drawsBackground = false
         label.usesSingleLineMode = false
         label.font = Self.hudFont
-        label.textColor = Self.defaultTextColor
+        label.textColor = Self.textColor
         label.alignment = .left
         label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 0
@@ -80,99 +86,99 @@ public final class StatsHudOverlayView: NSView {
 
         addSubview(label)
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 96),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 108),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
 
-        renderPlaceholder()
+        renderLines()
+        durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.renderLines()
+        }
         needsDisplay = true
     }
 
     // MARK: - Telemetry Rendering
 
-    public func update(stats: ClientStats) {
-        let attr = NSMutableAttributedString()
+    public func update(
+        stats: ClientStats,
+        width: Int = 0,
+        height: Int = 0,
+        isRelay: Bool = false,
+        packetLossPct: Double = 0.0
+    ) {
+        self.lastStats = stats
+        if width > 0 { self.streamWidth = width }
+        if height > 0 { self.streamHeight = height }
+        self.isRelay = isRelay
+        self.packetLossPct = packetLossPct
+        renderLines()
+    }
 
-        // Line 1: <transport> · <codec> <HW/SW>
-        let transport = stats.transport.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !transport.isEmpty {
-            appendSegment(transport, color: Self.defaultTextColor, to: attr)
-            appendSegment(" · ", color: Self.separatorColor, to: attr)
-        }
-        appendSegment("\(stats.codec.badgeText) ", color: Self.defaultTextColor, to: attr)
-        let decodeTag = stats.isHardwareDecoded ? "HW" : "SW"
-        let decodeColor = stats.isHardwareDecoded ? Self.goodColor : Self.warnColor
-        appendSegment(decodeTag, color: decodeColor, to: attr)
+    private func renderLines() {
+        let elapsed = max(0, Int(Date().timeIntervalSince(sessionStartTime)))
+        let h = elapsed / 3600
+        let m = (elapsed % 3600) / 60
+        let s = elapsed % 60
+        let durationLine = String(format: "%02d:%02d:%02d", h, m, s)
 
-        // Line 2: <fps> fps
-        appendNewline(to: attr)
-        let fpsRounded = Int(stats.fps.rounded())
-        let fpsColor: NSColor
-        if stats.fps <= 0 {
-            fpsColor = Self.mutedTextColor
-        } else if stats.fps < 15 {
-            fpsColor = Self.dangerColor
-        } else if stats.fps < 25 {
-            fpsColor = Self.warnColor
-        } else {
-            fpsColor = Self.brightTextColor
-        }
-        appendSegment("\(fpsRounded) fps", color: fpsColor, to: attr)
+        let proto = (lastStats?.transport.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()).flatMap { $0.isEmpty ? nil : $0 } ?? "TCP"
+        let mode = isRelay ? "relay" : "direct"
+        let transportLine = "\(proto) \(mode)"
 
-        // Line 3: <mbps> Mbps
-        appendNewline(to: attr)
-        let mbps = Double(stats.bitrateKbps) / 1000.0
-        appendSegment(String(format: "%.1f Mbps", mbps), color: Self.defaultTextColor, to: attr)
+        let fpsLine: String
+        let bitrateLine: String
+        let rttLine: String
+        let frmLine: String
 
-        // Line 4: <rtt> ms (UU thresholds: <50 green, 50-99 white, 100-150 amber, >150 red)
-        appendNewline(to: attr)
-        if stats.rttMs >= 0 {
-            let rttColor: NSColor
-            if stats.rttMs < 50 {
-                rttColor = Self.goodColor
-            } else if stats.rttMs < 100 {
-                rttColor = Self.brightTextColor
-            } else if stats.rttMs <= 150 {
-                rttColor = Self.warnColor
+        if let stats = lastStats {
+            fpsLine = "\(Int(stats.fps.rounded())) fps"
+            if stats.bitrateKbps < 1000 {
+                bitrateLine = String(format: "%.1f Kbps", Double(max(0, stats.bitrateKbps)))
             } else {
-                rttColor = Self.dangerColor
+                bitrateLine = String(format: "%.1f Mbps", Double(stats.bitrateKbps) / 1000.0)
             }
-            appendSegment("\(stats.rttMs) ms", color: rttColor, to: attr)
+            rttLine = stats.rttMs >= 0 ? "\(stats.rttMs) ms" : "-- ms"
+            let frmMs = max(0, stats.encodeMs) + max(0, stats.decodeMs)
+            frmLine = "\(frmMs) ms frm."
         } else {
-            appendSegment("-- ms", color: Self.mutedTextColor, to: attr)
+            fpsLine = "-- fps"
+            bitrateLine = "0.0 Kbps"
+            rttLine = "-- ms"
+            frmLine = "0 ms frm."
         }
 
-        // Line 5 (optional): dec <decodeMs> ms
-        if stats.decodeMs > 0 {
-            appendNewline(to: attr)
-            appendSegment(String(format: "dec %.1f ms", Double(stats.decodeMs)), color: Self.decodeTextColor, to: attr)
-        }
+        let lossLine = String(format: "%.1f%% loss", max(0.0, packetLossPct))
+        let resLine = Self.formatResolutionTier(width: streamWidth, height: streamHeight)
 
-        label.attributedStringValue = attr
-    }
+        let text = [
+            durationLine,
+            transportLine,
+            fpsLine,
+            bitrateLine,
+            rttLine,
+            frmLine,
+            lossLine,
+            resLine,
+        ].joined(separator: "\n")
 
-    private func renderPlaceholder() {
-        let attr = NSMutableAttributedString()
-        appendSegment("-- fps\n0.0 Mbps\n-- ms", color: Self.mutedTextColor, to: attr)
-        label.attributedStringValue = attr
-    }
-
-    private func appendSegment(_ text: String, color: NSColor, to target: NSMutableAttributedString) {
-        target.append(NSAttributedString(string: text, attributes: [
+        label.attributedStringValue = NSAttributedString(string: text, attributes: [
             .font: Self.hudFont,
-            .foregroundColor: color,
+            .foregroundColor: Self.textColor,
             .paragraphStyle: Self.paragraphStyle,
-        ]))
+        ])
     }
 
-    private func appendNewline(to target: NSMutableAttributedString) {
-        target.append(NSAttributedString(string: "\n", attributes: [
-            .font: Self.hudFont,
-            .foregroundColor: Self.defaultTextColor,
-            .paragraphStyle: Self.paragraphStyle,
-        ]))
+    private static func formatResolutionTier(width: Int, height: Int) -> String {
+        guard width > 0, height > 0 else { return "--" }
+        let longEdge = max(width, height)
+        let shortEdge = min(width, height)
+        if longEdge >= 3840 || shortEdge >= 2160 { return "4K" }
+        if longEdge >= 2560 || shortEdge >= 1440 { return "2K" }
+        if shortEdge >= 1080 { return "1080P" }
+        if shortEdge >= 720 { return "720P" }
+        return "\(shortEdge)P"
     }
 }

@@ -371,7 +371,13 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
         hdr={hdrOn}
       />
 
-      <StatsHUD stats={stats} visible={showStatsHud} />
+      <StatsHUD
+        stats={stats}
+        visible={showStatsHud}
+        width={streamInfo.width}
+        height={streamInfo.height}
+        isRelay={conn.isRelay}
+      />
 
       {dragOver && (
         <div style={styles.dropOverlay}>

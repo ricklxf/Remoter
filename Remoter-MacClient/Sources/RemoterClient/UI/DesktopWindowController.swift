@@ -538,7 +538,14 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         connection.onStatsUpdated = { [weak self] stats in
             DispatchQueue.main.async {
-                self?.statsHudView.update(stats: stats)
+                guard let self else { return }
+                let size = self.rendererView.videoSize
+                self.statsHudView.update(
+                    stats: stats,
+                    width: Int(size.width),
+                    height: Int(size.height),
+                    isRelay: self.connectParams.mode == .relay
+                )
             }
         }
 

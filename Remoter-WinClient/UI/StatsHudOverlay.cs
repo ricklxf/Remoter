@@ -35,21 +35,15 @@ public sealed class StatsHudOverlay : Form
     private const byte AC_SRC_OVER      = 0x00;
     private const byte AC_SRC_ALPHA     = 0x01;
 
-    private static readonly Color BackgroundColor  = Color.FromArgb(102, 0, 0, 0);        // 0.40 alpha pure black (no border)
-    private static readonly Color DefaultTextColor = Color.FromArgb(210, 255, 255, 255);  // ~0.82 alpha white
-    private static readonly Color White85Color     = Color.FromArgb(217, 255, 255, 255);  // 0.85 alpha white
-    private static readonly Color White72Color     = Color.FromArgb(184, 255, 255, 255);  // 0.72 alpha white
-    private static readonly Color MutedTextColor   = Color.FromArgb(140, 255, 255, 255);  // ~0.55 alpha white
-    private static readonly Color SeparatorColor   = Color.FromArgb(140, 255, 255, 255);  // ~0.55 alpha white
-    private static readonly Color GoodColor        = Color.FromArgb(255, 52, 211, 153);   // #34D399 teal/green
-    private static readonly Color WarningColor     = Color.FromArgb(255, 245, 158, 11);   // #F59E0B amber
-    private static readonly Color DangerColor      = Color.FromArgb(255, 239, 68, 68);    // #EF4444 red
+    private static readonly Color BackgroundColor = Color.FromArgb(89, 0, 0, 0);         // 0.35 alpha pure black (no border)
+    private static readonly Color TextColor       = Color.FromArgb(224, 255, 255, 255); // ~0.88 alpha uniform white
 
     private static readonly string PreferredFontFamily = ResolveMonospaceFamily();
 
     private readonly Form _ownerForm;
     private readonly StringFormat _stringFormat;
-    private readonly List<HudSegment[]> _lines = new(5);
+    private readonly List<HudSegment[]> _lines = new(8);
+    private readonly DateTime _sessionStartUtc = DateTime.UtcNow;
 
     private Font? _cachedFont;
     private float _lastScale;
@@ -117,92 +111,65 @@ public sealed class StatsHudOverlay : Form
 
     public void UpdateStats(
         double fps,
-        double bitrateMbps,
+        double bitrateKbps,
         int rttMs,
-        string codec,
-        bool hardwareDecode,
-        double decodeMs = 0,
-        string? transport = null)
+        double frameMs = 0,
+        string? transport = null,
+        bool isRelay = false,
+        double packetLossPct = 0.0,
+        int width = 0,
+        int height = 0)
     {
         if (IsDisposed) return;
 
+        TimeSpan elapsed = DateTime.UtcNow - _sessionStartUtc;
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        string durationLine = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:D2}:{1:D2}:{2:D2}",
+            (int)elapsed.TotalHours,
+            elapsed.Minutes,
+            elapsed.Seconds);
+
+        string proto = string.IsNullOrWhiteSpace(transport) ? "TCP" : transport.Trim().ToUpperInvariant();
+        string mode = isRelay ? "relay" : "direct";
+        string transportLine = $"{proto} {mode}";
+
+        string fpsLine = $"{(int)Math.Round(fps)} fps";
+        string bitrateLine = bitrateKbps < 1000.0
+            ? string.Format(CultureInfo.InvariantCulture, "{0:F1} Kbps", Math.Max(0.0, bitrateKbps))
+            : string.Format(CultureInfo.InvariantCulture, "{0:F1} Mbps", bitrateKbps / 1000.0);
+        string rttLine = rttMs >= 0 ? $"{rttMs} ms" : "-- ms";
+        string frmLine = $"{Math.Max(0, (int)Math.Round(frameMs))} ms frm.";
+        string lossLine = string.Format(CultureInfo.InvariantCulture, "{0:F1}% loss", Math.Max(0.0, packetLossPct));
+        string resLine = FormatResolutionTier(width, height);
+
         _lines.Clear();
-
-        // Line 1: <transport> · <codec> <HW/SW> (or <codec> <HW/SW> when transport empty)
-        string codecLabel = string.IsNullOrWhiteSpace(codec) ? "H.264" : codec.Trim().ToUpperInvariant();
-        string hwTag = hardwareDecode ? "HW" : "SW";
-        Color hwColor = hardwareDecode ? GoodColor : WarningColor;
-
-        if (!string.IsNullOrWhiteSpace(transport))
-        {
-            _lines.Add(new[]
-            {
-                new HudSegment(transport.Trim(), DefaultTextColor),
-                new HudSegment(" · ", SeparatorColor),
-                new HudSegment(codecLabel + " ", DefaultTextColor),
-                new HudSegment(hwTag, hwColor),
-            });
-        }
-        else
-        {
-            _lines.Add(new[]
-            {
-                new HudSegment(codecLabel + " ", DefaultTextColor),
-                new HudSegment(hwTag, hwColor),
-            });
-        }
-
-        // Line 2: <fps> fps (< 15 #EF4444, < 25 #F59E0B, else white@0.85)
-        int fpsRounded = (int)Math.Round(fps);
-        Color fpsColor = fps <= 0
-            ? MutedTextColor
-            : fps < 15
-                ? DangerColor
-                : fps < 25
-                    ? WarningColor
-                    : White85Color;
-        _lines.Add(new[] { new HudSegment($"{fpsRounded} fps", fpsColor) });
-
-        // Line 3: <mbps> Mbps
-        _lines.Add(new[]
-        {
-            new HudSegment(
-                string.Format(CultureInfo.InvariantCulture, "{0:F1} Mbps", bitrateMbps),
-                DefaultTextColor),
-        });
-
-        // Line 4: <rtt> ms (< 50 #34D399, 50-99 white@0.85, 100-150 #F59E0B, > 150 #EF4444)
-        if (rttMs >= 0)
-        {
-            Color rttColor = rttMs < 50
-                ? GoodColor
-                : rttMs < 100
-                    ? White85Color
-                    : rttMs <= 150
-                        ? WarningColor
-                        : DangerColor;
-            _lines.Add(new[] { new HudSegment($"{rttMs} ms", rttColor) });
-        }
-        else
-        {
-            _lines.Add(new[] { new HudSegment("-- ms", MutedTextColor) });
-        }
-
-        // Line 5 (when decodeMs > 0): dec <decodeMs> ms (1 decimal place, white@0.72)
-        if (decodeMs > 0)
-        {
-            _lines.Add(new[]
-            {
-                new HudSegment(
-                    string.Format(CultureInfo.InvariantCulture, "dec {0:F1} ms", decodeMs),
-                    White72Color),
-            });
-        }
+        _lines.Add(new[] { new HudSegment(durationLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(transportLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(fpsLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(bitrateLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(rttLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(frmLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(lossLine, TextColor) });
+        _lines.Add(new[] { new HudSegment(resLine, TextColor) });
 
         if (_hudEnabled)
         {
             RenderAndApply();
         }
+    }
+
+    private static string FormatResolutionTier(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return "--";
+        int longEdge = Math.Max(width, height);
+        int shortEdge = Math.Min(width, height);
+        if (longEdge >= 3840 || shortEdge >= 2160) return "4K";
+        if (longEdge >= 2560 || shortEdge >= 1440) return "2K";
+        if (shortEdge >= 1080) return "1080P";
+        if (shortEdge >= 720) return "720P";
+        return $"{shortEdge}P";
     }
 
     public void UpdatePosition()
@@ -229,9 +196,14 @@ public sealed class StatsHudOverlay : Form
     private void SetPlaceholderLines()
     {
         _lines.Clear();
-        _lines.Add(new[] { new HudSegment("-- fps", MutedTextColor) });
-        _lines.Add(new[] { new HudSegment("0.0 Mbps", MutedTextColor) });
-        _lines.Add(new[] { new HudSegment("-- ms", MutedTextColor) });
+        _lines.Add(new[] { new HudSegment("00:00:00", TextColor) });
+        _lines.Add(new[] { new HudSegment("TCP direct", TextColor) });
+        _lines.Add(new[] { new HudSegment("-- fps", TextColor) });
+        _lines.Add(new[] { new HudSegment("0.0 Kbps", TextColor) });
+        _lines.Add(new[] { new HudSegment("-- ms", TextColor) });
+        _lines.Add(new[] { new HudSegment("0 ms frm.", TextColor) });
+        _lines.Add(new[] { new HudSegment("0.0% loss", TextColor) });
+        _lines.Add(new[] { new HudSegment("--", TextColor) });
     }
 
     private float GetScale()
@@ -250,7 +222,7 @@ public sealed class StatsHudOverlay : Form
         _cachedFont?.Dispose();
         _lastScale = scale;
         float fontPx = 12.0f * scale; // 9pt at 96 DPI
-        _cachedFont = new Font(PreferredFontFamily, fontPx, FontStyle.Bold, GraphicsUnit.Pixel);
+        _cachedFont = new Font(PreferredFontFamily, fontPx, FontStyle.Regular, GraphicsUnit.Pixel);
         return _cachedFont;
     }
 
@@ -291,11 +263,11 @@ public sealed class StatsHudOverlay : Form
 
         float scale = GetScale();
         Font font = GetOrCreateFont(scale);
-        int padX = (int)Math.Round(8 * scale);
-        int padY = (int)Math.Round(5 * scale);
-        int minWidth = (int)Math.Round(96 * scale);
-        float radius = 4.0f * scale;
-        float lineGap = 2.0f * scale;
+        int padX = (int)Math.Round(10 * scale);
+        int padY = (int)Math.Round(6 * scale);
+        int minWidth = (int)Math.Round(108 * scale);
+        float radius = 6.0f * scale;
+        float lineGap = 2.5f * scale;
 
         int lineCount = _lines.Count;
         float[][] segWidths = new float[lineCount][];

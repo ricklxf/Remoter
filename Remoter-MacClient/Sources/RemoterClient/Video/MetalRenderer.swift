@@ -813,38 +813,14 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
     }
 
     public override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let hasShortcutMod = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
-        let isViewOnly = inputManager?.isViewOnly ?? false
-        let isPointerLocked = inputManager?.isPointerLocked ?? false
-
-        if hasShortcutMod || isViewOnly || isPointerLocked {
-            inputManager?.handleKeyDown(event)
-            return
-        }
-
-        if !hasMarkedText() && Self.isNonTextControlKey(event.keyCode) {
-            inputManager?.handleKeyDown(event)
-            return
-        }
-
-        wasComposingBeforeKeyDown = hasMarkedText()
-        imeHandledCurrentKeyDown = false
-        currentKeyDownEvent = event
-        interpretKeyEvents([event])
-        currentKeyDownEvent = nil
-
-        if imeHandledCurrentKeyDown || hasMarkedText() || wasComposingBeforeKeyDown {
-            imeSwallowedKeyCodes.insert(event.keyCode)
-        } else {
-            inputManager?.handleKeyDown(event)
-        }
+        // Remote-native IME passthrough (UU Remote / Parsec model):
+        // Forward all physical keystrokes directly to the remote host without
+        // invoking local interpretKeyEvents, so the host's native IME renders
+        // its candidate window at the real remote cursor.
+        inputManager?.handleKeyDown(event)
     }
 
     public override func keyUp(with event: NSEvent) {
-        if imeSwallowedKeyCodes.remove(event.keyCode) != nil || hasMarkedText() {
-            return
-        }
         inputManager?.handleKeyUp(event)
     }
 

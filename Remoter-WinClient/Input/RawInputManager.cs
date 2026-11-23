@@ -628,13 +628,6 @@ public sealed class RawInputManager : IDisposable
                 return true;
             }
 
-            // Plain printable keys (outside pointer-lock game mode and shortcut modifiers)
-            // flow through WM_CHAR -> text_input (Unicode injection), matching Web & macOS clients.
-            if (!_pointerLocked && !ctrl && !alt && !win && IsPlainTextCode(code))
-            {
-                return false;
-            }
-
             _pressedKeys.Add(code);
             KeyEvent?.Invoke(code, true, KeyCodeMapper.CollectModifiers());
             return true;

@@ -31,11 +31,6 @@ export class InputHandler {
   // Keys that have been sent as keydown — keyup must be sent regardless of hover state
   private pressedKeys = new Set<string>()
 
-  // Tracks whether an IME composition is currently in progress (set by
-  // compositionstart/compositionend) — see onImeInput for why keydown alone
-  // (isComposing / key==='Process') can't reliably tell us this on its own.
-  private composing = false
-
   // Modifiers captured at the paste-shortcut keydown, consumed by onPaste
   // once the browser's native paste ClipboardEvent actually fires — see
   // onKeyDown's KeyV branch for why the two are split apart.
@@ -124,10 +119,7 @@ export class InputHandler {
     add(document, 'mousedown',  this.onDocumentMouseDown)
     add(window,   'blur',       this.onWindowBlur)
     add(window,   'focus',      this.onWindowFocus)
-    if (this.imeEl) add(this.imeEl, 'compositionstart', this.onCompositionStart)
-    if (this.imeEl) add(this.imeEl, 'compositionend',   this.onCompositionEnd)
-    if (this.imeEl) add(this.imeEl, 'input',            this.onImeInput)
-    if (this.imeEl) add(this.imeEl, 'paste',            this.onPaste)
+    add(document, 'paste',      this.onPaste)
   }
 
   private removeListeners(): void {
@@ -201,11 +193,10 @@ export class InputHandler {
     if (!this.enabled) return
     const me = e as MouseEvent
     me.preventDefault()
-    // Focus the hidden textarea (not the canvas): key events still bubble to
-    // the document handlers below either way, but only an editable element
-    // lets the local IME engage for CJK composition.
-    if (this.imeEl) this.imeEl.focus({ preventScroll: true })
-    else this.el?.focus()
+    // Focus the non-editable canvas container so the browser never activates
+    // local IME (UU Remote / Parsec model: raw keycodes flow directly to the
+    // remote host and use the host's native IME at the real remote cursor).
+    this.el?.focus({ preventScroll: true })
     const { nx, ny } = this.getCoords(me)
     this.conn.sendMouseButton(buttonName(me.button), true, nx, ny)
   }
@@ -277,36 +268,10 @@ export class InputHandler {
   private onWindowFocus = (): void => {
     if (!this.enabled) return
     this.captured = true
-    this.imeEl?.focus({ preventScroll: true })
+    this.el?.focus({ preventScroll: true })
   }
 
   // MARK: - Keyboard
-
-  // Punctuation/symbol keys that produce a literal character — same
-  // treatment as letters/digits below, for the same reason: any of them can
-  // end up intercepted by an IME (candidate reselection, bracket-based
-  // input methods, etc.), and guessing wrong either drops the character or
-  // duplicates it (see the comment on isPlainTextKey).
-  private static readonly PLAIN_SYMBOL_CODES = new Set([
-    'Space', 'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash',
-    'Semicolon', 'Quote', 'Comma', 'Period', 'Slash', 'Backquote',
-    'NumpadDecimal', 'NumpadAdd', 'NumpadSubtract', 'NumpadMultiply', 'NumpadDivide', 'NumpadEqual',
-  ])
-
-  // Plain, unmodified keys that produce a literal character are never
-  // forwarded via raw keycode + preventDefault — see onImeInput for why.
-  // Covers every key that can actually put a character on screen (letters,
-  // digits, numpad digits/operators, punctuation, space); confirmed
-  // necessary for more than just letters — digits and brackets have each
-  // shown the same "IME intercepts it right after a composition, so
-  // preventDefault + raw-forward produces a duplicate or a drop" failure.
-  // Everything else (arrows, function keys, Enter/Backspace/Tab, and any
-  // key held with Ctrl/Alt/Meta) still goes through the direct keycode path.
-  private static isPlainTextKey(ke: KeyboardEvent): boolean {
-    if (ke.ctrlKey || ke.altKey || ke.metaKey) return false
-    if (/^Key[A-Z]$/.test(ke.code) || /^Digit[0-9]$/.test(ke.code) || /^Numpad[0-9]$/.test(ke.code)) return true
-    return InputHandler.PLAIN_SYMBOL_CODES.has(ke.code)
-  }
 
   private onKeyDown = (e: Event): void => {
     if (!this.enabled) return
@@ -317,15 +282,6 @@ export class InputHandler {
     // toggle button for exiting fullscreen instead): forwarding it to the
     // target lets it close remote dialogs/menus like a real keypress would.
     if (ke.code === 'F11' || ke.code === 'F12') return
-    // The local IME is composing — hand off entirely: no preventDefault (the
-    // IME needs the event) and no raw-key forwarding (the composed text
-    // arrives via compositionend instead, see onCompositionEnd).
-    // Deliberately NOT also checking `keyCode === 229`: that legacy signal
-    // is unreliable — some browsers report it on genuine, non-composing
-    // keystrokes for a while after the IME was last used (confirmed via
-    // logging: isComposing false, keyCode 229, on a plain digit key with no
-    // candidate list showing), which silently dropped real keystrokes.
-    if (ke.isComposing) return
 
     if (ke.code === 'CapsLock') {
       // Send unconditionally — server reads its own current CapsLock state to decide direction.
@@ -337,25 +293,6 @@ export class InputHandler {
       this.conn.sendKey('CapsLock', false, [])
       return
     }
-
-    // A plain letter key can *become* the first key of an IME composition —
-    // and there is no reliable way to know that in advance. isComposing is
-    // still false and key is the literal letter (not 'Process') for exactly
-    // this ambiguous first keystroke (confirmed via logging: {code: "KeyD",
-    // isComposing: false, key: "d"} immediately preceding a real
-    // composition). Forwarding it here via raw keycode, *and* calling
-    // preventDefault — which stops the browser from ever handing this key
-    // to the IME at all — produced two bugs at once: the letter landed
-    // remotely on its own, and the composition that followed was missing
-    // that same letter (e.g. typing "da" for a character produced literal
-    // "d" *plus* whatever "a" alone composes to).
-    //
-    // Fix: never preventDefault or raw-keycode-forward a plain letter key.
-    // Let the browser's default action happen — into the hidden textarea,
-    // same as before — and read back whatever text actually landed there
-    // (onImeInput), whether that's plain typing or IME output. This makes
-    // the ambiguity irrelevant: we no longer have to guess in advance.
-    if (InputHandler.isPlainTextKey(ke)) return
 
     // Paste shortcut — deliberately NOT preventDefault'd, and no keycode
     // sent yet: letting the browser run its own paste command is what
@@ -384,39 +321,6 @@ export class InputHandler {
     this.conn.sendKey(mappedCode, true, mods)
   }
 
-  private onCompositionStart = (): void => {
-    this.composing = true
-  }
-
-  private onCompositionEnd = (e: Event): void => {
-    if (!this.enabled) return
-    this.composing = false
-    const ce = e as CompositionEvent
-    if (ce.data) this.conn.sendTextInput(ce.data)
-    // The committed text also landed in the hidden textarea — clear it so it
-    // never accumulates (it's invisible, but selection/arrow keys would start
-    // behaving oddly inside a growing buffer).
-    if (this.imeEl) this.imeEl.value = ''
-  }
-
-  // Catches plain-letter text that landed in the textarea via its default
-  // browser behavior (see isPlainTextKey above) — covers both ordinary
-  // English typing (no IME involved at all) and the ambiguous first
-  // keystroke of a composition that hasn't engaged the IME after all (e.g.
-  // a single letter with no matching candidates). Composition-driven input
-  // is handled by onCompositionEnd instead, once the whole composition
-  // settles, so this must not also forward text while one is in progress.
-  private onImeInput = (e: Event): void => {
-    if (!this.enabled) return
-    const ie = e as InputEvent
-    if (this.composing || ie.isComposing) return
-    const text = this.imeEl?.value
-    if (text) {
-      this.conn.sendTextInput(text)
-      if (this.imeEl) this.imeEl.value = ''
-    }
-  }
-
   // The browser's own paste command, fired synchronously as the default
   // action of the Cmd+V/Ctrl+V keydown that onKeyDown deliberately left
   // un-prevented (see there for why). clipboardData is available here with
@@ -427,6 +331,7 @@ export class InputHandler {
   // no reason to let it accumulate there).
   private onPaste = (e: Event): void => {
     if (!this.enabled) return
+    if (!this.hovering && !this.locked && !this.captured) return
     const ce = e as ClipboardEvent
     ce.preventDefault()
 
@@ -466,8 +371,6 @@ export class InputHandler {
     if (!this.enabled) return
     const ke = e as KeyboardEvent
     if (ke.code === 'CapsLock') return  // handled in keydown
-    if (ke.isComposing) return
-    if (InputHandler.isPlainTextKey(ke)) return   // see onKeyDown — no matching keydown was sent
     // Send keyup only if we previously sent keydown for this key.
     // This ensures keyup always pairs with keydown regardless of hover state,
     // preventing stuck keys when the mouse drifts out of the canvas.

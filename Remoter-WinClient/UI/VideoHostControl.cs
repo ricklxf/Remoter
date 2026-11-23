@@ -112,6 +112,14 @@ public sealed class VideoHostControl : Control
         BackColor = DarkTheme.VideoBg;
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Disable local Windows IME on the remote viewport HWND (UU Remote / Parsec model):
+        // all physical keystrokes flow directly to the remote host and use the host's native IME.
+        ImmAssociateContext(Handle, nint.Zero);
+    }
+
     protected override CreateParams CreateParams
     {
         get
@@ -195,32 +203,17 @@ public sealed class VideoHostControl : Control
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
             {
-                int vkDown = (int)(m.WParam & 0xFFFF);
-                if (vkDown == VK_PROCESSKEY || IsImeComposing)
-                {
-                    // Let Windows IME compose / select candidates locally without leaking raw keys
-                    base.WndProc(ref m);
-                    return;
-                }
                 if (KeyMessageReceived?.Invoke(true, m.WParam, m.LParam) == true)
                 {
-                    _suppressNextAsciiChar = true;
                     m.Result = nint.Zero;
                     return;
                 }
-                _suppressNextAsciiChar = false;
                 break;
             }
 
             case WM_KEYUP:
             case WM_SYSKEYUP:
             {
-                int vkUp = (int)(m.WParam & 0xFFFF);
-                if (vkUp == VK_PROCESSKEY || IsImeComposing)
-                {
-                    base.WndProc(ref m);
-                    return;
-                }
                 if (KeyMessageReceived?.Invoke(false, m.WParam, m.LParam) == true)
                 {
                     m.Result = nint.Zero;
@@ -280,30 +273,8 @@ public sealed class VideoHostControl : Control
             case WM_CHAR:
             case WM_IME_CHAR:
             {
-                char ch = (char)(m.WParam & 0xFFFF);
-                if (_suppressImeCharCount > 0 && Environment.TickCount64 - _suppressImeCharTick < 100)
-                {
-                    _suppressImeCharCount--;
-                    m.Result = nint.Zero;
-                    return;
-                }
-                _suppressImeCharCount = 0;
-
-                if (_suppressNextAsciiChar && ch <= 0x7F)
-                {
-                    _suppressNextAsciiChar = false;
-                    m.Result = nint.Zero;
-                    return;
-                }
-                _suppressNextAsciiChar = false;
-
-                // Forward all printable characters (ASCII letters/digits/symbols/space and CJK)
-                // via text_input so host IME state never intercepts plain typing (matches Web & macOS clients).
-                if (!char.IsControl(ch))
-                {
-                    CharReceived?.Invoke(ch);
-                    ImeTextCommitted?.Invoke(ch.ToString());
-                }
+                // All keystrokes are forwarded as raw physical keycodes via WM_KEYDOWN/WM_KEYUP;
+                // swallow WM_CHAR/WM_IME_CHAR to prevent double-typing.
                 m.Result = nint.Zero;
                 return;
             }
@@ -448,6 +419,9 @@ public sealed class VideoHostControl : Control
         public POINT ptCurrentPos;
         public RECT rcArea;
     }
+
+    [DllImport("imm32.dll")]
+    private static extern nint ImmAssociateContext(nint hWnd, nint hIMC);
 
     [DllImport("imm32.dll")]
     private static extern nint ImmGetContext(nint hWnd);

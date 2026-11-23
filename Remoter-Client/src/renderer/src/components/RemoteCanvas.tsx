@@ -4,7 +4,6 @@ import { VideoDecoder_, VideoCodec } from '../video/Decoder'
 import { VideoRenderer } from '../video/Renderer'
 import { InputHandler } from '../input/InputHandler'
 import { StreamInfo, ScaleMode, SharpnessLevel } from '../types'
-import { useImeOffset, setImeOffset, resolutionKey, MIN_IME_BOTTOM } from '../utils/imeOffset'
 
 interface Props {
   conn: Connection
@@ -29,7 +28,7 @@ export function RemoteCanvas({
   streamInfo,
   initialCodec = 'h264',
   isActive = true,
-  imeCalibrating = false,
+  imeCalibrating: _imeCalibrating = false,
   scaleMode = 'fit',
   sharpness = 'off',
   toneMap = false,
@@ -82,48 +81,6 @@ export function RemoteCanvas({
   hdrRef.current = hdr
   const showCanvas = !mediaActive || forceCanvas || useVideoShader
   const showVideoEl = mediaActive && !forceCanvas
-  // Native-anchor unified IME display:
-  // Instead of hiding the <textarea> and guessing an offset (+4 / +50) for a
-  // second cosmetic echo div — which inevitably either overlaps or leaves a
-  // huge gap depending on OS/IME/upward-vs-downward candidate direction —
-  // keep the <textarea> itself at a fixed single-line pill geometry (34px tall)
-  // and simply toggle its opacity during composition. The browser & OS IME then
-  // snap the candidate bar flush against this exact box automatically on every
-  // OS, browser, and IME (WeChat, Sogou, Microsoft Pinyin, Apple Pinyin, etc.).
-  const [compositionText, setCompositionText] = useState('')
-  const imeResKey = resolutionKey(streamInfo.width, streamInfo.height)
-  const imeOffset = useImeOffset(imeResKey)
-  const effectiveImeY = Math.max(MIN_IME_BOTTOM, imeOffset.y)
-  const isComposingUi = !!compositionText
-
-  // Drag-to-calibrate: the OS candidate window's real size/position varies
-  // with the remote machine's resolution/DPI scaling, so no single hardcoded
-  // anchor looks right everywhere (see imeOffset.ts). Dragging the echo box
-  // directly (no separate "calibration mode") moves both it and the anchor
-  // the OS positions its candidate window against, live, and persists on
-  // release — scoped to the resolution currently streaming.
-  function onEchoMouseDown(e: React.MouseEvent): void {
-    e.preventDefault()
-    e.stopPropagation()
-    const start = { x: e.clientX, y: e.clientY, origX: imeOffset.x, origY: effectiveImeY }
-    const onMove = (ev: MouseEvent): void => {
-      ev.preventDefault()
-      ev.stopPropagation()
-      // bottom grows upward on screen, clientY grows downward — invert.
-      const nextY = Math.max(MIN_IME_BOTTOM, start.origY - (ev.clientY - start.y))
-      setImeOffset(imeResKey, { x: start.origX + (ev.clientX - start.x), y: nextY })
-    }
-    const onUp = (ev: MouseEvent): void => {
-      ev.preventDefault()
-      ev.stopPropagation()
-      window.removeEventListener('mousemove', onMove, true)
-      window.removeEventListener('mouseup', onUp, true)
-    }
-    // Capture phase, ahead of InputHandler's bubble-phase listeners on the
-    // frame div — otherwise dragging here would also move the remote cursor.
-    window.addEventListener('mousemove', onMove, true)
-    window.addEventListener('mouseup', onUp, true)
-  }
 
   // Reset pan when returning to 1.0x zoom, and clamp pan bounds when zoomed
   useEffect(() => {
@@ -467,54 +424,10 @@ export function RemoteCanvas({
             objectFit: 'fill',   // the frame div already has the correct aspect ratio
           }}
         />
-        {/* Unified IME staging & composition box:
-            Fixed single-line pill geometry (width 240, height 34) that never
-            resizes when composition starts/ends. When idle it is opacity: 0
-            (invisible while holding focus); while composing it becomes
-            opacity: 1 in place, so the OS/browser anchors the candidate window
-            flush against this exact box regardless of OS, browser, or IME. */}
-        <textarea
-          ref={imeRef}
-          tabIndex={-1}
-          wrap="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          onCompositionStart={() => setCompositionText('')}
-          onCompositionUpdate={(e) => setCompositionText(e.data)}
-          onCompositionEnd={() => setCompositionText('')}
-          style={{
-            position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY,
-            width: 240, height: 34, boxSizing: 'border-box',
-            padding: '4px 10px', border: '2px solid #000', borderRadius: 4,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
-            background: '#fff', color: '#111',
-            fontSize: 15, lineHeight: '22px', fontFamily: 'inherit',
-            whiteSpace: 'pre', overflow: 'hidden', resize: 'none', outline: 'none',
-            opacity: isComposingUi ? 1 : 0,
-            pointerEvents: 'none',
-            zIndex: isComposingUi ? 10 : -1,
-          }}
-        />
-        {/* Calibration-only draggable handle at the exact same rect as the
-            <textarea> above, shown only when user explicitly toggles IME
-            position calibration. */}
-        {imeCalibrating && (
-          <div
-            onMouseDownCapture={onEchoMouseDown}
-            style={{
-              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY,
-              width: 240, height: 34, boxSizing: 'border-box',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: '4px 10px', border: '2px solid #000', borderRadius: 4,
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
-              background: '#fff', color: '#111', fontSize: 14,
-              whiteSpace: 'pre', pointerEvents: 'auto', cursor: 'move', zIndex: 11,
-            }}
-          >
-            拖动调整输入法位置
-          </div>
-        )}
+        {/* Remote-native IME passthrough (UU Remote / Parsec model):
+            Focus stays on the non-editable frameRef div (tabIndex={0}), so the
+            browser never activates local IME; raw physical keycodes flow directly
+            to the remote host and use the host's native IME at the real cursor. */}
       </div>
     </div>
   )

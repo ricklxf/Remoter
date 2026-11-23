@@ -142,7 +142,7 @@ final class InputController {
         timedPost(eu, tap: .cgSessionEventTap)
     }
 
-    func injectScrollStep(stepX: Int32, stepY: Int32, phase: CGScrollPhase) {
+    func injectScrollStep(stepX: Int32, stepY: Int32) {
         let src = CGEventSource(stateID: .hidSystemState)
         guard let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel,
                               wheelCount: 2, wheel1: stepY, wheel2: stepX, wheel3: 0) else { return }
@@ -153,7 +153,10 @@ final class InputController {
             e.location = loc
         }
         e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        e.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+        // Explicitly 0 (non-touchpad mouse wheel): non-zero scrollPhase tells
+        // macOS/Chrome this is a trackpad two-finger gesture and triggers
+        // elastic rubber-banding even on non-scrollable pages like google.com.
+        e.setIntegerValueField(.scrollWheelEventScrollPhase, value: 0)
         e.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(stepY))
         e.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(stepX))
         timedPost(e, tap: .cgSessionEventTap)
@@ -411,7 +414,6 @@ final class SmoothScrollEngine: @unchecked Sendable {
             let t = DispatchSource.makeTimerSource(queue: self.queue)
             // 120Hz 刷新率: 每 8.3ms 一帧
             t.schedule(deadline: .now(), repeating: .milliseconds(8))
-            var isFirst = true
 
             t.setEventHandler { [weak self] in
                 guard let self else { return }
@@ -449,25 +451,13 @@ final class SmoothScrollEngine: @unchecked Sendable {
                     self.timer?.cancel()
                     self.timer = nil
                 }
-                let first = isFirst
-                isFirst = false
                 self.lock.unlock()
 
                 let intStepY = Int32(round(stepY))
                 let intStepX = Int32(round(stepX))
 
-                if first && isEnding {
-                    // Whole animation fit in one tick: it still needs both a
-                    // begin and an end, or the target app is left mid-gesture.
-                    if intStepY != 0 || intStepX != 0 {
-                        self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY, phase: .began)
-                    }
-                    self.controller?.injectScrollStep(stepX: 0, stepY: 0, phase: .ended)
-                } else {
-                    let phase: CGScrollPhase = first ? .began : (isEnding ? .ended : .changed)
-                    if intStepY != 0 || intStepX != 0 || isEnding {
-                        self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY, phase: phase)
-                    }
+                if intStepY != 0 || intStepX != 0 {
+                    self.controller?.injectScrollStep(stepX: intStepX, stepY: intStepY)
                 }
             }
 
@@ -483,12 +473,7 @@ final class SmoothScrollEngine: @unchecked Sendable {
         timer = nil
         targetX = 0
         targetY = 0
-        if isAnimating {
-            isAnimating = false
-            lock.unlock()
-            controller?.injectScrollStep(stepX: 0, stepY: 0, phase: .ended)
-        } else {
-            lock.unlock()
-        }
+        isAnimating = false
+        lock.unlock()
     }
 }

@@ -352,7 +352,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                 win.contentView?.layoutSubtreeIfNeeded()
                 let winRect = self.imeEchoCard.convert(self.imeEchoCard.bounds, to: nil)
                 let cardScreenRect = win.convertToScreen(winRect)
-                return NSRect(x: cardScreenRect.minX, y: cardScreenRect.minY, width: 1, height: 1)
+                // Return the full card rect so macOS TSM knows the exact text box height
+                // and snaps the candidate bar flush below minY (or flush above maxY if flipped).
+                return cardScreenRect
             }
             let viewBounds = self.canvasContainer.bounds
             let bottomMargin = abs(self.imeEchoBottomConstraint?.constant ?? -140)

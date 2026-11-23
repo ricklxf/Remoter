@@ -82,34 +82,19 @@ export function RemoteCanvas({
   hdrRef.current = hdr
   const showCanvas = !mediaActive || forceCanvas || useVideoShader
   const showVideoEl = mediaActive && !forceCanvas
-  // The IME staging textarea is invisible (see below) — but that also hides
-  // the raw composition text (e.g. pinyin) while typing, so a typo is
-  // invisible until the wrong character actually lands remotely. Echo it in
-  // a separate, purely cosmetic overlay instead of resizing the textarea
-  // itself: the textarea's geometry is what the OS anchors its candidate
-  // window to, so changing its size/position to show text moves that
-  // anchor along with it, which was throwing the candidate window out of
-  // alignment with the fixed spot we calibrated it for.
+  // Native-anchor unified IME display:
+  // Instead of hiding the <textarea> and guessing an offset (+4 / +50) for a
+  // second cosmetic echo div — which inevitably either overlaps or leaves a
+  // huge gap depending on OS/IME/upward-vs-downward candidate direction —
+  // keep the <textarea> itself at a fixed single-line pill geometry (34px tall)
+  // and simply toggle its opacity during composition. The browser & OS IME then
+  // snap the candidate bar flush against this exact box automatically on every
+  // OS, browser, and IME (WeChat, Sogou, Microsoft Pinyin, Apple Pinyin, etc.).
   const [compositionText, setCompositionText] = useState('')
-  // Keyed by remote resolution — see imeOffset.ts for why one global offset
-  // couldn't work across, say, a 1080p session and a 2K one.
   const imeResKey = resolutionKey(streamInfo.width, streamInfo.height)
   const imeOffset = useImeOffset(imeResKey)
-  // Guard against old localStorage entries (e.g. y: 0 from the previous default)
-  // or dragging too close to the bottom edge, which leaves no room below the
-  // anchor textarea and forces the OS candidate bar to flip upward onto the
-  // echo pill.
   const effectiveImeY = Math.max(MIN_IME_BOTTOM, imeOffset.y)
-  // A real IME composition ends the instant the OS sees a mousedown
-  // anywhere outside the composing element — confirmed live: dragging never
-  // took effect while an actual composition was in progress, because the
-  // box vanished (composition committed) before the gesture could complete.
-  // Calibration can't depend on a real composition surviving user
-  // interaction at all, so this mode shows a static placeholder box instead
-  // — nothing here is tied to compositionstart/compositionend, so dragging
-  // it can't be interrupted by the OS ending anything.
-  const showImeUi = !!compositionText || imeCalibrating
-  const imeUiText = compositionText || '拼音示例'
+  const isComposingUi = !!compositionText
 
   // Drag-to-calibrate: the OS candidate window's real size/position varies
   // with the remote machine's resolution/DPI scaling, so no single hardcoded
@@ -482,27 +467,12 @@ export function RemoteCanvas({
             objectFit: 'fill',   // the frame div already has the correct aspect ratio
           }}
         />
-        {/* IME staging area: holds keyboard focus while capturing so the
-            local input method can compose CJK text (composition only works
-            on editable elements — the canvas/video can't host it). Final
-            committed text is sent to the remote via compositionend; see
-            InputHandler. Nested inside the frame div (not a sibling of it)
-            so its position is anchored to the actual visible picture, not
-            to the outer window — a window that's bigger than the picture
-            (letterboxed, toolbars, etc.) would otherwise throw the
-            centering off relative to what the user is actually looking at.
-            The OS candidate window anchors to this element's caret and grows
-            rightward from it — the browser never exposes the popup's actual
-            width or the OS's own scaling, so there's no way to compute a
-            correct anchor; it's user-calibrated instead by dragging the echo
-            box below (see imeOffset.ts and onEchoMouseDown).
-            Always invisible — kept fixed in size on purpose. Resizing or
-            restyling *this* element to show the typed pinyin moves the exact
-            box the OS measures for candidate-window placement, which threw
-            the candidate window out of alignment with the spot calibrated
-            above. The live composition text is echoed in a separate,
-            display-only overlay right below instead, which doesn't affect
-            the textarea's geometry at all. */}
+        {/* Unified IME staging & composition box:
+            Fixed single-line pill geometry (width 240, height 34) that never
+            resizes when composition starts/ends. When idle it is opacity: 0
+            (invisible while holding focus); while composing it becomes
+            opacity: 1 in place, so the OS/browser anchors the candidate window
+            flush against this exact box regardless of OS, browser, or IME. */}
         <textarea
           ref={imeRef}
           tabIndex={-1}
@@ -514,65 +484,35 @@ export function RemoteCanvas({
           onCompositionUpdate={(e) => setCompositionText(e.data)}
           onCompositionEnd={() => setCompositionText('')}
           style={{
-            // A 1px-*wide* box was the real bug, not the vertical anchor:
-            // a <textarea> line-wraps by default, so at 1px wide every
-            // character after the first forces a new internal line — a
-            // 10-character composition means the caret sits on "line 10".
-            // The OS almost certainly positions the candidate window off
-            // that caret's row, so the window's position kept climbing/
-            // jumping as the composition got longer. Keep the box wide
-            // enough that the whole composition always fits on a single
-            // internal line (plus `wrap="off"` as a belt-and-suspenders
-            // guard), and collapse its height to a 2px thin anchor line so
-            // the echo pill right above it sits snug against the OS
-            // candidate window below with no blank gap.
             position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY,
-            width: 400, height: 2, padding: 0, border: 0,
-            lineHeight: '2px', fontSize: 1,
-            opacity: 0, pointerEvents: 'none', resize: 'none',
-            overflow: 'hidden', zIndex: -1, whiteSpace: 'pre',
+            width: 240, height: 34, boxSizing: 'border-box',
+            padding: '4px 10px', border: '2px solid #000', borderRadius: 4,
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+            background: '#fff', color: '#111',
+            fontSize: 15, lineHeight: '22px', fontFamily: 'inherit',
+            whiteSpace: 'pre', overflow: 'hidden', resize: 'none', outline: 'none',
+            opacity: isComposingUi ? 1 : 0,
+            pointerEvents: 'none',
+            zIndex: isComposingUi ? 10 : -1,
           }}
         />
-        {/* Read-only echo of the composition text above — doesn't touch the
-            textarea's own box so it can't disturb the candidate window's
-            position. The OS candidate bar opens UPWARD from the textarea anchor
-            (macOS) and is ~40px tall. The echo pill must sit above the candidate
-            bar: effectiveImeY + candidateBarHeight(≈40) + gap(≈8) ≈ +50px.
-            Sized to fit its content instead of a fixed width so short or long
-            compositions both look right. Draggable: this is also the handle
-            for calibrating imeOffset (see onEchoMouseDown) — it and the
-            invisible textarea above share the same offset, so dragging this
-            visibly moves the real candidate window's anchor too.
-            onMouseDownCapture, not onMouseDown: InputHandler has its own
-            native 'mousedown' listener on the frame div (bubble phase) that
-            forwards every click to the remote as a real click-through. A
-            bubble-phase handler here would fire only after that native
-            ancestor listener already ran (React's delegated bubble dispatch
-            happens later than a real DOM bubble listener on an ancestor),
-            so the drag would start *after* the click already leaked to the
-            remote. Capture phase runs before the event ever reaches the
-            frame div, so stopPropagation here keeps it local. */}
-        {showImeUi && (
+        {/* Calibration-only draggable handle at the exact same rect as the
+            <textarea> above, shown only when user explicitly toggles IME
+            position calibration. */}
+        {imeCalibrating && (
           <div
             onMouseDownCapture={onEchoMouseDown}
             style={{
-              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY + 50,
-              // A short composition (e.g. one or two pinyin letters) sized
-              // this box down to a sliver a few dozen px wide — easy to miss
-              // by a couple pixels while dragging, which sends that click
-              // straight through to the remote canvas instead (looks like
-              // "dragging does nothing" from the user's side). Floor the hit
-              // target well above the text's own size so it's always easy
-              // to grab regardless of how short the composition is.
-              minWidth: 48, minHeight: 24, boxSizing: 'content-box',
+              position: 'absolute', left: `calc(50% + ${imeOffset.x}px)`, bottom: effectiveImeY,
+              width: 240, height: 34, boxSizing: 'border-box',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: '4px 8px', border: '2px solid #000', borderRadius: 4,
+              padding: '4px 10px', border: '2px solid #000', borderRadius: 4,
               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
-              background: 'white', color: '#111', fontSize: 15,
-              whiteSpace: 'pre', pointerEvents: 'auto', cursor: 'move', zIndex: 10,
+              background: '#fff', color: '#111', fontSize: 14,
+              whiteSpace: 'pre', pointerEvents: 'auto', cursor: 'move', zIndex: 11,
             }}
           >
-            {imeUiText}
+            拖动调整输入法位置
           </div>
         )}
       </div>

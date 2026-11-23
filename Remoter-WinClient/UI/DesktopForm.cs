@@ -113,6 +113,8 @@ public sealed class DesktopForm : Form
             Math.Clamp(_remoteWidth, 960, Math.Max(960, Screen.PrimaryScreen?.WorkingArea.Width - 80 ?? 1280)),
             Math.Clamp(_remoteHeight, 540, Math.Max(540, Screen.PrimaryScreen?.WorkingArea.Height - 80 ?? 720)));
         MinimumSize = new Size(640, 360);
+        // 启动后默认最大化窗口（铺满工作区并保留顶部标题栏与 Windows 任务栏/控制栏）
+        WindowState = FormWindowState.Maximized;
 
         string icoPath = Path.Combine(AppContext.BaseDirectory, "Remoter.ico");
         if (File.Exists(icoPath))
@@ -243,18 +245,10 @@ public sealed class DesktopForm : Form
         InitializeVideoPipeline();
 
         _toolbar.Show();
-        _statsHud.SetHudVisible(_statsHudVisible);
+        _toolbar.UpdatePosition();
 
-        // 默认进入全屏模式（F11 / Ctrl+Alt+F 或工具栏按钮可切回窗口模式）
-        if (!_fullscreen)
-        {
-            ToggleFullscreen();
-        }
-        else
-        {
-            _toolbar.UpdatePosition();
-            _statsHud.UpdatePosition();
-        }
+        _statsHud.SetHudVisible(_statsHudVisible);
+        _statsHud.UpdatePosition();
 
         // Sync initial settings with server
         if (_settings.QualityPreset == QualityPreset.Auto)

@@ -905,7 +905,7 @@ final class UdpVideoServer {
                     session.pacingReadIndex += 1
                     session.pacingBudgetBytes -= Double(pkt.count)
                     toSend.append(pkt)
-                    if toSend.count >= 12 { break }
+                    if toSend.count >= 24 { break }
                 }
 
                 if session.pacingReadIndex >= session.pacingQueue.count {

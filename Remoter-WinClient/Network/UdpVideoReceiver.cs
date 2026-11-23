@@ -56,6 +56,7 @@ public sealed class UdpVideoReceiver : IDisposable
         public int FecGroupSize;
         public bool InterleavedFec;
         public long CreatedAtTick;
+        public long LastPacketTick;
         public byte[]?[] Fragments = Array.Empty<byte[]?>();
         public int ReceivedCount;
         public bool IsComplete;
@@ -326,15 +327,16 @@ public sealed class UdpVideoReceiver : IDisposable
                             var asm = kvp.Value;
                             int timeout = asm.IsKeyframe ? 200 : FrameTimeoutMs;
                             long age = now - asm.CreatedAtTick;
+                            long idleMs = now - asm.LastPacketTick;
                             if (age > timeout)
                             {
                                 expired ??= new List<uint>();
                                 expired.Add(kvp.Key);
                             }
-                            else if (!asm.IsComplete && age >= TailNackDelayMs && _udp != null && _token != null)
+                            else if (!asm.IsComplete && idleMs >= TailNackDelayMs && _udp != null && _token != null)
                             {
-                                // Proactive tail-loss NACK at 25ms (well before 120ms timeout):
-                                // catches lost tail fragments even when no subsequent frame arrives.
+                                // Proactive tail-loss NACK only after 25ms of SILENCE on this frame
+                                // (never while the server pacer is still actively streaming its packets!).
                                 List<byte>? missing = null;
                                 for (int i = 0; i < asm.FragCount; i++)
                                 {
@@ -528,6 +530,7 @@ public sealed class UdpVideoReceiver : IDisposable
                     droppedCount++;
                 }
 
+                long nowTick = Environment.TickCount64;
                 assembly = new FrameAssembly
                 {
                     FrameId = frameId,
@@ -537,14 +540,15 @@ public sealed class UdpVideoReceiver : IDisposable
                     FragCount = fragCount,
                     FecGroupSize = fecGroupSize,
                     InterleavedFec = interleavedFec,
-                    CreatedAtTick = Environment.TickCount64,
+                    CreatedAtTick = nowTick,
+                    LastPacketTick = nowTick,
                     Fragments = new byte[]?[fragCount],
                 };
                 _frames[frameId] = assembly;
 
                 // Immediate Gap & Tail-Fragment NACK: when frameId jumps past expected (_lastCompletedFrameId + 1),
-                // immediately NACK missing tail fragments of older in-flight frames OR whole missing 1-packet frames
-                // (count=0) so they recover in 1 RTT (~10ms) instead of timing out and freezing for a keyframe!
+                // immediately NACK missing tail fragments of older in-flight frames (once idle >= 15ms) OR whole
+                // missing 1-packet frames (count=0) so they recover in 1 RTT (~10ms) instead of keyframe freezing!
                 if (_hasCompletedFrame && !_awaitingKeyframe && _udp != null && _token != null)
                 {
                     int gap = unchecked((int)(frameId - _lastCompletedFrameId));
@@ -555,7 +559,7 @@ public sealed class UdpVideoReceiver : IDisposable
                             uint missingFrameId = unchecked(_lastCompletedFrameId + (uint)step);
                             if (_frames.TryGetValue(missingFrameId, out var prevAsm))
                             {
-                                if (prevAsm.IsComplete) continue;
+                                if (prevAsm.IsComplete || (nowTick - prevAsm.LastPacketTick) < 15) continue;
                                 List<byte>? prevMissing = null;
                                 for (int fi = 0; fi < prevAsm.FragCount; fi++)
                                 {
@@ -594,6 +598,8 @@ public sealed class UdpVideoReceiver : IDisposable
             {
                 return;
             }
+
+            assembly.LastPacketTick = Environment.TickCount64;
 
             if (pktType == PacketData)
             {

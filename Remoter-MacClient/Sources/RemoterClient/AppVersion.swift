@@ -1,5 +1,5 @@
 import Foundation
 
-public let kAppVersion = "3.0.8"
+public let kAppVersion = "3.0.9"
 public let kAppBundleIdentifier = "com.remoter.client"
 public let kAppDisplayName = "Remoter Client"

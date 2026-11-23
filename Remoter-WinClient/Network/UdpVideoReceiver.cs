@@ -72,6 +72,7 @@ public sealed class UdpVideoReceiver : IDisposable
     private bool _hasCompletedFrame;
     private uint _lastCompletedFrameId;
     private bool _awaitingKeyframe = true;
+    private long _lastAwaitingKeyframeRetryTick;
     private bool _disposed;
 
     // Delay-gradient GCC telemetry (reported every 200ms via 0x13 FEEDBACK)
@@ -299,6 +300,7 @@ public sealed class UdpVideoReceiver : IDisposable
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 int dropped = 0;
+                bool retryKeyframe = false;
                 long now = Environment.TickCount64;
                 lock (_lock)
                 {
@@ -322,10 +324,21 @@ public sealed class UdpVideoReceiver : IDisposable
                                 dropped++;
                             }
                             _awaitingKeyframe = true;
+                            _lastAwaitingKeyframeRetryTick = now;
                         }
                     }
+
+                    // While awaiting a keyframe (and ignoring P-frames), periodically retry
+                    // FrameDropped -> request_keyframe every 450ms so a single throttled/lost
+                    // keyframe can NEVER freeze the screen for 5-10s waiting for periodic IDR!
+                    if (_connected && _awaitingKeyframe && dropped == 0 &&
+                        now - _lastAwaitingKeyframeRetryTick >= 450)
+                    {
+                        _lastAwaitingKeyframeRetryTick = now;
+                        retryKeyframe = true;
+                    }
                 }
-                if (dropped > 0)
+                if (dropped > 0 || retryKeyframe)
                 {
                     FrameDropped?.Invoke();
                 }

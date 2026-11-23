@@ -774,6 +774,9 @@ public sealed class RemoterConnection : IDisposable
             Interlocked.Add(ref _bytesCount, data.Length);
             if (BinaryFrames.TryParseVideoFrame(data, _activeCodec, out var videoPacket))
             {
+                UdpVideoReceiver? udp;
+                lock (_stateLock) { udp = _udpReceiver; }
+                udp?.NotifyExternalFrame(videoPacket.FrameId, videoPacket.IsKeyframe);
                 VideoFrameReceived?.Invoke(videoPacket);
             }
             return;
@@ -1026,7 +1029,7 @@ public sealed class RemoterConnection : IDisposable
         {
             long now = Environment.TickCount64;
             long prev = Volatile.Read(ref _lastUdpKeyframeReqTicks);
-            if (now - prev >= 500 &&
+            if (now - prev >= 150 &&
                 Interlocked.CompareExchange(ref _lastUdpKeyframeReqTicks, now, prev) == prev)
             {
                 SendRequestKeyframe();

@@ -68,7 +68,7 @@ final class UdpVideoServer {
         var lastKeepaliveAt: Date = .distantPast
         var symmetricKey: SymmetricKey?
         var onActivated: (Bool) -> Void
-        var onLossFeedback: ((Double) -> Void)?
+        var onLossFeedback: ((Double, UInt64) -> Void)?
 
         // 2s sliding-window adaptive FEC & loss feedback
         var windowSentDataPackets: UInt64 = 0
@@ -91,7 +91,7 @@ final class UdpVideoServer {
             aesKey: Data?,
             allowFecSuppression: Bool,
             onActivated: @escaping (Bool) -> Void,
-            onLossFeedback: ((Double) -> Void)?
+            onLossFeedback: ((Double, UInt64) -> Void)?
         ) {
             if let aesKey, aesKey.count == 32 {
                 self.symmetricKey = SymmetricKey(data: aesKey)
@@ -203,7 +203,7 @@ final class UdpVideoServer {
         aesKey: Data? = nil,
         allowFecSuppression: Bool = true,
         onActivated: @escaping (Bool) -> Void,
-        onLossFeedback: ((Double) -> Void)? = nil
+        onLossFeedback: ((Double, UInt64) -> Void)? = nil
     ) {
         guard token.count == 16 else { return }
         lock.lock()
@@ -720,7 +720,7 @@ final class UdpVideoServer {
     private func runMaintenanceTick() {
         let now = Date()
         var deactivated: [(Bool) -> Void] = []
-        var lossCallbacks: [((Double) -> Void, Double)] = []
+        var lossCallbacks: [((Double, UInt64) -> Void, Double, UInt64)] = []
         var fecTransitions: [(FecLevel, Double, UInt8, UInt8)] = []
 
         lock.lock()
@@ -782,7 +782,7 @@ final class UdpVideoServer {
             }
 
             if let cb = session.onLossFeedback {
-                lossCallbacks.append((cb, lossRatio))
+                lossCallbacks.append((cb, lossRatio, sent))
             }
         }
         lock.unlock()
@@ -797,8 +797,8 @@ final class UdpVideoServer {
                 detail: "level=\(level.rawValue) loss=\(String(format: "%.3f", lossRatio)) deltaG=\(deltaFec) keyG=\(keyFec)"
             )
         }
-        for (cb, lossRatio) in lossCallbacks {
-            cb(lossRatio)
+        for (cb, lossRatio, sent) in lossCallbacks {
+            cb(lossRatio, sent)
         }
     }
 

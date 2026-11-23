@@ -978,6 +978,10 @@ public final class RemoterConnection: @unchecked Sendable {
             statsLock.unlock()
 
             if let packet = BinaryFrames.parseVideoFrame(data, activeCodec: activeCodec) {
+                stateLock.lock()
+                let udp = _udpReceiver
+                stateLock.unlock()
+                udp?.notifyExternalFrame(frameId: packet.frameId, isKeyframe: packet.isKeyframe)
                 onVideoFrame?(packet)
             }
 

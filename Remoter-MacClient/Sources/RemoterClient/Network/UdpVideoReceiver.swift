@@ -91,6 +91,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
     private var frames: [UInt32: FrameBuffer] = [:]
     private var lastDeliveredFrameId: UInt32?
+    private var awaitingKeyframe = true
     private var recvScratch = [UInt8](repeating: 0, count: 65536)
 
     public init() {}
@@ -141,6 +142,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             self.helloSentCount = 0
             self.frames.removeAll()
             self.lastDeliveredFrameId = nil
+            self.awaitingKeyframe = true
 
             // Setup non-blocking read source
             let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: self.queue)
@@ -191,6 +193,22 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     public func stop() {
         queue.sync {
             stopLocked(notifyDisconnect: false)
+        }
+    }
+
+    public func notifyExternalFrame(frameId: UInt32, isKeyframe: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if let lastId = self.lastDeliveredFrameId {
+                if Self.isFrameNewer(frameId, than: lastId) {
+                    self.lastDeliveredFrameId = frameId
+                }
+            } else {
+                self.lastDeliveredFrameId = frameId
+            }
+            if isKeyframe {
+                self.awaitingKeyframe = false
+            }
         }
     }
 
@@ -257,6 +275,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
         frames.removeAll()
         lastDeliveredFrameId = nil
+        awaitingKeyframe = true
         token = Data()
         aesKey = nil
 
@@ -427,6 +446,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
                 if let oldestId = frames.keys.min(by: { Self.isFrameNewer($1, than: $0) }) {
                     if Self.isFrameNewer(frameId, than: oldestId) {
                         frames.removeValue(forKey: oldestId)
+                        awaitingKeyframe = true
                         onFrameDropped?()
                     } else {
                         return
@@ -463,6 +483,38 @@ public final class UdpVideoReceiver: @unchecked Sendable {
         }
 
         if fb.receivedCount == fb.fragCount {
+            // Drop any older incomplete frames
+            var droppedOlder = false
+            for existingId in Array(frames.keys) where existingId != frameId {
+                if Self.isFrameNewer(frameId, than: existingId) {
+                    frames.removeValue(forKey: existingId)
+                    droppedOlder = true
+                }
+            }
+            frames.removeValue(forKey: frameId)
+
+            if droppedOlder {
+                awaitingKeyframe = true
+            }
+
+            if let lastId = lastDeliveredFrameId, !fb.isKeyframe, frameId &- lastId != 1 {
+                awaitingKeyframe = true
+            }
+
+            lastDeliveredFrameId = frameId
+
+            if fb.isKeyframe {
+                awaitingKeyframe = false
+            } else if awaitingKeyframe {
+                // Discard P-frame while awaiting a fresh keyframe so decoder never smears
+                onFrameDropped?()
+                return
+            }
+
+            if droppedOlder {
+                onFrameDropped?()
+            }
+
             // Assemble complete frame
             var totalLen = 0
             for frag in fb.fragments {
@@ -473,21 +525,6 @@ public final class UdpVideoReceiver: @unchecked Sendable {
                 if let frag {
                     assembled.append(frag)
                 }
-            }
-
-            // Drop any older incomplete frames
-            var droppedOlder = false
-            for existingId in Array(frames.keys) where existingId != frameId {
-                if Self.isFrameNewer(frameId, than: existingId) {
-                    frames.removeValue(forKey: existingId)
-                    droppedOlder = true
-                }
-            }
-            frames.removeValue(forKey: frameId)
-            lastDeliveredFrameId = frameId
-
-            if droppedOlder {
-                onFrameDropped?()
             }
 
             let codec: VideoCodec = fb.isHEVC ? .h265 : .h264
@@ -627,6 +664,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             }
         }
         if droppedAny {
+            awaitingKeyframe = true
             onFrameDropped?()
         }
     }

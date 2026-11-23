@@ -34,6 +34,8 @@ public sealed class UdpVideoReceiver : IDisposable
     private const int GcmTagSize = 16;
     private const int MaxNackIndices = 16;
     private const int MaxInFlightFrames = 4;
+    private const int FrameTimeoutMs = 80;
+    private const int CleanupIntervalMs = 40;
     private const int ReceiveBufferBytes = 4 * 1024 * 1024;
     private const int HelloRetryCount = 3;
     private const int HelloIntervalMs = 100;
@@ -48,6 +50,7 @@ public sealed class UdpVideoReceiver : IDisposable
         public VideoCodecType Codec;
         public int FragCount;
         public int FecGroupSize;
+        public long CreatedAtTick;
         public byte[]?[] Fragments = Array.Empty<byte[]?>();
         public int ReceivedCount;
         public Dictionary<int, byte[]>? ParityGroups;
@@ -64,6 +67,7 @@ public sealed class UdpVideoReceiver : IDisposable
     private bool _connected;
     private bool _hasCompletedFrame;
     private uint _lastCompletedFrameId;
+    private bool _awaitingKeyframe = true;
     private bool _disposed;
 
     public bool IsConnected => Volatile.Read(ref _connected);
@@ -94,6 +98,7 @@ public sealed class UdpVideoReceiver : IDisposable
             _connected = false;
             _hasCompletedFrame = false;
             _lastCompletedFrameId = 0;
+            _awaitingKeyframe = true;
             _frames.Clear();
 
             var udp = new UdpClient();
@@ -106,6 +111,23 @@ public sealed class UdpVideoReceiver : IDisposable
 
             _ = Task.Run(() => ReceiveLoopAsync(udp, cts.Token), cts.Token);
             _ = Task.Run(() => HandshakeAndKeepaliveLoopAsync(udp, _token, cts.Token), cts.Token);
+            _ = Task.Run(() => StaleFrameCleanupLoopAsync(cts.Token), cts.Token);
+        }
+    }
+
+    public void NotifyExternalFrame(uint frameId, bool isKeyframe)
+    {
+        lock (_lock)
+        {
+            if (!_hasCompletedFrame || unchecked((int)(frameId - _lastCompletedFrameId)) > 0)
+            {
+                _lastCompletedFrameId = frameId;
+                _hasCompletedFrame = true;
+            }
+            if (isKeyframe)
+            {
+                _awaitingKeyframe = false;
+            }
         }
     }
 
@@ -126,6 +148,7 @@ public sealed class UdpVideoReceiver : IDisposable
             _aesGcm = null;
             wasConnected = _connected;
             _connected = false;
+            _awaitingKeyframe = true;
             _frames.Clear();
         }
 
@@ -215,6 +238,49 @@ public sealed class UdpVideoReceiver : IDisposable
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) { }
         catch (SocketException) { }
+    }
+
+    private async Task StaleFrameCleanupLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(CleanupIntervalMs));
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                int dropped = 0;
+                long now = Environment.TickCount64;
+                lock (_lock)
+                {
+                    if (_frames.Count > 0)
+                    {
+                        List<uint>? expired = null;
+                        foreach (var kvp in _frames)
+                        {
+                            if (now - kvp.Value.CreatedAtTick > FrameTimeoutMs)
+                            {
+                                expired ??= new List<uint>();
+                                expired.Add(kvp.Key);
+                            }
+                        }
+                        if (expired != null)
+                        {
+                            foreach (uint id in expired)
+                            {
+                                _frames.Remove(id);
+                                dropped++;
+                            }
+                            _awaitingKeyframe = true;
+                        }
+                    }
+                }
+                if (dropped > 0)
+                {
+                    FrameDropped?.Invoke();
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
     }
 
     // ── Packet Parsing & 0ms XOR-FEC Reassembly ──────────────────────────
@@ -333,6 +399,7 @@ public sealed class UdpVideoReceiver : IDisposable
                     }
                     if (!found) break;
                     _frames.Remove(oldestId);
+                    _awaitingKeyframe = true;
                     droppedCount++;
                 }
 
@@ -344,6 +411,7 @@ public sealed class UdpVideoReceiver : IDisposable
                     Codec = codec,
                     FragCount = fragCount,
                     FecGroupSize = fecGroupSize,
+                    CreatedAtTick = Environment.TickCount64,
                     Fragments = new byte[]?[fragCount],
                 };
                 _frames[frameId] = assembly;
@@ -376,7 +444,6 @@ public sealed class UdpVideoReceiver : IDisposable
 
             if (assembly.ReceivedCount == assembly.FragCount)
             {
-                byte[] assembled = AssembleFrame(assembly);
                 _frames.Remove(frameId);
 
                 // Drop any older incomplete frames
@@ -396,20 +463,51 @@ public sealed class UdpVideoReceiver : IDisposable
                         _frames.Remove(id);
                         droppedCount++;
                     }
+                    _awaitingKeyframe = true;
+                }
+
+                // Detect frameId gap on non-keyframe -> require fresh IDR keyframe before decoding P-frames
+                if (_hasCompletedFrame &&
+                    !assembly.IsKeyframe &&
+                    unchecked(frameId - _lastCompletedFrameId) != 1)
+                {
+                    _awaitingKeyframe = true;
                 }
 
                 _hasCompletedFrame = true;
                 _lastCompletedFrameId = frameId;
-                completedPacket = new VideoFramePacket(
-                    Data: assembled,
-                    FrameId: assembly.FrameId,
-                    PtsMs: assembly.PtsMs,
-                    IsKeyframe: assembly.IsKeyframe,
-                    Codec: assembly.Codec);
+
+                if (assembly.IsKeyframe)
+                {
+                    _awaitingKeyframe = false;
+                    byte[] assembled = AssembleFrame(assembly);
+                    completedPacket = new VideoFramePacket(
+                        Data: assembled,
+                        FrameId: assembly.FrameId,
+                        PtsMs: assembly.PtsMs,
+                        IsKeyframe: assembly.IsKeyframe,
+                        Codec: assembly.Codec);
+                }
+                else if (_awaitingKeyframe)
+                {
+                    // Discard P-frame while awaiting keyframe so decoder never smears against a missing reference
+                    droppedCount = Math.Max(droppedCount, 1);
+                }
+                else
+                {
+                    byte[] assembled = AssembleFrame(assembly);
+                    completedPacket = new VideoFramePacket(
+                        Data: assembled,
+                        FrameId: assembly.FrameId,
+                        PtsMs: assembly.PtsMs,
+                        IsKeyframe: assembly.IsKeyframe,
+                        Codec: assembly.Codec);
+                }
             }
             else if (pktType == PacketData && _udp != null && _token != null && fragIndex > 0)
             {
-                // Per-fragment NACK (0x12): collect earlier missing indices < fragIndex not yet NACKed
+                // Smart FEC-aware per-fragment NACK (0x12): avoid spamming NACKs for single
+                // out-of-order packets that XOR-FEC is about to recover in 0ms.
                 int upper = Math.Min((int)fragIndex, assembly.FragCount);
                 List<byte>? missing = null;
                 for (int i = 0; i < upper; i++)
@@ -417,9 +515,34 @@ public sealed class UdpVideoReceiver : IDisposable
                     if (assembly.Fragments[i] != null) continue;
                     byte idx = (byte)i;
                     if (assembly.NackedFrags != null && assembly.NackedFrags.Contains(idx)) continue;
-                    missing ??= new List<byte>();
-                    missing.Add(idx);
-                    if (missing.Count >= MaxNackIndices) break;
+
+                    bool shouldNack = assembly.FecGroupSize == 0;
+                    if (!shouldNack && assembly.FecGroupSize > 0)
+                    {
+                        int g = i / assembly.FecGroupSize;
+                        int start = g * assembly.FecGroupSize;
+                        int end = Math.Min(start + assembly.FecGroupSize, assembly.FragCount);
+                        int groupMissing = 0;
+                        for (int j = start; j < end; j++)
+                        {
+                            if (assembly.Fragments[j] == null)
+                            {
+                                groupMissing++;
+                                if (groupMissing >= 2) break;
+                            }
+                        }
+                        if (groupMissing >= 2 || fragIndex >= end)
+                        {
+                            shouldNack = true;
+                        }
+                    }
+
+                    if (shouldNack)
+                    {
+                        missing ??= new List<byte>();
+                        missing.Add(idx);
+                        if (missing.Count >= MaxNackIndices) break;
+                    }
                 }
 
                 if (missing != null && missing.Count > 0)

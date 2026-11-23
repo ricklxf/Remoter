@@ -465,6 +465,9 @@ final class Session {
             webrtc?.lanFloorAllowed = lan
             webrtc?.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
             UdpVideoServer.shared.setFecSuppressionAllowed(token: udpSessionToken, allowed: lan)
+            if !lan && usingUdpVideo && !manualBitrateSelected && currentBitrate > 12_000_000 {
+                applyBitrate(12_000_000, notify: true)
+            }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
 
         case .key(let code, let down, let mods):
@@ -776,7 +779,8 @@ final class Session {
             // goes out per second regardless of which path asked for it.
             keyframeRequests += 1
             let now = Date()
-            guard now.timeIntervalSince(lastForcedKeyframeAt) > 1.0 else { break }
+            let cooldown: TimeInterval = usingUdpVideo ? 0.2 : 1.0
+            guard now.timeIntervalSince(lastForcedKeyframeAt) > cooldown else { break }
             lastForcedKeyframeAt = now
             keyframesForced += 1
             encoder?.forceKeyframe()
@@ -1378,9 +1382,9 @@ final class Session {
                             self.encoder?.forceKeyframe()
                         }
                     },
-                    onLossFeedback: { [weak self] lossRatio in
+                    onLossFeedback: { [weak self] lossRatio, sentPackets in
                         guard let self, !self.isClosed else { return }
-                        self.handleUdpLossFeedback(lossRatio)
+                        self.handleUdpLossFeedback(lossRatio, sentPackets: sentPackets)
                     }
                 )
                 sendJson([
@@ -1632,38 +1636,42 @@ final class Session {
 
     /// Dynamic UDP bitrate adaptation driven by UdpVideoServer's 2s loss feedback:
     /// - loss >= 5%: step down 20% (floor 4 Mbps)
-    /// - loss < 1% for 3 consecutive windows (6s): step up 25% (ceiling autoBitrateTiers.last)
-    private func handleUdpLossFeedback(_ lossRatio: Double) {
+    /// - loss < 1% with real active traffic (sentPackets >= 60) for 3 consecutive windows (6s):
+    ///   step up 25% (ceiling 12 Mbps on non-LAN/WireGuard tunnels, 25 Mbps on LAN)
+    private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
         scrollBoostLock.lock()
         let boosting = scrollBoostActive
         scrollBoostLock.unlock()
         guard !boosting else { return }
 
+        let ceilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+
         if lossRatio >= 0.05 {
             udpCleanBitrateStreak = 0
             let floorBps = 4_000_000
-            let nextBps = max(floorBps, Int((Double(currentBitrate) * 0.80).rounded()))
+            let nextBps = max(floorBps, min(ceilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
             if nextBps != currentBitrate {
                 applyBitrate(nextBps, notify: true)
                 ConnectionLogger.shared.logStep(
                     sessionId: id.uuidString,
                     step: "udp_bitrate_adapt",
-                    detail: "dir=down loss=\(String(format: "%.3f", lossRatio)) bitrate=\(nextBps)"
+                    detail: "dir=down loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(nextBps)"
                 )
             }
         } else if lossRatio < 0.01 {
+            // Only ramp up on genuinely active traffic (avoid idle 1fps runaway on tunnels)
+            guard sentPackets >= 60 else { return }
             udpCleanBitrateStreak += 1
             if udpCleanBitrateStreak >= 3 {
                 udpCleanBitrateStreak = 0
-                let ceilingBps = Self.autoBitrateTiers.last ?? 25_000_000
                 let nextBps = min(ceilingBps, Int((Double(currentBitrate) * 1.25).rounded()))
                 if nextBps != currentBitrate {
                     applyBitrate(nextBps, notify: true)
                     ConnectionLogger.shared.logStep(
                         sessionId: id.uuidString,
                         step: "udp_bitrate_adapt",
-                        detail: "dir=up loss=\(String(format: "%.3f", lossRatio)) bitrate=\(nextBps)"
+                        detail: "dir=up loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(nextBps)"
                     )
                 }
             }

@@ -53,6 +53,7 @@ public sealed class UdpVideoReceiver : IDisposable
         public VideoCodecType Codec;
         public int FragCount;
         public int FecGroupSize;
+        public bool InterleavedFec;
         public long CreatedAtTick;
         public byte[]?[] Fragments = Array.Empty<byte[]?>();
         public int ReceivedCount;
@@ -218,7 +219,14 @@ public sealed class UdpVideoReceiver : IDisposable
 
     private async Task HandshakeAndKeepaliveLoopAsync(UdpClient udp, byte[] token, CancellationToken ct)
     {
-        byte[] helloPkt = BuildControlPacket(PacketHello, token);
+        // 21-byte HELLO: byte[20] = 0x01 advertises stride-interleaved XOR-FEC support
+        byte[] helloPkt = new byte[ControlPacketSize + 1];
+        helloPkt[0] = Magic0;
+        helloPkt[1] = Magic1;
+        helloPkt[2] = ProtocolVersion;
+        helloPkt[3] = PacketHello;
+        Buffer.BlockCopy(token, 0, helloPkt, 4, 16);
+        helloPkt[20] = 0x01;
         byte[] keepalivePkt = BuildControlPacket(PacketKeepalive, token);
         long startTick = Environment.TickCount64;
 
@@ -389,6 +397,7 @@ public sealed class UdpVideoReceiver : IDisposable
         byte fecGroupSize = buf[15];
         ushort payloadLen = BinaryPrimitives.ReadUInt16BigEndian(buf.AsSpan(16, 2));
         bool isEncrypted = (buf[18] & HeaderFlagEncrypted) != 0;
+        bool interleavedFec = (buf[19] & 0x01) != 0;
 
         if (fragCount == 0) return;
 
@@ -488,6 +497,7 @@ public sealed class UdpVideoReceiver : IDisposable
                     Codec = codec,
                     FragCount = fragCount,
                     FecGroupSize = fecGroupSize,
+                    InterleavedFec = interleavedFec,
                     CreatedAtTick = Environment.TickCount64,
                     Fragments = new byte[]?[fragCount],
                 };
@@ -614,21 +624,41 @@ public sealed class UdpVideoReceiver : IDisposable
                     bool shouldNack = assembly.FecGroupSize == 0;
                     if (!shouldNack && assembly.FecGroupSize > 0)
                     {
-                        int g = i / assembly.FecGroupSize;
-                        int start = g * assembly.FecGroupSize;
-                        int end = Math.Min(start + assembly.FecGroupSize, assembly.FragCount);
+                        int groupCount = (assembly.FragCount + assembly.FecGroupSize - 1) / assembly.FecGroupSize;
                         int groupMissing = 0;
-                        for (int j = start; j < end; j++)
+                        if (assembly.InterleavedFec)
                         {
-                            if (assembly.Fragments[j] == null)
+                            int g = i % groupCount;
+                            for (int j = g; j < assembly.FragCount; j += groupCount)
                             {
-                                groupMissing++;
-                                if (groupMissing >= 2) break;
+                                if (assembly.Fragments[j] == null)
+                                {
+                                    groupMissing++;
+                                    if (groupMissing >= 2) break;
+                                }
+                            }
+                            if (groupMissing >= 2 || fragIndex + 1 >= assembly.FragCount)
+                            {
+                                shouldNack = true;
                             }
                         }
-                        if (groupMissing >= 2 || fragIndex >= end)
+                        else
                         {
-                            shouldNack = true;
+                            int g = i / assembly.FecGroupSize;
+                            int start = g * assembly.FecGroupSize;
+                            int end = Math.Min(start + assembly.FecGroupSize, assembly.FragCount);
+                            for (int j = start; j < end; j++)
+                            {
+                                if (assembly.Fragments[j] == null)
+                                {
+                                    groupMissing++;
+                                    if (groupMissing >= 2) break;
+                                }
+                            }
+                            if (groupMissing >= 2 || fragIndex >= end)
+                            {
+                                shouldNack = true;
+                            }
                         }
                     }
 
@@ -723,58 +753,106 @@ public sealed class UdpVideoReceiver : IDisposable
         int groupSize = assembly.FecGroupSize;
         if (groupSize <= 0 || assembly.ParityGroups == null) return;
 
+        int groupCount = (assembly.FragCount + groupSize - 1) / groupSize;
+
         foreach (var kvp in assembly.ParityGroups)
         {
             int g = kvp.Key;
             byte[] parityBody = kvp.Value;
             if (parityBody.Length < 2) continue;
 
-            int start = g * groupSize;
-            if (start >= assembly.FragCount) continue;
-            int end = Math.Min(start + groupSize, assembly.FragCount);
-            if (end - start < 2) continue;
-
             int missingIdx = -1;
             int missingCount = 0;
-            for (int i = start; i < end; i++)
+            int memberCount = 0;
+
+            if (assembly.InterleavedFec)
             {
-                if (assembly.Fragments[i] == null)
+                if (g < 0 || g >= groupCount) continue;
+                for (int i = g; i < assembly.FragCount; i += groupCount)
                 {
-                    missingIdx = i;
-                    missingCount++;
-                    if (missingCount > 1) break;
+                    memberCount++;
+                    if (assembly.Fragments[i] == null)
+                    {
+                        missingIdx = i;
+                        missingCount++;
+                        if (missingCount > 1) break;
+                    }
                 }
-            }
+                if (memberCount < 2 || missingCount != 1 || missingIdx < 0) continue;
 
-            if (missingCount != 1 || missingIdx < 0) continue;
-
-            // First 2 bytes of parity body = XOR of each fragment's big-endian UInt16 payloadLen
-            ushort recoveredLen = BinaryPrimitives.ReadUInt16BigEndian(parityBody.AsSpan(0, 2));
-            for (int i = start; i < end; i++)
-            {
-                if (i == missingIdx) continue;
-                recoveredLen ^= (ushort)assembly.Fragments[i]!.Length;
-            }
-
-            int maxParityPayload = parityBody.Length - 2;
-            if (recoveredLen > maxParityPayload) continue;
-
-            byte[] recovered = new byte[recoveredLen];
-            Buffer.BlockCopy(parityBody, 2, recovered, 0, recoveredLen);
-
-            for (int i = start; i < end; i++)
-            {
-                if (i == missingIdx) continue;
-                byte[] other = assembly.Fragments[i]!;
-                int n = Math.Min(recoveredLen, other.Length);
-                for (int b = 0; b < n; b++)
+                ushort recoveredLen = BinaryPrimitives.ReadUInt16BigEndian(parityBody.AsSpan(0, 2));
+                for (int i = g; i < assembly.FragCount; i += groupCount)
                 {
-                    recovered[b] ^= other[b];
+                    if (i == missingIdx) continue;
+                    recoveredLen ^= (ushort)assembly.Fragments[i]!.Length;
                 }
-            }
 
-            assembly.Fragments[missingIdx] = recovered;
-            assembly.ReceivedCount++;
+                int maxParityPayload = parityBody.Length - 2;
+                if (recoveredLen > maxParityPayload) continue;
+
+                byte[] recovered = new byte[recoveredLen];
+                Buffer.BlockCopy(parityBody, 2, recovered, 0, recoveredLen);
+
+                for (int i = g; i < assembly.FragCount; i += groupCount)
+                {
+                    if (i == missingIdx) continue;
+                    byte[] other = assembly.Fragments[i]!;
+                    int n = Math.Min(recoveredLen, other.Length);
+                    for (int b = 0; b < n; b++)
+                    {
+                        recovered[b] ^= other[b];
+                    }
+                }
+
+                assembly.Fragments[missingIdx] = recovered;
+                assembly.ReceivedCount++;
+            }
+            else
+            {
+                int start = g * groupSize;
+                if (start >= assembly.FragCount) continue;
+                int end = Math.Min(start + groupSize, assembly.FragCount);
+                if (end - start < 2) continue;
+
+                for (int i = start; i < end; i++)
+                {
+                    if (assembly.Fragments[i] == null)
+                    {
+                        missingIdx = i;
+                        missingCount++;
+                        if (missingCount > 1) break;
+                    }
+                }
+
+                if (missingCount != 1 || missingIdx < 0) continue;
+
+                ushort recoveredLen = BinaryPrimitives.ReadUInt16BigEndian(parityBody.AsSpan(0, 2));
+                for (int i = start; i < end; i++)
+                {
+                    if (i == missingIdx) continue;
+                    recoveredLen ^= (ushort)assembly.Fragments[i]!.Length;
+                }
+
+                int maxParityPayload = parityBody.Length - 2;
+                if (recoveredLen > maxParityPayload) continue;
+
+                byte[] recovered = new byte[recoveredLen];
+                Buffer.BlockCopy(parityBody, 2, recovered, 0, recoveredLen);
+
+                for (int i = start; i < end; i++)
+                {
+                    if (i == missingIdx) continue;
+                    byte[] other = assembly.Fragments[i]!;
+                    int n = Math.Min(recoveredLen, other.Length);
+                    for (int b = 0; b < n; b++)
+                    {
+                        recovered[b] ^= other[b];
+                    }
+                }
+
+                assembly.Fragments[missingIdx] = recovered;
+                assembly.ReceivedCount++;
+            }
         }
     }
 

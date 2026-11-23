@@ -90,6 +90,7 @@ final class UdpVideoServer {
         var fecLevel: FecLevel = .light
         var deltaFecGroupSize: UInt8 = 8
         var keyFecGroupSize: UInt8 = 4
+        var supportsInterleavedFec: Bool = false
 
         // 128-packet ring buffer keyed by (UInt64(frameId) << 8) | UInt64(fragIndex)
         var ringKeys: [UInt64] = Array(repeating: 0, count: UdpVideoServer.ringBufferCapacity)
@@ -331,6 +332,7 @@ final class UdpVideoServer {
         let symmetricKey = session.symmetricKey
         let deltaFec = session.deltaFecGroupSize
         let keyFec = session.keyFecGroupSize
+        let supportsInterleavedFec = session.supportsInterleavedFec
         let pacerHasBacklog = session.pacingReadIndex < session.pacingQueue.count
         lock.unlock()
 
@@ -347,6 +349,8 @@ final class UdpVideoServer {
         let flags: UInt8 = (isKeyframe ? 0x01 : 0x00) | (isHEVC ? 0x02 : 0x00)
         let fragCountU8 = UInt8(fragCount)
         let encryptedFlag: UInt8 = (symmetricKey != nil) ? 0x01 : 0x00
+        let useInterleavedFec = supportsInterleavedFec && fecGroupSize > 0 && fragCount > Int(fecGroupSize)
+        let fecFlags: UInt8 = useInterleavedFec ? 0x01 : 0x00
 
         // Reusable buffer: 20B header + 2B length XOR + 1200B max payload + 16B GCM tag
         var packetBuf = [UInt8](repeating: 0, count: Self.headerSize + 2 + Self.maxFragmentPayload + Self.gcmTagSize)
@@ -380,7 +384,8 @@ final class UdpVideoServer {
                     fragCount: fragCountU8,
                     fecGroupSize: fecGroupSize,
                     payloadLen: UInt16(fragLen),
-                    encFlag: encryptedFlag
+                    encFlag: encryptedFlag,
+                    fecFlags: fecFlags
                 )
 
                 let wireLen: Int
@@ -426,12 +431,25 @@ final class UdpVideoServer {
                 var parityBody = [UInt8](repeating: 0, count: 2 + Self.maxFragmentPayload)
 
                 for g in 0..<groupCount {
-                    let start = g * groupSz
-                    let end = min(start + groupSz, fragCount)
-                    guard end - start >= 2 else { continue }
+                    var members: [Int] = []
+                    members.reserveCapacity(groupSz)
+                    if useInterleavedFec {
+                        var idx = g
+                        while idx < fragCount {
+                            members.append(idx)
+                            idx += groupCount
+                        }
+                    } else {
+                        let start = g * groupSz
+                        let end = min(start + groupSz, fragCount)
+                        for idx in start..<end {
+                            members.append(idx)
+                        }
+                    }
+                    guard members.count >= 2 else { continue }
 
                     var maxLenInGroup = 0
-                    for idx in start..<end {
+                    for idx in members {
                         let offset = idx * Self.maxFragmentPayload
                         let flen = min(Self.maxFragmentPayload, totalLen - offset)
                         if flen > maxLenInGroup { maxLenInGroup = flen }
@@ -443,7 +461,7 @@ final class UdpVideoServer {
                     }
 
                     var xorLen: UInt16 = 0
-                    for idx in start..<end {
+                    for idx in members {
                         let offset = idx * Self.maxFragmentPayload
                         let flen = min(Self.maxFragmentPayload, totalLen - offset)
                         xorLen ^= UInt16(flen)
@@ -466,7 +484,8 @@ final class UdpVideoServer {
                         fragCount: fragCountU8,
                         fecGroupSize: fecGroupSize,
                         payloadLen: UInt16(bodyLen),
-                        encFlag: encryptedFlag
+                        encFlag: encryptedFlag,
+                        fecFlags: fecFlags
                     )
 
                     let wireLen: Int
@@ -583,7 +602,8 @@ final class UdpVideoServer {
         fragCount: UInt8,
         fecGroupSize: UInt8,
         payloadLen: UInt16,
-        encFlag: UInt8
+        encFlag: UInt8,
+        fecFlags: UInt8 = 0
     ) {
         buf[0]  = Self.magic0
         buf[1]  = Self.magic1
@@ -604,7 +624,7 @@ final class UdpVideoServer {
         buf[16] = UInt8((payloadLen >> 8) & 0xFF)
         buf[17] = UInt8(payloadLen & 0xFF)
         buf[18] = encFlag
-        buf[19] = 0x00
+        buf[19] = fecFlags
     }
 
     private func sendPacket(
@@ -678,7 +698,8 @@ final class UdpVideoServer {
 
             switch packetType {
             case Self.packetHello:
-                handleHello(fd: fd, token: token, srcAddr: srcAddr, srcLen: srcLen)
+                let interleaved = (n >= 21) && ((recvBuf[20] & 0x01) != 0)
+                handleHello(fd: fd, token: token, interleavedFec: interleaved, srcAddr: srcAddr, srcLen: srcLen)
             case Self.packetKeepalive:
                 handleKeepalive(token: token, srcAddr: srcAddr, srcLen: srcLen)
             case Self.packetNack:
@@ -691,13 +712,14 @@ final class UdpVideoServer {
         }
     }
 
-    private func handleHello(fd: Int32, token: Data, srcAddr: sockaddr_storage, srcLen: socklen_t) {
+    private func handleHello(fd: Int32, token: Data, interleavedFec: Bool, srcAddr: sockaddr_storage, srcLen: socklen_t) {
         var callbackToFire: ((Bool) -> Void)?
         lock.lock()
         if let session = sessions[token] {
             session.peerAddr = srcAddr
             session.peerLen = srcLen
             session.lastKeepaliveAt = Date()
+            session.supportsInterleavedFec = interleavedFec
             if !session.isActive {
                 session.isActive = true
                 callbackToFire = session.onActivated

@@ -253,6 +253,20 @@ export class WebRTCClient {
       if (!codecs || codecs.length === 0) return
       if (typeof transceiver.setCodecPreferences !== 'function') return
 
+      // Strip RED/ULPFEC/FlexFEC: on congested WAN/WireGuard tunnels, WebRTC
+      // ULPFEC lacks overuse suppression and amplifies packet overhead by
+      // 50-100%, ballooning jitter-buffer delay. Keep primary video codecs +
+      // video/rtx for fast NACK recovery only.
+      const filtered = codecs.filter((c) => {
+        const mime = c.mimeType.toLowerCase()
+        return (
+          mime !== 'video/red' &&
+          mime !== 'video/ulpfec' &&
+          !mime.startsWith('video/flexfec')
+        )
+      })
+      if (filtered.length === 0) return
+
       const preferH265 = preferredCodec === 'h265'
       const rank = (codec: RTCRtpCodec): number => {
         const mime = codec.mimeType.toLowerCase()
@@ -274,20 +288,11 @@ export class WebRTCClient {
         if (mime === 'video/av1') return 5
         if (mime === 'video/vp8') return 7
         if (mime === 'video/rtx') return 8
-        if (mime === 'video/flexfec-03' || mime.startsWith('video/flexfec')) return 9
-        if (mime === 'video/red') return 10
-        if (mime === 'video/ulpfec') return 11
         return 6
       }
 
-      const sorted = [...codecs].sort((a, b) => rank(a) - rank(b))
+      const sorted = [...filtered].sort((a, b) => rank(a) - rank(b))
       transceiver.setCodecPreferences(sorted)
-      const fecCodecs = sorted
-        .filter((c) => {
-          const r = rank(c)
-          return r >= 9 && r <= 11
-        })
-        .map((c) => c.mimeType)
       console.log(
         '[WebRTC] codec preferences applied:',
         sorted
@@ -295,7 +300,7 @@ export class WebRTCClient {
           .slice(0, 5)
           .map((c) => `${c.mimeType}${c.sdpFmtpLine ? `(${c.sdpFmtpLine})` : ''}`)
           .join(', '),
-        `| fec=${fecCodecs.length > 0 ? fecCodecs.join(',') : 'none'}`
+        '| fec=disabled(rtx-only)'
       )
     } catch (e) {
       console.warn('[WebRTC] setCodecPreferences failed:', e)

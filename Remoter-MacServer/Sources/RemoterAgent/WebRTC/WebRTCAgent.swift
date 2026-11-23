@@ -85,15 +85,15 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     // when RTT spikes (e.g. >250ms) or loss >= 8%, temporarily release the 1Mbps floor
     // down to 350kbps AND cap RTP fps to 24fps so GCC can drain the congested queue
     // instead of pumping 57fps into a 1.5s tunnel and triggering a 7.5s PLI freeze storm.
-    private static let congestionFloorBps: Int = 350_000
-    private static let congestionMaxFps: Int = 24
+    private static let congestionFloorBps: Int = 1_200_000
+    private static let congestionMaxFps: Int = 30
     private static let congestionImmediateRttMs: Double = 250.0
     private static let congestionSustainedRttMs: Double = 150.0
     private static let congestionSustainedLoss: Double = 0.05
     private static let congestionEnterStreakRequired: Int = 2   // 1.0s at 0.5s poll (fast enter)
-    private static let congestionClearRttMs: Double = 60.0
-    private static let congestionClearLoss: Double = 0.02
-    private static let congestionClearStreakRequired: Int = 6   // 3.0s at 0.5s poll (slow exit)
+    private static let congestionClearRttMs: Double = 80.0
+    private static let congestionClearLoss: Double = 0.03
+    private static let congestionClearStreakRequired: Int = 4   // 2.0s at 0.5s poll (fast recovery)
     private var congestionGuardActive = false
     private var congestionEnterStreak = 0
     private var congestionClearStreak = 0
@@ -161,7 +161,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
     private static let probeStepDownRttThresholdMs = 25.0
     private static let probeStepDownLossFraction = 0.02
     private static let probeDemoteCooldownSec = 10.0
-    private static let tunnelFloorBps: Int = 6_000_000
+    private static let tunnelFloorBps: Int = 2_500_000
     private static let tunnelCapBps: Int = 10_000_000
     /// Set by Session: true when the client is off-LAN AND bitrate is on auto.
     /// The auto ladder asks for its top tier (25M) as soon as RTP is up, which
@@ -791,7 +791,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Logs which FEC mechanisms (`flexfec-03`, `red+ulpfec`, or `none`) were negotiated in Answer `m=video`.
+    /// Logs which FEC mechanisms (`flexfec-03`, `red+ulpfec`, or `none`) remain active in Answer `m=video`.
     private static func logNegotiatedFEC(from sdp: String) {
         let lineSep = sdp.contains("\r\n") ? "\r\n" : "\n"
         let lines = sdp.components(separatedBy: lineSep)
@@ -799,6 +799,8 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "fec_negotiated", detail: "none")
             return
         }
+        let mParts = lines[videoMLineIdx].split(separator: " ").map(String.init)
+        let activePTs: Set<String> = mParts.count > 3 ? Set(mParts[3...]) : []
         let nextMLineIdx = lines[(videoMLineIdx + 1)...].firstIndex(where: { $0.hasPrefix("m=") }) ?? lines.endIndex
         var hasFlexFec = false
         var hasRed = false
@@ -809,8 +811,10 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             let body = line.dropFirst("a=rtpmap:".count)
             let comps = body.split(separator: " ", maxSplits: 1)
             guard comps.count == 2 else { continue }
+            let pt = String(comps[0])
+            guard activePTs.contains(pt) else { continue }
             let codec = comps[1].split(separator: "/").first.map { String($0).lowercased() } ?? ""
-            if codec == "flexfec-03" { hasFlexFec = true }
+            if codec == "flexfec-03" || codec.hasPrefix("flexfec") { hasFlexFec = true }
             else if codec == "red" { hasRed = true }
             else if codec == "ulpfec" { hasUlpFec = true }
         }
@@ -952,6 +956,20 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             }
         }
 
+        // Strip congestion-amplifying FEC payload types (`red`, `ulpfec`, `flexfec-03`)
+        // and any `rtx` associated with them, keeping primary video codecs + their `rtx`
+        // for fast NACK retransmission without +50–100% FEC overhead during tunnel congestion.
+        let strippedFecPTs: Set<String> = Set(payloadTypes.filter { pt in
+            let codec = rtpmap[pt] ?? ""
+            return codec == "red" || codec == "ulpfec" || codec == "flexfec-03" || codec.hasPrefix("flexfec")
+        })
+        var strippedPTs = strippedFecPTs
+        for fecPt in strippedFecPTs {
+            if let rtxList = rtxForApt[fecPt] {
+                strippedPTs.formUnion(rtxList)
+            }
+        }
+
         let pref = preferred.lowercased()
         let isH264High: (String) -> Bool = { pt in
             guard rtpmap[pt] == "h264", let p = fmtp[pt] else { return false }
@@ -964,11 +982,6 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
 
         func priority(for pt: String) -> Int {
             let codec = rtpmap[pt] ?? ""
-            // Preserve all FEC & retransmission codecs after primary video codecs,
-            // preferring FlexFEC-03 ahead of RED + ULPFEC when both are supported.
-            if codec == "flexfec-03" { return 90 }
-            if codec == "red" { return 91 }
-            if codec == "ulpfec" { return 92 }
             if codec == "rtx" { return 95 }
             if codec == "vp8" { return 80 }
 
@@ -1018,7 +1031,7 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             }
         }
 
-        let primaryPTs = payloadTypes.filter { !rtxSet.contains($0) }
+        let primaryPTs = payloadTypes.filter { !rtxSet.contains($0) && !strippedPTs.contains($0) }
         let sortedPrimary = primaryPTs.enumerated().sorted { a, b in
             let pa = priority(for: a.element)
             let pb = priority(for: b.element)
@@ -1030,16 +1043,33 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
         for pt in sortedPrimary {
             ordered.append(pt)
             if let rtxList = rtxForApt[pt] {
-                ordered.append(contentsOf: rtxList)
+                ordered.append(contentsOf: rtxList.filter { !strippedPTs.contains($0) })
             }
         }
-        // Append any unassociated RTX payload types if present
+        // Append any remaining unassociated non-stripped RTX payload types if present
         let orderedSet = Set(ordered)
-        for pt in payloadTypes where !orderedSet.contains(pt) {
+        for pt in payloadTypes where !orderedSet.contains(pt) && !strippedPTs.contains(pt) {
             ordered.append(pt)
         }
 
+        guard !ordered.isEmpty else { return sdp }
         lines[videoMLineIdx] = (Array(header) + ordered).joined(separator: " ")
+
+        // Remove a=rtpmap / a=fmtp / a=rtcp-fb lines belonging to stripped FEC/RTX PTs
+        if !strippedPTs.isEmpty {
+            var filtered: [String] = []
+            filtered.reserveCapacity(lines.count)
+            for (idx, line) in lines.enumerated() {
+                if idx > videoMLineIdx && idx < nextMLineIdx {
+                    if let pt = Self.attributePayloadType(in: line), strippedPTs.contains(pt) {
+                        continue
+                    }
+                }
+                filtered.append(line)
+            }
+            lines = filtered
+        }
+
         if let firstPT = ordered.first {
             ConnectionLogger.shared.logStep(
                 sessionId: "webrtc",
@@ -1048,6 +1078,18 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
             )
         }
         return lines.joined(separator: lineSep)
+    }
+
+    private static func attributePayloadType(in line: String) -> String? {
+        for prefix in ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"] {
+            if line.hasPrefix(prefix) {
+                let body = line.dropFirst(prefix.count)
+                if let pt = body.split(separator: " ", maxSplits: 1).first {
+                    return String(pt)
+                }
+            }
+        }
+        return nil
     }
 }
 

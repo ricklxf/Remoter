@@ -59,6 +59,7 @@ public sealed class DesktopForm : Form
     private int _pendingResizeH;
     private bool _firstFrameLogged;
     private long _videoRecvCount;
+    private int _videoQueueDepth;
     private long _lastStatsLogTick;
 
     private VideoCodecType _activeDecoderCodec = VideoCodecType.Jpeg;
@@ -393,6 +394,58 @@ public sealed class DesktopForm : Form
             {
                 while (!_disposed && reader.TryRead(out var pkt))
                 {
+                    int remaining = Interlocked.Decrement(ref _videoQueueDepth);
+
+                    // Anti-lag backlog guard: if decode falls behind (e.g. 2K@60fps SW decode),
+                    // NEVER accumulate multi-second queue latency. Fast-forward to the newest
+                    // keyframe in queue, or drop stale P-frames & request a fresh IDR if >= 10 deep.
+                    if (remaining >= 6 && pkt.Codec != VideoCodecType.Jpeg)
+                    {
+                        var drained = new List<VideoFramePacket>(remaining + 1) { pkt };
+                        while (reader.TryRead(out var next))
+                        {
+                            Interlocked.Decrement(ref _videoQueueDepth);
+                            drained.Add(next);
+                        }
+
+                        int lastKfIdx = -1;
+                        for (int i = drained.Count - 1; i >= 0; i--)
+                        {
+                            if (drained[i].IsKeyframe)
+                            {
+                                lastKfIdx = i;
+                                break;
+                            }
+                        }
+
+                        if (lastKfIdx >= 0)
+                        {
+                            for (int i = lastKfIdx; i < drained.Count && !_disposed; i++)
+                            {
+                                ProcessVideoFrame(drained[i]);
+                            }
+                        }
+                        else if (drained.Count >= 10)
+                        {
+                            lock (_renderLock)
+                            {
+                                if (_useFfmpeg) _ffmpegDecoder.Flush();
+                                else _mfDecoder.Flush();
+                            }
+                            _conn.SendRequestKeyframe();
+                            LogVideo($"Video queue backlog ({drained.Count} frames) flushed -> requesting fresh keyframe");
+                        }
+                        else
+                        {
+                            foreach (var d in drained)
+                            {
+                                if (_disposed) break;
+                                ProcessVideoFrame(d);
+                            }
+                        }
+                        continue;
+                    }
+
                     ProcessVideoFrame(pkt);
                 }
             }
@@ -944,7 +997,10 @@ public sealed class DesktopForm : Form
         if (_disposed) return;
         Interlocked.Increment(ref _videoRecvCount);
         // Non-blocking enqueue to dedicated MTA video thread (never stalls WebSocket receive loop)
-        _videoChannel.Writer.TryWrite(pkt);
+        if (_videoChannel.Writer.TryWrite(pkt))
+        {
+            Interlocked.Increment(ref _videoQueueDepth);
+        }
     }
 
     private void OnAudioFrameReceived(AudioFramePacket pkt)
@@ -964,6 +1020,10 @@ public sealed class DesktopForm : Form
         _streamInfo = info;
         _remoteWidth = Math.Max(1, info.Width);
         _remoteHeight = Math.Max(1, info.Height);
+
+        // Re-advertise codec_caps on reconnect so server upgrades back to HEVC (H.265)
+        _codecCapsSent = false;
+        SendCodecCapsOnce();
 
         SafeBeginInvoke(() =>
         {

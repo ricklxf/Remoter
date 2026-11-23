@@ -6,11 +6,12 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $outDir = Join-Path (Split-Path -Parent $scriptDir) "libs\ffmpeg"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-$zipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-shared-7.1.zip"
-$tmpZip = Join-Path $env:TEMP "remoter-ffmpeg-7.1-shared.zip"
-$tmpExtract = Join-Path $env:TEMP "remoter-ffmpeg-7.1-extract"
+$zipUrl = "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.zip"
+$tmpZip = Join-Path $env:TEMP "remoter-ffmpeg-7.1.1-shared.zip"
+$tmpExtract = Join-Path $env:TEMP "remoter-ffmpeg-7.1.1-extract"
 
-Write-Host "Downloading FFmpeg 7.1 shared (LGPL win64)..."
+Write-Host "Downloading FFmpeg 7.1.1 shared (GyanD codexffmpeg win64)..."
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest -Uri $zipUrl -OutFile $tmpZip -UseBasicParsing
 
 if (Test-Path $tmpExtract) { Remove-Item -Recurse -Force $tmpExtract }

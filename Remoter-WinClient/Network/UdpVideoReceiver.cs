@@ -37,7 +37,8 @@ public sealed class UdpVideoReceiver : IDisposable
     private const int GcmTagSize = 16;
     private const int MaxNackIndices = 16;
     private const int MaxInFlightFrames = 8;
-    private const int FrameTimeoutMs = 80;
+    private const int FrameTimeoutMs = 120;
+    private const int TailNackDelayMs = 25;
     private const int CleanupIntervalMs = 20;
     private const int ReceiveBufferBytes = 4 * 1024 * 1024;
     private const int HelloRetryCount = 3;
@@ -64,6 +65,7 @@ public sealed class UdpVideoReceiver : IDisposable
 
     private readonly object _lock = new();
     private readonly Dictionary<uint, FrameAssembly> _frames = new();
+    private readonly HashSet<uint> _wholeFrameNacked = new();
 
     private UdpClient? _udp;
     private CancellationTokenSource? _cts;
@@ -124,6 +126,7 @@ public sealed class UdpVideoReceiver : IDisposable
             _windowRecvBytes = 0;
             _lastFeedbackSentTick = Environment.TickCount64;
             _frames.Clear();
+            _wholeFrameNacked.Clear();
 
             var udp = new UdpClient();
             udp.Client.ReceiveBufferSize = ReceiveBufferBytes;
@@ -191,6 +194,7 @@ public sealed class UdpVideoReceiver : IDisposable
             _windowRecvBytes = 0;
             _lastFeedbackSentTick = Environment.TickCount64;
             _frames.Clear();
+            _wholeFrameNacked.Clear();
         }
 
         try { cts?.Cancel(); } catch { }
@@ -309,6 +313,8 @@ public sealed class UdpVideoReceiver : IDisposable
             {
                 int dropped = 0;
                 bool retryKeyframe = false;
+                List<byte[]>? tailNacks = null;
+                UdpClient? nackUdp = null;
                 long now = Environment.TickCount64;
                 lock (_lock)
                 {
@@ -317,11 +323,37 @@ public sealed class UdpVideoReceiver : IDisposable
                         List<uint>? expired = null;
                         foreach (var kvp in _frames)
                         {
-                            int timeout = kvp.Value.IsKeyframe ? 180 : FrameTimeoutMs;
-                            if (now - kvp.Value.CreatedAtTick > timeout)
+                            var asm = kvp.Value;
+                            int timeout = asm.IsKeyframe ? 200 : FrameTimeoutMs;
+                            long age = now - asm.CreatedAtTick;
+                            if (age > timeout)
                             {
                                 expired ??= new List<uint>();
                                 expired.Add(kvp.Key);
+                            }
+                            else if (!asm.IsComplete && age >= TailNackDelayMs && _udp != null && _token != null)
+                            {
+                                // Proactive tail-loss NACK at 25ms (well before 120ms timeout):
+                                // catches lost tail fragments even when no subsequent frame arrives.
+                                List<byte>? missing = null;
+                                for (int i = 0; i < asm.FragCount; i++)
+                                {
+                                    if (asm.Fragments[i] != null) continue;
+                                    byte idx = (byte)i;
+                                    if (asm.NackedFrags != null && asm.NackedFrags.Contains(idx)) continue;
+                                    missing ??= new List<byte>();
+                                    missing.Add(idx);
+                                    if (missing.Count >= MaxNackIndices) break;
+                                }
+                                if (missing != null && missing.Count > 0)
+                                {
+                                    asm.NackedFrags ??= new HashSet<byte>();
+                                    foreach (byte idx in missing) asm.NackedFrags.Add(idx);
+                                    _windowNackPackets += missing.Count;
+                                    tailNacks ??= new List<byte[]>();
+                                    tailNacks.Add(BuildNackPacket(_token, asm.FrameId, missing));
+                                    nackUdp = _udp;
+                                }
                             }
                         }
                         if (expired != null)
@@ -344,6 +376,13 @@ public sealed class UdpVideoReceiver : IDisposable
                     {
                         _lastAwaitingKeyframeRetryTick = now;
                         retryKeyframe = true;
+                    }
+                }
+                if (tailNacks != null && nackUdp != null)
+                {
+                    foreach (var pkt in tailNacks)
+                    {
+                        _ = SendNackAsync(nackUdp, pkt);
                     }
                 }
                 if (dropped > 0 || retryKeyframe)
@@ -444,7 +483,7 @@ public sealed class UdpVideoReceiver : IDisposable
         VideoCodecType codec = (flags & 0x02) != 0 ? VideoCodecType.H265 : VideoCodecType.H264;
 
         List<VideoFramePacket>? completedPackets = null;
-        byte[]? nackPacket = null;
+        List<byte[]>? nackPackets = null;
         UdpClient? nackUdp = null;
         int droppedCount = 0;
 
@@ -502,6 +541,53 @@ public sealed class UdpVideoReceiver : IDisposable
                     Fragments = new byte[]?[fragCount],
                 };
                 _frames[frameId] = assembly;
+
+                // Immediate Gap & Tail-Fragment NACK: when frameId jumps past expected (_lastCompletedFrameId + 1),
+                // immediately NACK missing tail fragments of older in-flight frames OR whole missing 1-packet frames
+                // (count=0) so they recover in 1 RTT (~10ms) instead of timing out and freezing for a keyframe!
+                if (_hasCompletedFrame && !_awaitingKeyframe && _udp != null && _token != null)
+                {
+                    int gap = unchecked((int)(frameId - _lastCompletedFrameId));
+                    if (gap > 1 && gap <= 5)
+                    {
+                        for (int step = 1; step < gap; step++)
+                        {
+                            uint missingFrameId = unchecked(_lastCompletedFrameId + (uint)step);
+                            if (_frames.TryGetValue(missingFrameId, out var prevAsm))
+                            {
+                                if (prevAsm.IsComplete) continue;
+                                List<byte>? prevMissing = null;
+                                for (int fi = 0; fi < prevAsm.FragCount; fi++)
+                                {
+                                    if (prevAsm.Fragments[fi] != null) continue;
+                                    byte fIdx = (byte)fi;
+                                    if (prevAsm.NackedFrags != null && prevAsm.NackedFrags.Contains(fIdx)) continue;
+                                    prevMissing ??= new List<byte>();
+                                    prevMissing.Add(fIdx);
+                                    if (prevMissing.Count >= MaxNackIndices) break;
+                                }
+                                if (prevMissing != null && prevMissing.Count > 0)
+                                {
+                                    prevAsm.NackedFrags ??= new HashSet<byte>();
+                                    foreach (byte fIdx in prevMissing) prevAsm.NackedFrags.Add(fIdx);
+                                    _windowNackPackets += prevMissing.Count;
+                                    nackPackets ??= new List<byte[]>();
+                                    nackPackets.Add(BuildNackPacket(_token, missingFrameId, prevMissing));
+                                    nackUdp = _udp;
+                                }
+                            }
+                            else if (_wholeFrameNacked.Add(missingFrameId))
+                            {
+                                if (_wholeFrameNacked.Count > 64) _wholeFrameNacked.Clear();
+                                // Entire small/1-fragment frame was dropped: send count=0 whole-frame NACK!
+                                _windowNackPackets++;
+                                nackPackets ??= new List<byte[]>();
+                                nackPackets.Add(BuildWholeFrameNackPacket(_token, missingFrameId));
+                                nackUdp = _udp;
+                            }
+                        }
+                    }
+                }
             }
 
             if (assembly.IsComplete)
@@ -675,15 +761,19 @@ public sealed class UdpVideoReceiver : IDisposable
                     _windowNackPackets += missing.Count;
                     assembly.NackedFrags ??= new HashSet<byte>();
                     foreach (byte idx in missing) assembly.NackedFrags.Add(idx);
-                    nackPacket = BuildNackPacket(_token, frameId, missing);
+                    nackPackets ??= new List<byte[]>();
+                    nackPackets.Add(BuildNackPacket(_token, frameId, missing));
                     nackUdp = _udp;
                 }
             }
         }
 
-        if (nackPacket != null && nackUdp != null)
+        if (nackPackets != null && nackUdp != null)
         {
-            _ = SendNackAsync(nackUdp, nackPacket);
+            foreach (var pkt in nackPackets)
+            {
+                _ = SendNackAsync(nackUdp, pkt);
+            }
         }
 
         for (int i = 0; i < droppedCount; i++)
@@ -710,6 +800,7 @@ public sealed class UdpVideoReceiver : IDisposable
                 break;
             }
             _frames.Remove(nextId);
+            _wholeFrameNacked.Remove(nextId);
             _lastCompletedFrameId = nextId;
             completedPackets ??= new List<VideoFramePacket>();
             completedPackets.Add(new VideoFramePacket(
@@ -728,6 +819,19 @@ public sealed class UdpVideoReceiver : IDisposable
             await udp.SendAsync(nackPacket).ConfigureAwait(false);
         }
         catch { }
+    }
+
+    private static byte[] BuildWholeFrameNackPacket(byte[] token, uint frameId)
+    {
+        byte[] pkt = new byte[4 + 16 + 4 + 1];
+        pkt[0] = Magic0;
+        pkt[1] = Magic1;
+        pkt[2] = ProtocolVersion;
+        pkt[3] = PacketNack;
+        Buffer.BlockCopy(token, 0, pkt, 4, 16);
+        BinaryPrimitives.WriteUInt32BigEndian(pkt.AsSpan(20, 4), frameId);
+        pkt[24] = 0; // count == 0 -> retransmit all cached fragments of frameId
+        return pkt;
     }
 
     private static byte[] BuildNackPacket(byte[] token, uint frameId, List<byte> missingIndices)

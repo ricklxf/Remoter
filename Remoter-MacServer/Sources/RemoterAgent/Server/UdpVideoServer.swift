@@ -760,7 +760,8 @@ final class UdpVideoServer {
     }
 
     /// Handles incoming 0x12 NACK:
-    /// [0x52, 0x55, 0x01, 0x12] + 16B token + frameId(BE4) + count(1..16) + count * fragIndex
+    /// [0x52, 0x55, 0x01, 0x12] + 16B token + frameId(BE4) + count(0..16) + count * fragIndex
+    /// When count == 0, requests whole-frame retransmission (for lost 1-fragment / small P-frames).
     private func handleNack(
         fd: Int32,
         token: Data,
@@ -775,27 +776,40 @@ final class UdpVideoServer {
                               (UInt32(buf[22]) << 8) |
                               UInt32(buf[23])
         let count = Int(buf[24])
-        guard count >= 1, count <= 16, length >= 25 + count else { return }
+        guard count >= 0, count <= 16, length >= 25 + count else { return }
 
         var toRetransmit: [Data] = []
-        toRetransmit.reserveCapacity(count)
+        toRetransmit.reserveCapacity(count == 0 ? 8 : count)
         var destAddr = srcAddr
         var destLen = srcLen
         var totalRetransmits: UInt64 = 0
 
         lock.lock()
         if let session = sessions[token], session.isActive {
-            session.windowNackPackets += UInt64(count)
             session.hasEverSeenNack = true
             if let boundAddr = session.peerAddr {
                 destAddr = boundAddr
                 destLen = session.peerLen
             }
-            for idx in 0..<count {
-                let fragIndex = buf[25 + idx]
-                let key = (UInt64(frameId) << 8) | UInt64(fragIndex)
-                if let cached = session.lookupInRing(key: key) {
-                    toRetransmit.append(cached)
+            if count == 0 {
+                // Whole-frame NACK: retransmit all cached fragments of frameId (up to 16)
+                for fragIdx in 0..<16 {
+                    let key = (UInt64(frameId) << 8) | UInt64(fragIdx)
+                    if let cached = session.lookupInRing(key: key) {
+                        toRetransmit.append(cached)
+                    } else {
+                        break
+                    }
+                }
+                session.windowNackPackets += UInt64(max(1, toRetransmit.count))
+            } else {
+                session.windowNackPackets += UInt64(count)
+                for idx in 0..<count {
+                    let fragIndex = buf[25 + idx]
+                    let key = (UInt64(frameId) << 8) | UInt64(fragIndex)
+                    if let cached = session.lookupInRing(key: key) {
+                        toRetransmit.append(cached)
+                    }
                 }
             }
             if !toRetransmit.isEmpty {

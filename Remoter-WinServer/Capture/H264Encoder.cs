@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Vortice.Direct3D11;
 using Vortice.MediaFoundation;
 
 namespace RemoterWin;
@@ -17,10 +18,14 @@ public enum WinVideoCodec
 // MFTEnumEx picks whatever hardware MFT the driver exposes (NVENC/QuickSync/
 // AMD VCE) automatically; if HEVC is requested and unavailable, falls back
 // automatically to hardware/software H.264 so encoding never hard-fails.
+// When a multithread-protected D3D11 device is provided, attempts to bind
+// IMFDXGIDeviceManager + ARGB32 input for DXGI GPU zero-copy encoding, falling
+// back seamlessly to the CPU BGRA→NV12 path if the driver rejects it.
 sealed class H264Encoder : IDisposable
 {
     private IMFTransform?   _transform;
     private ICodecAPI?      _codecApi;
+    private nint            _dxgiDeviceManagerPtr;
     private int             _width, _height;
     private int             _fps = 60;
     private int             _bitrateBps = 8_000_000;
@@ -30,6 +35,7 @@ sealed class H264Encoder : IDisposable
     private readonly object _lock = new();
 
     public bool IsHardware { get; private set; }
+    public bool IsGpuZeroCopy { get; private set; }
     public WinVideoCodec ActiveCodec { get; private set; } = WinVideoCodec.H264;
     public int CurrentBitrateBps => _bitrateBps;
     public int CurrentFps => _fps;
@@ -37,6 +43,19 @@ sealed class H264Encoder : IDisposable
     private static readonly Guid MftCategoryVideoEncoder = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
     private static readonly Guid MfMediaTypeVideo         = new("73646976-0000-0010-8000-00aa00389b71");
     private static readonly Guid MFVideoFormat_HEVC       = new(0x43564548, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71);
+    private static readonly Guid IID_ID3D11Texture2D      = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+    private const int MFT_MESSAGE_SET_D3D_MANAGER         = 0x00000002;
+
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    private static extern int MFCreateDXGIDeviceManager(out uint resetToken, out nint ppDeviceManager);
+
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    private static extern int MFCreateDXGISurfaceBuffer(
+        ref Guid riid,
+        nint punkSurface,
+        uint uSubresourceIndex,
+        [MarshalAs(UnmanagedType.Bool)] bool fBottomUpWhenLinear,
+        out nint ppBuffer);
 
     // MF_MT_* attribute GUIDs (mfapi.h)
     private static readonly Guid MF_MT_MAJOR_TYPE           = new("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
@@ -72,7 +91,7 @@ sealed class H264Encoder : IDisposable
     private const uint MFT_ENUM_FLAG_SORTANDFILTER = 0x00000040;
 
     // 调用方需在进程启动时调一次 MediaFactory.MFStartup（main 入口已调用）。
-    public void Initialize(int width, int height, int fps, int bitrateBps, WinVideoCodec codec = WinVideoCodec.H264)
+    public void Initialize(int width, int height, int fps, int bitrateBps, WinVideoCodec codec = WinVideoCodec.H264, ID3D11Device? d3d11Device = null)
     {
         lock (_lock)
         {
@@ -82,12 +101,13 @@ sealed class H264Encoder : IDisposable
             _bitrateBps = Math.Clamp(bitrateBps, 500_000, 50_000_000);
             _frameDuration100ns = 10_000_000L / _fps;
             _nv12Buf = new byte[width * height * 3 / 2];
+            IsGpuZeroCopy = false;
 
             bool ok = false;
             if (codec == WinVideoCodec.H265)
             {
-                ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H265, hardware: true)
-                  || TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H265, hardware: false);
+                ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H265, hardware: true, d3d11Device)
+                  || TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H265, hardware: false, null);
                 if (!ok)
                 {
                     AppLog.Write("[H264Encoder] no HEVC encoder MFT available, falling back to H.264");
@@ -96,11 +116,11 @@ sealed class H264Encoder : IDisposable
 
             if (!ok)
             {
-                ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H264, hardware: true);
+                ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H264, hardware: true, d3d11Device);
                 if (!ok)
                 {
                     AppLog.Write("[H264Encoder] no hardware H.264 MFT found, falling back to software H.264 encoder");
-                    ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H264, hardware: false);
+                    ok = TryCreateTransform(width, height, _fps, _bitrateBps, WinVideoCodec.H264, hardware: false, null);
                 }
             }
 
@@ -111,11 +131,11 @@ sealed class H264Encoder : IDisposable
             _transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
             _streaming = true;
 
-            AppLog.Write($"[H264Encoder] ready codec={ActiveCodec} {width}x{height}@{_fps}fps bitrate={_bitrateBps}bps hw={IsHardware}");
+            AppLog.Write($"[H264Encoder] ready codec={ActiveCodec} {width}x{height}@{_fps}fps bitrate={_bitrateBps}bps hw={IsHardware} gpuZeroCopy={IsGpuZeroCopy}");
         }
     }
 
-    private bool TryCreateTransform(int width, int height, int fps, int bitrateBps, WinVideoCodec codec, bool hardware)
+    private bool TryCreateTransform(int width, int height, int fps, int bitrateBps, WinVideoCodec codec, bool hardware, ID3D11Device? d3d11Device)
     {
         IMFTransform? candidate = null;
         try
@@ -155,11 +175,15 @@ sealed class H264Encoder : IDisposable
             _transform = candidate;
             IsHardware = hardware;
             ActiveCodec = codec;
+            IsGpuZeroCopy = false;
             _codecApi = Marshal.GetObjectForIUnknown(candidate.NativePointer) as ICodecAPI;
+
+            // Bind IMFDXGIDeviceManager before negotiating media types when using a hardware MFT + D3D11 device
+            bool d3dBound = hardware && d3d11Device != null && TryBindDxgiDeviceManagerLocked(candidate, d3d11Device);
 
             // Configure low-latency rate control before setting media types (some MFTs require this pre-init)
             ApplyLowLatencyCodecApiLocked(bitrateBps);
-            ConfigureTypes(width, height, fps, bitrateBps, outputSubtype);
+            ConfigureTypes(width, height, fps, bitrateBps, outputSubtype, preferGpuArgb32: d3dBound);
             // Re-apply bitrate & max burst headroom after media types are negotiated
             ApplyBitrateLocked(bitrateBps);
             return true;
@@ -167,10 +191,59 @@ sealed class H264Encoder : IDisposable
         catch (Exception ex)
         {
             AppLog.Write($"[H264Encoder] TryCreateTransform(codec={codec}, hardware={hardware}) failed: {ex.Message}");
+            ReleaseDxgiDeviceManagerLocked();
+            IsGpuZeroCopy = false;
             _codecApi = null;
             _transform = null;
             try { candidate?.Dispose(); } catch { }
             return false;
+        }
+    }
+
+    private bool TryBindDxgiDeviceManagerLocked(IMFTransform transform, ID3D11Device d3d11Device)
+    {
+        ReleaseDxgiDeviceManagerLocked();
+        nint pDxgiMgr = nint.Zero;
+        try
+        {
+            int hr = MFCreateDXGIDeviceManager(out uint resetToken, out pDxgiMgr);
+            if (hr < 0 || pDxgiMgr == nint.Zero)
+            {
+                AppLog.Write($"[H264Encoder] MFCreateDXGIDeviceManager failed: 0x{hr:X8}");
+                return false;
+            }
+
+            var mgr = (IMFDXGIDeviceManagerCom)Marshal.GetObjectForIUnknown(pDxgiMgr);
+            hr = mgr.ResetDevice(d3d11Device.NativePointer, resetToken);
+            if (hr < 0)
+            {
+                AppLog.Write($"[H264Encoder] IMFDXGIDeviceManager.ResetDevice failed: 0x{hr:X8}");
+                Marshal.Release(pDxgiMgr);
+                return false;
+            }
+
+            transform.ProcessMessage((TMessageType)MFT_MESSAGE_SET_D3D_MANAGER, (nuint)pDxgiMgr);
+            _dxgiDeviceManagerPtr = pDxgiMgr;
+            AppLog.Write("[H264Encoder] Bound IMFDXGIDeviceManager to hardware MFT for DXGI zero-copy");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[H264Encoder] MFT_MESSAGE_SET_D3D_MANAGER rejected (falling back to CPU NV12): {ex.Message}");
+            if (pDxgiMgr != nint.Zero)
+            {
+                try { Marshal.Release(pDxgiMgr); } catch { }
+            }
+            return false;
+        }
+    }
+
+    private void ReleaseDxgiDeviceManagerLocked()
+    {
+        if (_dxgiDeviceManagerPtr != nint.Zero)
+        {
+            try { Marshal.Release(_dxgiDeviceManagerPtr); } catch { }
+            _dxgiDeviceManagerPtr = nint.Zero;
         }
     }
 
@@ -207,7 +280,7 @@ sealed class H264Encoder : IDisposable
         }
     }
 
-    private void ConfigureTypes(int width, int height, int fps, int bitrateBps, Guid outputSubtype)
+    private void ConfigureTypes(int width, int height, int fps, int bitrateBps, Guid outputSubtype, bool preferGpuArgb32)
     {
         using var outputType = MediaFactory.MFCreateMediaType();
         outputType.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
@@ -223,6 +296,30 @@ sealed class H264Encoder : IDisposable
         outputType.Set(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
         outputType.Set(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
         _transform!.SetOutputType(0, outputType, 0);
+
+        if (preferGpuArgb32)
+        {
+            try
+            {
+                using var argbInputType = MediaFactory.MFCreateMediaType();
+                argbInputType.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
+                argbInputType.Set(MF_MT_SUBTYPE, VideoFormatGuids.ARGB32);
+                argbInputType.Set(MF_MT_FRAME_SIZE, PackLong(width, height));
+                argbInputType.Set(MF_MT_FRAME_RATE, PackLong(fps, 1));
+                argbInputType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+                _transform!.SetInputType(0, argbInputType, 0);
+                IsGpuZeroCopy = true;
+                AppLog.Write("[H264Encoder] Negotiated GPU zero-copy ARGB32 input media type");
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[H264Encoder] GPU ARGB32 input rejected by MFT ({ex.Message}), falling back to CPU NV12");
+                IsGpuZeroCopy = false;
+                try { _transform!.ProcessMessage((TMessageType)MFT_MESSAGE_SET_D3D_MANAGER, UIntPtr.Zero); } catch { }
+                ReleaseDxgiDeviceManagerLocked();
+            }
+        }
 
         using var inputType = MediaFactory.MFCreateMediaType();
         inputType.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
@@ -329,6 +426,66 @@ sealed class H264Encoder : IDisposable
         buffer.Unlock();
         buffer.CurrentLength = _nv12Buf.Length;
 
+        using var sample = MediaFactory.MFCreateSample();
+        sample.AddBuffer(buffer);
+        sample.SampleTime     = ptsMs * 10_000; // ms → 100ns units
+        sample.SampleDuration = _frameDuration100ns;
+
+        _transform!.ProcessInput(0, sample, 0);
+        return DrainOutput(out keyframe);
+    }
+
+    /// <summary>
+    /// Zero-copy GPU encode path: wraps a D3D11 B8G8R8A8 texture directly in a DXGI
+    /// Media Foundation surface buffer with zero CPU staging or NV12 conversion.
+    /// </summary>
+    public byte[]? EncodeGpuTexture(ID3D11Texture2D gpuTexture, long ptsMs, out bool keyframe)
+    {
+        keyframe = false;
+        if (_transform == null || !_streaming || !IsGpuZeroCopy) return null;
+
+        lock (_lock)
+        {
+            return EncodeGpuCoreLocked(gpuTexture, ptsMs, out keyframe);
+        }
+    }
+
+    /// <summary>
+    /// Encodes a single crisp low-QP refinement frame on the GPU zero-copy path after
+    /// motion stops by temporarily boosting target bitrate 1.5x (up to 50 Mbps).
+    /// </summary>
+    public byte[]? EncodeGpuRefinementFrame(ID3D11Texture2D gpuTexture, long ptsMs, out bool keyframe)
+    {
+        keyframe = false;
+        if (_transform == null || !_streaming || !IsGpuZeroCopy) return null;
+
+        lock (_lock)
+        {
+            int boosted = (int)Math.Min((long)_bitrateBps * 3 / 2, 50_000_000L);
+            ApplyBitrateLocked(boosted);
+            try
+            {
+                return EncodeGpuCoreLocked(gpuTexture, ptsMs, out keyframe);
+            }
+            finally
+            {
+                ApplyBitrateLocked(_bitrateBps);
+            }
+        }
+    }
+
+    private byte[]? EncodeGpuCoreLocked(ID3D11Texture2D gpuTexture, long ptsMs, out bool keyframe)
+    {
+        keyframe = false;
+        Guid iid = IID_ID3D11Texture2D;
+        int hr = MFCreateDXGISurfaceBuffer(ref iid, gpuTexture.NativePointer, 0, false, out nint pBuffer);
+        if (hr < 0 || pBuffer == nint.Zero)
+        {
+            AppLog.Write($"[H264Encoder] MFCreateDXGISurfaceBuffer failed: 0x{hr:X8}");
+            return null;
+        }
+
+        using var buffer = new IMFMediaBuffer(pBuffer);
         using var sample = MediaFactory.MFCreateSample();
         sample.AddBuffer(buffer);
         sample.SampleTime     = ptsMs * 10_000; // ms → 100ns units
@@ -462,9 +619,11 @@ sealed class H264Encoder : IDisposable
             }
             catch (Exception ex) { AppLog.Write($"[H264Encoder] Dispose end-stream failed: {ex.Message}"); }
             _streaming = false;
+            IsGpuZeroCopy = false;
             _codecApi = null;
             _transform?.Dispose();
             _transform = null;
+            ReleaseDxgiDeviceManagerLocked();
         }
     }
 
@@ -479,5 +638,18 @@ sealed class H264Encoder : IDisposable
         [PreserveSig] int GetDefaultValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] out object value);
         [PreserveSig] int GetValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] out object value);
         [PreserveSig] int SetValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] ref object value);
+    }
+
+    // Minimal vtable-exact Windows SDK IMFDXGIDeviceManager COM interface (mfobjects.h)
+    [ComImport, Guid("eb533d5d-2db6-40f8-97a9-494692014f07"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMFDXGIDeviceManagerCom
+    {
+        [PreserveSig] int CloseDeviceHandle(nint hDevice);
+        [PreserveSig] int GetVideoService(nint hDevice, ref Guid riid, out nint ppService);
+        [PreserveSig] int LockDevice(nint hDevice, ref Guid riid, out nint ppUnkDevice, [MarshalAs(UnmanagedType.Bool)] bool fBlock);
+        [PreserveSig] int OpenDeviceHandle(out nint phDevice);
+        [PreserveSig] int ResetDevice(nint pUnkDevice, uint resetToken);
+        [PreserveSig] int TestDevice(nint hDevice);
+        [PreserveSig] int UnlockDevice(nint hDevice, [MarshalAs(UnmanagedType.Bool)] bool fSaveState);
     }
 }

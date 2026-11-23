@@ -5,6 +5,7 @@ enum FrameType: UInt8 {
     case videoFrame = 0x01
     case fileChunk  = 0x02
     case audioFrame = 0x03   // [0x03][ADTS-framed AAC packet]
+    case micAudio   = 0x04   // [0x04][48kHz mono 16-bit LE PCM] (client → host)
 }
 
 // Incoming JSON message types from client
@@ -26,6 +27,7 @@ enum ClientMessage {
     case hdrSet(enabled: Bool)
     case lowLatencySet(enabled: Bool)
     case setAudioEnabled(Bool)
+    case setMicEnabled(Bool)
     case setPrivacyScreen(Bool)
     case virtualDisplay(action: String, width: Int?, height: Int?, fps: Int?)
     case displaySet(id: UInt32)
@@ -33,6 +35,7 @@ enum ClientMessage {
     case requestKeyframe
     case webrtcOffer(sdp: String)
     case webrtcICE(json: String)
+    case udpPunch(ip: String, port: UInt16)
     case clientStats(fps: Double, rttMs: Int, rx: String)
     case setCodec(codec: String)
     case codecCaps(codecs: [String])
@@ -129,6 +132,8 @@ enum ClientMessage {
             return .lowLatencySet(enabled: json["enabled"] as? Bool ?? false)
         case "set_audio":
             return .setAudioEnabled(json["enabled"] as? Bool ?? false)
+        case "set_mic_enabled":
+            return .setMicEnabled(json["enabled"] as? Bool ?? false)
         case "set_privacy_screen":
             return .setPrivacyScreen(json["enabled"] as? Bool ?? false)
         case "virtual_display":
@@ -148,6 +153,10 @@ enum ClientMessage {
             return .webrtcOffer(sdp: json["sdp"] as? String ?? "")
         case "webrtc_ice":
             return .webrtcICE(json: json["candidate"] as? String ?? "")
+        case "udp_punch":
+            let portInt = json["port"] as? Int ?? 0
+            let portU16 = (portInt > 0 && portInt <= 65535) ? UInt16(portInt) : 0
+            return .udpPunch(ip: json["ip"] as? String ?? "", port: portU16)
         case "client_stats":
             return .clientStats(
                 fps:   json["fps"]    as? Double ?? 0,

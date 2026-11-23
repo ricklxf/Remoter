@@ -19,6 +19,17 @@ sealed class ScreenCapturer : IDisposable
     private ID3D11DeviceContext?    _context;
     private IDXGIOutputDuplication? _dup;
     private ID3D11Texture2D?        _staging;
+    // GPU-only copy of the latest DXGI desktop frame (for zero-copy MF hardware encoding)
+    private ID3D11Texture2D?        _gpuFrameTex;
+    private bool                    _hasGpuFrame;
+    private bool                    _staticGpuRefinementPending;
+
+    /// <summary>
+    /// Exposes the multithread-protected D3D11 device used by DXGI Desktop Duplication
+    /// so Media Foundation hardware encoders can bind it via IMFDXGIDeviceManager for
+    /// zero-copy GPU texture encoding. Null when running in GDI fallback mode.
+    /// </summary>
+    public ID3D11Device? D3D11Device => _useGdi ? null : _device;
 
     // ── GDI state ──────────────────────────────────────────────────────────
     private bool    _useGdi;
@@ -103,6 +114,12 @@ sealed class ScreenCapturer : IDisposable
             null, DriverType.Hardware, DeviceCreationFlags.None,
             [FeatureLevel.Level_11_0], out _device!
         ).CheckError();
+        // Enable D3D11 multithread protection so MF hardware encoders sharing this device
+        // via IMFDXGIDeviceManager can safely submit GPU frames concurrently.
+        using (var mt = _device.QueryInterfaceOrNull<ID3D11Multithread>())
+        {
+            mt?.SetMultithreadProtected(true);
+        }
         _context = _device.ImmediateContext;
 
         using var dxgiDev = _device.QueryInterface<IDXGIDevice1>();
@@ -121,7 +138,15 @@ sealed class ScreenCapturer : IDisposable
             usage: ResourceUsage.Staging, bindFlags: BindFlags.None,
             cpuAccessFlags: CpuAccessFlags.Read
         );
-        AppLog.Write($"[Capturer] {Width}x{Height} DXGI Desktop Duplication ready");
+        _gpuFrameTex = _device.CreateTexture2D(
+            Format.B8G8R8A8_UNorm, Width, Height,
+            usage: ResourceUsage.Default,
+            bindFlags: BindFlags.RenderTarget | BindFlags.ShaderResource,
+            cpuAccessFlags: CpuAccessFlags.None
+        );
+        _hasGpuFrame = false;
+        _staticGpuRefinementPending = false;
+        AppLog.Write($"[Capturer] {Width}x{Height} DXGI Desktop Duplication ready (D3D11 multithread protected)");
     }
 
     private byte[]? CaptureDxgi(int timeoutMs)
@@ -297,6 +322,90 @@ sealed class ScreenCapturer : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// Zero-copy GPU capture path: copies the latest DXGI desktop frame directly into a
+    /// GPU-only B8G8R8A8 texture without staging/CPU readback, preserving idle-frame skip
+    /// and 150ms static-frame refinement tracking.
+    /// </summary>
+    public ID3D11Texture2D? CaptureGpuTexture(int timeoutMs = 1)
+    {
+        if (_useGdi) return null;
+
+        if (_dup == null || _gpuFrameTex == null || _context == null)
+        {
+            TryReinitDuplication();
+            return null;
+        }
+
+        var hr = _dup.AcquireNextFrame(timeoutMs, out var frameInfo, out var resource);
+        if (hr.Code == DXGI_ERROR_WAIT_TIMEOUT)
+        {
+            return null;
+        }
+
+        if (hr.Code == DXGI_ERROR_ACCESS_LOST || hr.Code == ERROR_INVALID_HANDLE)
+        {
+            AppLog.Write($"[Capturer] DXGI access lost or invalid handle (0x{hr.Code:X8}), attempting reinitialization");
+            TryReinitDuplication();
+            return null;
+        }
+
+        try { hr.CheckError(); }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] DXGI AcquireNextFrame failed: 0x{hr.Code:X8}, {ex.Message}");
+            return null;
+        }
+
+        // Skip completely idle frames (0 accumulated desktop updates & 0 dirty/move metadata)
+        if (frameInfo.AccumulatedFrames == 0 && frameInfo.TotalMetadataBufferSize == 0)
+        {
+            resource.Dispose();
+            _dup.ReleaseFrame();
+            return null;
+        }
+
+        try
+        {
+            using var frameTex = resource.QueryInterface<ID3D11Texture2D>();
+            _context.CopyResource(_gpuFrameTex, frameTex);
+            _hasGpuFrame = true;
+            _lastMotionTick = Environment.TickCount64;
+            _staticGpuRefinementPending = true;
+            return _gpuFrameTex;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Capturer] DXGI GPU CopyResource failed: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            resource.Dispose();
+            _dup.ReleaseFrame();
+        }
+    }
+
+    /// <summary>
+    /// Returns true once >= 150ms after screen motion stops on the GPU zero-copy path,
+    /// handing out the retained GPU texture so Session can encode a single crisp refinement frame.
+    /// </summary>
+    public bool ShouldEmitStaticGpuRefinement(out ID3D11Texture2D? tex)
+    {
+        if (!_useGdi &&
+            _staticGpuRefinementPending &&
+            _hasGpuFrame &&
+            _gpuFrameTex != null &&
+            Environment.TickCount64 - _lastMotionTick >= StaticRefinementDelayMs)
+        {
+            _staticGpuRefinementPending = false;
+            tex = _gpuFrameTex;
+            return true;
+        }
+        tex = null;
+        return false;
+    }
+
     private byte[]? CaptureBgraGdi(int targetFps = 30)
     {
         long now      = Environment.TickCount64;
@@ -349,6 +458,9 @@ sealed class ScreenCapturer : IDisposable
         {
             _dup?.Dispose(); _dup = null;
             _staging?.Dispose(); _staging = null;
+            _gpuFrameTex?.Dispose(); _gpuFrameTex = null;
+            _hasGpuFrame = false;
+            _staticGpuRefinementPending = false;
             if (_device == null) return;
 
             using var dxgiDev = _device.QueryInterface<IDXGIDevice1>();
@@ -363,6 +475,12 @@ sealed class ScreenCapturer : IDisposable
                 Format.B8G8R8A8_UNorm, Width, Height,
                 usage: ResourceUsage.Staging, bindFlags: BindFlags.None,
                 cpuAccessFlags: CpuAccessFlags.Read
+            );
+            _gpuFrameTex = _device.CreateTexture2D(
+                Format.B8G8R8A8_UNorm, Width, Height,
+                usage: ResourceUsage.Default,
+                bindFlags: BindFlags.RenderTarget | BindFlags.ShaderResource,
+                cpuAccessFlags: CpuAccessFlags.None
             );
             AppLog.Write("[Capturer] DXGI duplication reinitialised");
         }
@@ -450,6 +568,7 @@ sealed class ScreenCapturer : IDisposable
     {
         _dup?.Dispose();
         _staging?.Dispose();
+        _gpuFrameTex?.Dispose();
         _context?.Dispose();
         _device?.Dispose();
         _gdiBmp?.Dispose();

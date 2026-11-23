@@ -1142,8 +1142,8 @@ public final class RemoterConnection: @unchecked Sendable {
         case .forceCanvas(let enabled):
             onForceCanvasChanged?(enabled)
 
-        case .udpOffer(let port, let tokenHex, let encrypted):
-            handleUdpOffer(port: port, tokenHex: tokenHex, encrypted: encrypted)
+        case .udpOffer(let port, let tokenHex, let encrypted, let publicIp, let publicPort):
+            handleUdpOffer(port: port, tokenHex: tokenHex, encrypted: encrypted, publicIp: publicIp, publicPort: publicPort)
 
         case .udpActive(let enabled):
             stateLock.withLock {
@@ -1179,7 +1179,13 @@ public final class RemoterConnection: @unchecked Sendable {
 
     // MARK: - Direct UDP Video Channel
 
-    private func handleUdpOffer(port: Int, tokenHex: String, encrypted: Bool) {
+    private func handleUdpOffer(
+        port: Int,
+        tokenHex: String,
+        encrypted: Bool,
+        publicIp: String? = nil,
+        publicPort: Int? = nil
+    ) {
         guard port > 0 && port <= Int(UInt16.max),
               let token = UdpVideoReceiver.decodeHexToken(tokenHex) else {
             return
@@ -1191,13 +1197,24 @@ public final class RemoterConnection: @unchecked Sendable {
         }
 
         let params = stateLock.withLock { _params }
-        guard let params,
-              params.mode == .direct,
-              let url = try? params.buildWebSocketURL(),
-              let host = url.host,
-              !host.isEmpty else {
-            return
+        guard let params else { return }
+
+        let directHost: String?
+        if params.mode == .direct,
+           let url = try? params.buildWebSocketURL(),
+           let host = url.host,
+           !host.isEmpty {
+            directHost = host
+        } else {
+            directHost = nil
         }
+
+        let canStunPunch = (directHost == nil)
+            && (publicIp?.isEmpty == false)
+            && (publicPort ?? 0) > 0
+            && (publicPort ?? 0) <= Int(UInt16.max)
+
+        guard directHost != nil || canStunPunch else { return }
 
         let receiver = UdpVideoReceiver()
         receiver.onConnected = { [weak self] connected in
@@ -1215,6 +1232,9 @@ public final class RemoterConnection: @unchecked Sendable {
             self._bytesCount += Int64(packet.data.count)
             self.statsLock.unlock()
             self.onVideoFrame?(packet)
+        }
+        receiver.onAudioFrame = { [weak self] data in
+            self?.onAudioFrame?(AudioFramePacket(data: data))
         }
         receiver.onFrameDropped = { [weak self] in
             guard let self else { return }
@@ -1238,7 +1258,22 @@ public final class RemoterConnection: @unchecked Sendable {
             return prev
         }
         previous?.stop()
-        receiver.start(host: host, port: UInt16(port), token: token, aesKey: aesKey)
+
+        if let host = directHost {
+            // Direct LAN/WireGuard fast path (0ms immediate HELLO without STUN)
+            receiver.start(host: host, port: UInt16(port), token: token, aesKey: aesKey)
+        } else if let pubIp = publicIp, let pubPort = publicPort {
+            // Relay/WAN P2P STUN hole-punch path (falls back cleanly to WS/Relay after 1.2s)
+            receiver.startWithStunPunch(
+                publicHost: pubIp,
+                publicPort: UInt16(pubPort),
+                token: token,
+                aesKey: aesKey,
+                onLocalPublicEndpoint: { [weak self] localIp, localPort in
+                    self?.enqueueControlJson(ClientMessages.udpPunch(ip: localIp, port: localPort))
+                }
+            )
+        }
     }
 
     // MARK: - LAN Subnet Detection (net_hint via getifaddrs)

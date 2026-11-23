@@ -27,6 +27,7 @@ public sealed class UdpVideoReceiver : IDisposable
     private const byte PacketFecParity = 0x11;
     private const byte PacketNack      = 0x12;
     private const byte PacketFeedback  = 0x13;
+    private const byte PacketAudio     = 0x14;
 
     private const byte HeaderFlagEncrypted = 0x01;
 
@@ -44,6 +45,7 @@ public sealed class UdpVideoReceiver : IDisposable
     private const int HelloRetryCount = 3;
     private const int HelloIntervalMs = 100;
     private const int HandshakeTimeoutMs = 600;
+    private const int PunchHandshakeTimeoutMs = 1200;
     private const int KeepaliveIntervalMs = 2000;
 
     private sealed class FrameAssembly
@@ -75,6 +77,8 @@ public sealed class UdpVideoReceiver : IDisposable
     private bool _connected;
     private bool _hasCompletedFrame;
     private uint _lastCompletedFrameId;
+    private bool _hasLastAudioSeq;
+    private uint _lastAudioSeq;
     private bool _awaitingKeyframe = true;
     private long _lastAwaitingKeyframeRetryTick;
     private bool _disposed;
@@ -94,6 +98,7 @@ public sealed class UdpVideoReceiver : IDisposable
 
     public event Action<bool>? ConnectedChanged;
     public event Action<VideoFramePacket>? FrameReceived;
+    public event Action<byte[]>? AudioFrameReceived;
     public event Action? FrameDropped;
 
     public void Start(string host, int port, byte[] token, byte[]? aesKey = null)
@@ -118,6 +123,8 @@ public sealed class UdpVideoReceiver : IDisposable
             _connected = false;
             _hasCompletedFrame = false;
             _lastCompletedFrameId = 0;
+            _hasLastAudioSeq = false;
+            _lastAudioSeq = 0;
             _awaitingKeyframe = true;
             _hasDelayRef = false;
             _ewmaDelayGradMs = 0;
@@ -138,9 +145,102 @@ public sealed class UdpVideoReceiver : IDisposable
             _cts = cts;
 
             _ = Task.Run(() => ReceiveLoopAsync(udp, cts.Token), cts.Token);
-            _ = Task.Run(() => HandshakeAndKeepaliveLoopAsync(udp, _token, cts.Token), cts.Token);
+            _ = Task.Run(() => HandshakeAndKeepaliveLoopAsync(udp, _token, HandshakeTimeoutMs, cts.Token), cts.Token);
             _ = Task.Run(() => StaleFrameCleanupLoopAsync(cts.Token), cts.Token);
         }
+    }
+
+    /// <summary>
+    /// Opens an unbound IPv4 UDP socket, probes STUN on that exact socket to discover the client's
+    /// NAT-mapped public endpoint, invokes <paramref name="onLocalPublicEndpoint"/> so the caller can
+    /// send `udp_punch` over WebSocket, and initiates the UDP HELLO handshake to (<paramref name="publicHost"/>,
+    /// <paramref name="publicPort"/>) with a 1.2s timeout (gracefully stopping on failure so Relay TCP continues).
+    /// </summary>
+    public void StartWithStunPunch(
+        string publicHost,
+        int publicPort,
+        byte[] token,
+        byte[]? aesKey,
+        Action<string, int> onLocalPublicEndpoint)
+    {
+        if (string.IsNullOrWhiteSpace(publicHost))
+            throw new ArgumentException("Public host must not be empty.", nameof(publicHost));
+        if (publicPort <= 0 || publicPort > 65535)
+            throw new ArgumentOutOfRangeException(nameof(publicPort));
+        if (token == null || token.Length != 16)
+            throw new ArgumentException("UDP session token must be 16 bytes.", nameof(token));
+
+        Stop();
+
+        UdpClient udp;
+        CancellationTokenSource cts;
+        byte[] tokenCopy;
+
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            tokenCopy = (byte[])token.Clone();
+            _token = tokenCopy;
+            _aesGcm = (aesKey != null && aesKey.Length == 32)
+                ? new AesGcm(aesKey, tagSizeInBytes: GcmTagSize)
+                : null;
+            _connected = false;
+            _hasCompletedFrame = false;
+            _lastCompletedFrameId = 0;
+            _hasLastAudioSeq = false;
+            _lastAudioSeq = 0;
+            _awaitingKeyframe = true;
+            _hasDelayRef = false;
+            _ewmaDelayGradMs = 0;
+            _ewmaJitterMs = 0;
+            _windowRecvPackets = 0;
+            _windowNackPackets = 0;
+            _windowRecvBytes = 0;
+            _lastFeedbackSentTick = Environment.TickCount64;
+            _frames.Clear();
+            _wholeFrameNacked.Clear();
+
+            udp = new UdpClient(0, AddressFamily.InterNetwork);
+            udp.Client.ReceiveBufferSize = ReceiveBufferBytes;
+
+            cts = new CancellationTokenSource();
+            _udp = udp;
+            _cts = cts;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var localPub = await StunClient.DiscoverPublicEndpointAsync(udp, cts.Token).ConfigureAwait(false);
+                if (cts.IsCancellationRequested) return;
+
+                if (localPub.HasValue)
+                {
+                    try
+                    {
+                        onLocalPublicEndpoint(localPub.Value.Ip, localPub.Value.Port);
+                    }
+                    catch { }
+                }
+
+                lock (_lock)
+                {
+                    if (_disposed || _udp != udp || cts.IsCancellationRequested) return;
+                }
+
+                udp.Connect(publicHost, publicPort);
+
+                _ = Task.Run(() => ReceiveLoopAsync(udp, cts.Token), cts.Token);
+                _ = Task.Run(() => HandshakeAndKeepaliveLoopAsync(udp, tokenCopy, PunchHandshakeTimeoutMs, cts.Token), cts.Token);
+                _ = Task.Run(() => StaleFrameCleanupLoopAsync(cts.Token), cts.Token);
+            }
+            catch
+            {
+                Stop();
+            }
+        }, cts.Token);
     }
 
     public void NotifyExternalFrame(uint frameId, bool isKeyframe)
@@ -222,7 +322,7 @@ public sealed class UdpVideoReceiver : IDisposable
 
     // ── Control Loops ────────────────────────────────────────────────────
 
-    private async Task HandshakeAndKeepaliveLoopAsync(UdpClient udp, byte[] token, CancellationToken ct)
+    private async Task HandshakeAndKeepaliveLoopAsync(UdpClient udp, byte[] token, int handshakeTimeoutMs, CancellationToken ct)
     {
         // 21-byte HELLO: byte[20] = 0x01 advertises stride-interleaved XOR-FEC support
         byte[] helloPkt = new byte[ControlPacketSize + 1];
@@ -248,17 +348,17 @@ public sealed class UdpVideoReceiver : IDisposable
                 }
             }
 
-            // Wait remaining time up to 600ms total for HELLO_ACK
+            // Wait remaining time up to handshakeTimeoutMs total for HELLO_ACK
             while (!Volatile.Read(ref _connected) && !ct.IsCancellationRequested)
             {
                 long elapsed = Environment.TickCount64 - startTick;
-                if (elapsed >= HandshakeTimeoutMs)
+                if (elapsed >= handshakeTimeoutMs)
                 {
                     // Handshake timed out — stop cleanly so WebSocket TCP continues uninterrupted
                     Stop();
                     return;
                 }
-                int waitMs = (int)Math.Min(25, HandshakeTimeoutMs - elapsed);
+                int waitMs = (int)Math.Min(25, handshakeTimeoutMs - elapsed);
                 if (waitMs > 0)
                 {
                     await Task.Delay(waitMs, ct).ConfigureAwait(false);
@@ -424,6 +524,12 @@ public sealed class UdpVideoReceiver : IDisposable
             {
                 ConnectedChanged?.Invoke(true);
             }
+            return;
+        }
+
+        if (pktType == PacketAudio)
+        {
+            HandleAudioPacket(buf);
             return;
         }
 
@@ -1060,6 +1166,78 @@ public sealed class UdpVideoReceiver : IDisposable
         BinaryPrimitives.WriteUInt16BigEndian(pkt.AsSpan(24, 2), jitterDeci);
         BinaryPrimitives.WriteUInt16BigEndian(pkt.AsSpan(26, 2), recvKbps);
         return pkt;
+    }
+
+    /// Handles strictly video-first UDP audio packet (`0x14`), completely isolated
+    /// from video frame tracking (`_lastCompletedFrameId`, `_awaitingKeyframe`, `_frames`).
+    private void HandleAudioPacket(byte[] buf)
+    {
+        if (buf.Length < VideoHeaderSize) return;
+
+        uint seq = BinaryPrimitives.ReadUInt32BigEndian(buf.AsSpan(4, 4));
+        byte fragIndex = buf[13];
+        ushort payloadLen = BinaryPrimitives.ReadUInt16BigEndian(buf.AsSpan(16, 2));
+        bool isEncrypted = (buf[18] & HeaderFlagEncrypted) != 0;
+        if (payloadLen == 0) return;
+
+        lock (_lock)
+        {
+            if (_hasLastAudioSeq && unchecked((int)(seq - _lastAudioSeq)) <= 0)
+            {
+                return;
+            }
+        }
+
+        byte[] payload = new byte[payloadLen];
+        if (isEncrypted)
+        {
+            if (VideoHeaderSize + payloadLen + GcmTagSize > buf.Length) return;
+
+            Span<byte> nonce = stackalloc byte[12];
+            nonce[0] = Magic0;
+            nonce[1] = Magic1;
+            nonce[2] = PacketAudio;
+            nonce[3] = fragIndex;
+            buf.AsSpan(4, 8).CopyTo(nonce.Slice(4, 8)); // seq(BE4) + ptsMs(BE4)
+
+            ReadOnlySpan<byte> aad = buf.AsSpan(0, VideoHeaderSize);
+            ReadOnlySpan<byte> ciphertext = buf.AsSpan(VideoHeaderSize, payloadLen);
+            ReadOnlySpan<byte> tag = buf.AsSpan(VideoHeaderSize + payloadLen, GcmTagSize);
+
+            lock (_lock)
+            {
+                if (_aesGcm == null) return;
+                try
+                {
+                    _aesGcm.Decrypt(nonce, ciphertext, tag, payload, associatedData: aad);
+                }
+                catch (CryptographicException)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+            }
+        }
+        else
+        {
+            if (VideoHeaderSize + payloadLen > buf.Length) return;
+            Buffer.BlockCopy(buf, VideoHeaderSize, payload, 0, payloadLen);
+        }
+
+        lock (_lock)
+        {
+            if (_hasLastAudioSeq && unchecked((int)(seq - _lastAudioSeq)) <= 0)
+            {
+                return;
+            }
+            _hasLastAudioSeq = true;
+            _lastAudioSeq = seq;
+        }
+
+        AudioFrameReceived?.Invoke(payload);
     }
 
     private static byte[] BuildControlPacket(byte pktType, byte[] token)

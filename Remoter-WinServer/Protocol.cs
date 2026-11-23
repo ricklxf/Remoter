@@ -45,6 +45,7 @@ public abstract record ClientMsg
     public record AuthToken(string Token) : ClientMsg;
     public record MouseDoubleClick(string Button, double X, double Y) : ClientMsg;
     public record SetReverseClipboardSync(bool Enabled) : ClientMsg;
+    public record NetHint(bool Lan) : ClientMsg;
     public record Unknown : ClientMsg;
 
     public static ClientMsg Parse(JsonElement e)
@@ -93,6 +94,7 @@ public abstract record ClientMsg
             "auth_token"              => new AuthToken(e.Str("token")),
             "mouse_double_click"      => new MouseDoubleClick(e.Str("button"), e.Dbl("x"), e.Dbl("y")),
             "set_reverse_clipboard_sync" => new SetReverseClipboardSync(e.Bool("enabled", true)),
+            "net_hint"                => new NetHint(e.Bool("lan")),
             _                         => new Unknown(),
         };
     }

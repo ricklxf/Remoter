@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import CoreAudio
 import ScreenCaptureKit
 
 /// Privacy Screen / Curtain Mode
@@ -11,6 +12,8 @@ public final class PrivacyScreenManager: @unchecked Sendable {
 
     private var overlayWindows: [NSWindow] = []
     public private(set) var isEnabled = false
+    private var didMuteForPrivacy = false
+    private var previousMuteState: UInt32 = 0
     private let lock = NSLock()
 
     public init() {}
@@ -73,6 +76,7 @@ public final class PrivacyScreenManager: @unchecked Sendable {
             overlayWindows.append(window)
         }
 
+        muteSpeakerForPrivacyLocked()
         ConnectionLogger.shared.logStep(sessionId: "privacy", step: "privacy_enabled", detail: "screens=\(screens.count)")
     }
 
@@ -87,7 +91,89 @@ public final class PrivacyScreenManager: @unchecked Sendable {
             window.orderOut(nil)
         }
         overlayWindows.removeAll()
+        restoreSpeakerAfterPrivacyLocked()
         ConnectionLogger.shared.logStep(sessionId: "privacy", step: "privacy_disabled")
+    }
+
+    // MARK: - Privacy Auto-Mute (CoreAudio)
+
+    private func muteSpeakerForPrivacyLocked() {
+        guard let deviceID = Self.defaultOutputDeviceID(),
+              let currentMute = Self.getMuteState(deviceID: deviceID) else {
+            return
+        }
+        previousMuteState = currentMute
+        if currentMute == 0 {
+            if Self.setMuteState(deviceID: deviceID, muted: 1) {
+                didMuteForPrivacy = true
+                ConnectionLogger.shared.logStep(sessionId: "privacy", step: "privacy_auto_mute", detail: "muted")
+            }
+        }
+    }
+
+    private func restoreSpeakerAfterPrivacyLocked() {
+        guard didMuteForPrivacy else { return }
+        didMuteForPrivacy = false
+        if let deviceID = Self.defaultOutputDeviceID() {
+            _ = Self.setMuteState(deviceID: deviceID, muted: previousMuteState)
+            ConnectionLogger.shared.logStep(sessionId: "privacy", step: "privacy_auto_mute", detail: "restored=\(previousMuteState)")
+        }
+    }
+
+    private static func defaultOutputDeviceID() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &addr, 0, nil, &size, &deviceID
+        )
+        guard status == noErr, deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
+
+    private static func getMuteState(deviceID: AudioDeviceID) -> UInt32? {
+        for element: AudioObjectPropertyElement in [kAudioObjectPropertyElementMain, 1] {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(deviceID, &addr) else { continue }
+            var muted: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &size, &muted) == noErr {
+                return muted
+            }
+        }
+        return nil
+    }
+
+    private static func setMuteState(deviceID: AudioDeviceID, muted: UInt32) -> Bool {
+        var anySet = false
+        var value = muted
+        let size = UInt32(MemoryLayout<UInt32>.size)
+        for element: AudioObjectPropertyElement in [kAudioObjectPropertyElementMain, 1, 2] {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(deviceID, &addr) else { continue }
+            var settable: DarwinBoolean = false
+            guard AudioObjectIsPropertySettable(deviceID, &addr, &settable) == noErr, settable.boolValue else {
+                continue
+            }
+            if AudioObjectSetPropertyData(deviceID, &addr, 0, nil, size, &value) == noErr {
+                anySet = true
+                if element == kAudioObjectPropertyElementMain { break }
+            }
+        }
+        return anySet
     }
 
     public func getOverlayWindowIDs() -> [CGWindowID] {

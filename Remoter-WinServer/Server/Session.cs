@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -80,6 +81,13 @@ sealed class Session
     private bool   _manualBitrate = false;
     // Triggers encoder rebuild on the capture-loop thread (e.g. H.264 <-> H.265 / JPEG switch).
     private volatile bool _rebuildEncoder = false;
+
+    // Direct UDP 7789 video transport state (parity with Remoter-MacServer)
+    private byte[]?       _udpSessionToken;
+    private volatile bool _usingUdpVideo = false;
+    private volatile bool _isClientLan = false;
+    private int           _udpCleanBitrateStreak = 0;
+    private long          _lastKeyframeReqTicks = 0;
     
     // Statistics for overlay
     private int    _frameCount = 0;
@@ -152,6 +160,7 @@ sealed class Session
     public void Close()
     {
         _cts?.Cancel();
+        UnregisterUdpSession();
         StopClipboardMonitor(flush: false);
         StopAudioStream();
         PrivacyScreen.SetEnabled(false);
@@ -394,7 +403,23 @@ sealed class Session
                 Send(new { type = "pong" }); break;
 
             case ClientMsg.RequestKeyframe:
-                _encoder?.ForceKeyframe(); break;
+                if (_usingUdpVideo)
+                {
+                    long nowTicks = Environment.TickCount64;
+                    if (nowTicks - _lastKeyframeReqTicks < 200) break;
+                    _lastKeyframeReqTicks = nowTicks;
+                }
+                _encoder?.ForceKeyframe();
+                break;
+
+            case ClientMsg.NetHint nh:
+                _isClientLan = nh.Lan;
+                if (_udpSessionToken is { } tok)
+                {
+                    UdpVideoServer.Shared.SetFecSuppressionAllowed(tok, nh.Lan);
+                }
+                AppLog.Write($"[Session] net_hint lan={nh.Lan} (UDP FEC suppression {(nh.Lan ? "allowed" : "disabled for WAN")})");
+                break;
 
             case ClientMsg.QualitySet q:   // legacy clients (≤ v1.0.204) sent fps+bitrate bundled
                 _manualFps = true;
@@ -534,10 +559,10 @@ sealed class Session
                 try
                 {
                     var enc = new H264Encoder();
-                    enc.Initialize(c.Width, c.Height, _currentFps, _targetBitrateBps, _preferredCodec);
+                    enc.Initialize(c.Width, c.Height, _currentFps, _targetBitrateBps, _preferredCodec, d3d11Device: c.D3D11Device);
                     _encoder = enc;
                     codec = enc.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264";
-                    AppLog.Write($"[Session] H264Encoder ready (hardware={enc.IsHardware}, activeCodec={codec})");
+                    AppLog.Write($"[Session] H264Encoder ready (hardware={enc.IsHardware}, gpuZeroCopy={enc.IsGpuZeroCopy}, activeCodec={codec})");
                 }
                 catch (Exception ex)
                 {
@@ -548,6 +573,9 @@ sealed class Session
 
             Send(new { type = "stream_started", width = c.Width, height = c.Height, codec, fps = _currentFps });
             ConnectionLogger.Shared.LogConnected(_id, codec, _crypto.IsReady);
+
+            // Offer direct UDP 7789 video channel (with AES-256-GCM + adaptive XOR-FEC + NACK)
+            RegisterUdpSession();
 
             await CaptureLoopAsync(_cts.Token);
         }
@@ -560,10 +588,99 @@ sealed class Session
         finally
         {
             // Always dispose here — Close() only cancels the token, never disposes directly
+            UnregisterUdpSession();
             c.Dispose();
             _capturer = null;
             _encoder?.Dispose();
             _encoder = null;
+        }
+    }
+
+    private void RegisterUdpSession()
+    {
+        var udp = UdpVideoServer.Shared;
+        if (udp.ListeningPort <= 0) return;
+
+        UnregisterUdpSession();
+
+        var token = RandomNumberGenerator.GetBytes(UdpVideoServer.TokenLength);
+        var keyBytes = _crypto.RawKeyBytes;
+        _udpSessionToken = token;
+        _usingUdpVideo = false;
+        _udpCleanBitrateStreak = 0;
+
+        udp.RegisterSession(
+            token: token,
+            aesKey: keyBytes,
+            onActivated: active =>
+            {
+                _usingUdpVideo = active;
+                Send(new { type = "udp_active", enabled = active });
+                if (active)
+                {
+                    _encoder?.ForceKeyframe();
+                }
+                AppLog.Write($"[Session] Direct UDP video {(active ? "activated" : "deactivated (falling back to WS)")}");
+            },
+            onLossFeedback: HandleUdpLossFeedback);
+
+        udp.SetFecSuppressionAllowed(token, _isClientLan);
+
+        string tokenHex = Convert.ToHexString(token).ToLowerInvariant();
+        Send(new
+        {
+            type = "udp_offer",
+            port = udp.ListeningPort,
+            session_token = tokenHex,
+            encrypted = keyBytes != null
+        });
+        AppLog.Write($"[Session] Sent udp_offer port={udp.ListeningPort} encrypted={keyBytes != null}");
+    }
+
+    private void UnregisterUdpSession()
+    {
+        var token = Interlocked.Exchange(ref _udpSessionToken, null);
+        _usingUdpVideo = false;
+        if (token != null)
+        {
+            UdpVideoServer.Shared.UnregisterSession(token);
+        }
+    }
+
+    private void HandleUdpLossFeedback(double lossRatio, ulong sentPackets)
+    {
+        if (_encoder == null || _manualBitrate) return;
+
+        if (lossRatio >= 0.05)
+        {
+            _udpCleanBitrateStreak = 0;
+            int nextBps = Math.Max(4_000_000, _targetBitrateBps * 4 / 5);
+            if (nextBps != _targetBitrateBps)
+            {
+                _targetBitrateBps = nextBps;
+                _encoder.SetBitrate(_targetBitrateBps);
+                AppLog.Write($"[Session] UDP loss={lossRatio * 100:F1}% -> bitrate step down to {_targetBitrateBps / 1_000_000.0:F1} Mbps");
+            }
+        }
+        else if (lossRatio < 0.01 && sentPackets >= 60)
+        {
+            _udpCleanBitrateStreak++;
+            if (_udpCleanBitrateStreak >= 2)
+            {
+                _udpCleanBitrateStreak = 0;
+                int capBps = _isClientLan ? 25_000_000 : 12_000_000;
+                int nextBps = Math.Min(capBps, _targetBitrateBps * 5 / 4);
+                if (nextBps > _targetBitrateBps)
+                {
+                    _targetBitrateBps = nextBps;
+                    _encoder.SetBitrate(_targetBitrateBps);
+                    AppLog.Write($"[Session] UDP clean ({sentPackets} pkts, lan={_isClientLan}) -> bitrate step up to {_targetBitrateBps / 1_000_000.0:F1} Mbps");
+                }
+            }
+        }
+        else
+        {
+            _udpCleanBitrateStreak = 0;
         }
     }
 
@@ -625,10 +742,10 @@ sealed class Session
                         {
                             _encoder?.Dispose();
                             var enc = new H264Encoder();
-                            enc.Initialize(_capturer.Width, _capturer.Height, _currentFps, _targetBitrateBps, _preferredCodec);
+                            enc.Initialize(_capturer.Width, _capturer.Height, _currentFps, _targetBitrateBps, _preferredCodec, d3d11Device: _capturer.D3D11Device);
                             _encoder = enc;
                             var activeCodec = enc.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264";
-                            AppLog.Write($"[Session] encoder rebuilt: codec={activeCodec} hw={enc.IsHardware} bitrate={_targetBitrateBps}");
+                            AppLog.Write($"[Session] encoder rebuilt: codec={activeCodec} hw={enc.IsHardware} gpuZeroCopy={enc.IsGpuZeroCopy} bitrate={_targetBitrateBps}");
                             Send(new { type = "codec_changed", codec = activeCodec });
                         }
                         catch (Exception ex)
@@ -648,18 +765,37 @@ sealed class Session
             {
                 if (_encoder != null)
                 {
-                    var bgra = _capturer.CaptureBgra(timeoutMs: 1);
-                    if (bgra != null)
+                    if (_encoder.IsGpuZeroCopy)
                     {
-                        payload = _encoder.Encode(bgra, pts, out keyframe);
-                    }
-                    else if (_capturer.ShouldEmitStaticRefinement(out var staticBgra) && staticBgra != null)
-                    {
-                        payload = _encoder.EncodeRefinementFrame(staticBgra, pts, out keyframe);
+                        var gpuTex = _capturer.CaptureGpuTexture(timeoutMs: 1);
+                        if (gpuTex != null)
+                        {
+                            payload = _encoder.EncodeGpuTexture(gpuTex, pts, out keyframe);
+                        }
+                        else if (_capturer.ShouldEmitStaticGpuRefinement(out var staticTex) && staticTex != null)
+                        {
+                            payload = _encoder.EncodeGpuRefinementFrame(staticTex, pts, out keyframe);
+                        }
+                        else
+                        {
+                            payload = null;
+                        }
                     }
                     else
                     {
-                        payload = null;
+                        var bgra = _capturer.CaptureBgra(timeoutMs: 1);
+                        if (bgra != null)
+                        {
+                            payload = _encoder.Encode(bgra, pts, out keyframe);
+                        }
+                        else if (_capturer.ShouldEmitStaticRefinement(out var staticBgra) && staticBgra != null)
+                        {
+                            payload = _encoder.EncodeRefinementFrame(staticBgra, pts, out keyframe);
+                        }
+                        else
+                        {
+                            payload = null;
+                        }
                     }
                 }
                 else
@@ -689,13 +825,24 @@ sealed class Session
             if (payload == null) continue;
 
             var fid = _frameId++;
+            if (fid == 0) AppLog.Write($"[Session] first frame sent: {payload.Length}B keyframe={keyframe} codec={(_encoder != null ? (_encoder.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264") : "jpeg")} gpuZeroCopy={_encoder?.IsGpuZeroCopy == true}");
+
+            // Prefer direct UDP 7789 video channel when active (H.264/H.265); falls back to WS if unavailable
+            if (_usingUdpVideo && _encoder != null && _udpSessionToken is { } udpTok &&
+                UdpVideoServer.Shared.SendVideoFrame(
+                    udpTok, fid, pts, payload, keyframe, _encoder.ActiveCodec == WinVideoCodec.H265))
+            {
+                _bytesSent += payload.Length;
+                SendOverlayInfo();
+                continue;
+            }
+
             var pkt = FrameBuilder.VideoFramePacket(payload, fid, pts, keyframe);
             _bytesSent += pkt.Length;
-            if (fid == 0) AppLog.Write($"[Session] first frame sent: {payload.Length}B keyframe={keyframe} codec={(_encoder != null ? "h264" : "jpeg")}");
-            
+
             // Send overlay info to client (embedded in frame metadata)
             SendOverlayInfo();
-            
+
             _ = _conn.SendBinaryAsync(pkt).ContinueWith(
                 _ => _cts?.Cancel(),
                 CancellationToken.None,

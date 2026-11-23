@@ -10,10 +10,11 @@ struct Config {
     var relayURL: String = ""
 }
 
-func parseArgs() -> (pin: String?, port: UInt16?, relayURL: String?) {
+func parseArgs() -> (pin: String?, port: UInt16?, relayURL: String?, loginWindow: Bool) {
     var pin: String?     = nil
     var port: UInt16?    = nil
     var relayURL: String? = nil
+    var loginWindow      = false
     var args = CommandLine.arguments.dropFirst()
     while !args.isEmpty {
         let arg = args.removeFirst()
@@ -24,10 +25,12 @@ func parseArgs() -> (pin: String?, port: UInt16?, relayURL: String?) {
             if !args.isEmpty, let p = UInt16(String(args.removeFirst())) { port = p }
         case "--relay":
             if !args.isEmpty { relayURL = String(args.removeFirst()) }
+        case "--loginwindow":
+            loginWindow = true
         default: break
         }
     }
-    return (pin, port, relayURL)
+    return (pin, port, relayURL, loginWindow)
 }
 
 // MARK: - RemoterAgent
@@ -97,6 +100,7 @@ final class RemoterAgent {
         wsServer.webDir = webDir
         try wsServer.start(port: config.port)
         UdpVideoServer.shared.start()
+        LanDiscoveryAdvertiser.shared.start(wsPort: config.port, udpPort: UdpVideoServer.shared.listeningPort)
         PowerManager.shared.preventSystemIdleSleep()
 
         Task {
@@ -286,55 +290,67 @@ func getLocalHostname() -> String {
 // MARK: - Entry point
 
 // CLI args override persisted config; PIN is generated later if still empty.
-let (cliPin, cliPort, cliRelay) = parseArgs()
+let (cliPin, cliPort, cliRelay, cliLoginWindow) = parseArgs()
+let loginWindowMode = cliLoginWindow || isLoginWindowSession()
 let diskCfg = AgentConfig.load()
+
+ConnectionLogger.shared.logStep(
+    sessionId: "agent",
+    step: "startup",
+    detail: "loginwindow_mode=\(loginWindowMode) uid=\(getuid()) config_dir=\(AgentConfig.activeSupportDir.path)"
+)
 
 var cfg = Config()
 cfg.pin      = cliPin    ?? (diskCfg.pin.isEmpty ? "" : diskCfg.pin)
 cfg.port     = cliPort   ?? diskCfg.port
 cfg.relayURL = cliRelay  ?? diskCfg.relayUrl
 
-let menuBar    = MainActor.assumeIsolated { MenuBarController() }
-let agent      = RemoterAgent(config: cfg)
-
-agent.onStatusUpdate = { status in
-    DispatchQueue.main.async {
-        MainActor.assumeIsolated { menuBar.update(status) }
-    }
-}
-
-MainActor.assumeIsolated {
-    menuBar.onSendFile = { url in
-        agent.sendFileToAllSessions(url)
-    }
-}
-
-NSApplication.shared.delegate = menuBar
-
-// Start integrated Keybot event tap on the main run loop if enabled and
-// Accessibility is granted; otherwise retry every 2s until permission is granted.
+let agent = RemoterAgent(config: cfg)
+var menuBar: MenuBarController?
 var keybotRetryTimer: DispatchSourceTimer?
-if KeybotEventTap.shared.isEnabled {
-    if AXIsProcessTrusted() {
-        KeybotEventTap.shared.start()
-    } else {
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + .seconds(2), repeating: .seconds(2))
-        timer.setEventHandler {
-            guard KeybotEventTap.shared.isEnabled else {
-                keybotRetryTimer?.cancel()
-                keybotRetryTimer = nil
-                return
-            }
-            if AXIsProcessTrusted() {
-                if KeybotEventTap.shared.start() {
+
+if !loginWindowMode {
+    let mb = MainActor.assumeIsolated { MenuBarController() }
+    menuBar = mb
+
+    agent.onStatusUpdate = { status in
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { mb.update(status) }
+        }
+    }
+
+    MainActor.assumeIsolated {
+        mb.onSendFile = { url in
+            agent.sendFileToAllSessions(url)
+        }
+    }
+
+    NSApplication.shared.delegate = mb
+
+    // Start integrated Keybot event tap on the main run loop if enabled and
+    // Accessibility is granted; otherwise retry every 2s until permission is granted.
+    if KeybotEventTap.shared.isEnabled {
+        if AXIsProcessTrusted() {
+            KeybotEventTap.shared.start()
+        } else {
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now() + .seconds(2), repeating: .seconds(2))
+            timer.setEventHandler {
+                guard KeybotEventTap.shared.isEnabled else {
                     keybotRetryTimer?.cancel()
                     keybotRetryTimer = nil
+                    return
+                }
+                if AXIsProcessTrusted() {
+                    if KeybotEventTap.shared.start() {
+                        keybotRetryTimer?.cancel()
+                        keybotRetryTimer = nil
+                    }
                 }
             }
+            timer.resume()
+            keybotRetryTimer = timer
         }
-        timer.resume()
-        keybotRetryTimer = timer
     }
 }
 
@@ -351,8 +367,11 @@ for sig in [SIGTERM, SIGINT] {
         keybotRetryTimer?.cancel()
         keybotRetryTimer = nil
         UdpVideoServer.shared.stop()
+        LanDiscoveryAdvertiser.shared.stop()
         PowerManager.shared.releaseAllAssertions()
-        KeybotEventTap.shared.stop()
+        if !loginWindowMode {
+            KeybotEventTap.shared.stop()
+        }
         InputSourceForcer.shared.end()
         InputLocker.shared.setLocked(false)
         exit(0)
@@ -366,6 +385,11 @@ Task.detached {
     do {
         try agent.start()
     } catch {
+        ConnectionLogger.shared.logStep(sessionId: "agent", step: "start_failed", detail: "\(error)")
+        if loginWindowMode {
+            fputs("RemoterAgent (LoginWindow) 启动失败: \(error)\n", stderr)
+            exit(1)
+        }
         await MainActor.run {
             let alert = NSAlert()
             alert.messageText     = "Remoter 启动失败"
@@ -376,5 +400,10 @@ Task.detached {
     }
 }
 
-// NSApplication.run() 接管主线程 RunLoop（同时驱动菜单栏）
-NSApplication.shared.run()
+if loginWindowMode {
+    // LoginWindow pre-login session has no Aqua menu bar; run Foundation RunLoop directly.
+    RunLoop.main.run()
+} else {
+    // NSApplication.run() 接管主线程 RunLoop（同时驱动菜单栏）
+    NSApplication.shared.run()
+}

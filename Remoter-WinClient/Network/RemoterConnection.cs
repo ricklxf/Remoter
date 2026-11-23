@@ -986,8 +986,17 @@ public sealed class RemoterConnection : IDisposable
     private void HandleUdpOffer(ServerMessage.UdpOffer offer)
     {
         var p = _params;
-        if (p == null || p.Mode != ConnectMode.Direct) return;
-        if (offer.Port <= 0 || offer.Port > 65535 || string.IsNullOrWhiteSpace(offer.SessionTokenHex)) return;
+        if (p == null) return;
+        if (string.IsNullOrWhiteSpace(offer.SessionTokenHex)) return;
+
+        bool isDirect = p.Mode == ConnectMode.Direct;
+        bool isRelayPunch = p.Mode == ConnectMode.Relay
+            && !string.IsNullOrWhiteSpace(offer.PublicIp)
+            && offer.PublicPort > 0
+            && offer.PublicPort <= 65535;
+
+        if (!isDirect && !isRelayPunch) return;
+        if (isDirect && (offer.Port <= 0 || offer.Port > 65535)) return;
 
         byte[] token;
         try
@@ -1000,16 +1009,19 @@ public sealed class RemoterConnection : IDisposable
         }
         if (token.Length != 16) return;
 
-        string host;
-        try
+        string directHost = "";
+        if (isDirect)
         {
-            host = p.BuildWebSocketUri().Host;
+            try
+            {
+                directHost = p.BuildWebSocketUri().Host;
+            }
+            catch
+            {
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(directHost)) return;
         }
-        catch
-        {
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(host)) return;
 
         StopUdpReceiver();
 
@@ -1024,6 +1036,10 @@ public sealed class RemoterConnection : IDisposable
             Interlocked.Increment(ref _frameCount);
             Interlocked.Add(ref _bytesCount, pkt.Data.Length);
             VideoFrameReceived?.Invoke(pkt);
+        };
+        receiver.AudioFrameReceived += data =>
+        {
+            AudioFrameReceived?.Invoke(new AudioFramePacket(data));
         };
         receiver.FrameDropped += () =>
         {
@@ -1049,7 +1065,19 @@ public sealed class RemoterConnection : IDisposable
         byte[]? aesKey = offer.Encrypted ? _e2e.RawKeyBytes : null;
         try
         {
-            receiver.Start(host, offer.Port, token, aesKey);
+            if (isDirect)
+            {
+                receiver.Start(directHost, offer.Port, token, aesKey);
+            }
+            else
+            {
+                receiver.StartWithStunPunch(
+                    offer.PublicIp!,
+                    offer.PublicPort,
+                    token,
+                    aesKey,
+                    (localPubIp, localPubPort) => EnqueueControlJson(ClientMessages.UdpPunch(localPubIp, localPubPort)));
+            }
         }
         catch
         {

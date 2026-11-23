@@ -17,6 +17,12 @@ sealed class E2ECrypto : IDisposable
 
     public bool IsReady => _aes != null;
 
+    /// <summary>
+    /// Returns a defensive copy of the derived 32-byte AES-256-GCM key for direct UDP
+    /// packet encryption, or null if key exchange has not completed yet.
+    /// </summary>
+    public byte[]? RawKeyBytes => _key != null ? (byte[])_key.Clone() : null;
+
     public E2ECrypto()
     {
         _ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
@@ -98,6 +104,11 @@ sealed class E2ECrypto : IDisposable
     {
         _ecdh.Dispose();
         _aes?.Dispose();
+        if (_key != null)
+        {
+            CryptographicOperations.ZeroMemory(_key);
+            _key = null;
+        }
     }
 
     // Copy src into dst at offset, right-padding / left-trimming to exactly `len` bytes

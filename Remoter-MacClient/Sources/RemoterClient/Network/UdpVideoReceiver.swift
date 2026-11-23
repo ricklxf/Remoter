@@ -16,6 +16,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     public static let packetTypeData: UInt8 = 0x10
     public static let packetTypeFecParity: UInt8 = 0x11
     public static let packetTypeNack: UInt8 = 0x12
+    public static let packetTypeAudio: UInt8 = 0x14
 
     public static let controlPacketSize = 20
     public static let videoHeaderSize = 20
@@ -35,6 +36,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
     public var onConnected: ((Bool) -> Void)?
     public var onFrame: ((VideoFramePacket) -> Void)?
+    public var onAudioFrame: ((Data) -> Void)?
     public var onFrameDropped: (() -> Void)?
 
     // MARK: - Private State (accessed exclusively on `queue`)
@@ -91,6 +93,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
     private var frames: [UInt32: FrameBuffer] = [:]
     private var lastDeliveredFrameId: UInt32?
+    private var lastAudioSeq: UInt32?
     private var awaitingKeyframe = true
     private var recvScratch = [UInt8](repeating: 0, count: 65536)
 
@@ -142,6 +145,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             self.helloSentCount = 0
             self.frames.removeAll()
             self.lastDeliveredFrameId = nil
+            self.lastAudioSeq = nil
             self.awaitingKeyframe = true
 
             // Setup non-blocking read source
@@ -188,6 +192,141 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             self.handshakeTimeoutTimer = timeoutTimer
             timeoutTimer.resume()
         }
+    }
+
+    /// Starts UDP receiver with RFC 5389 STUN NAT hole punching (used for Relay/WAN sessions):
+    /// 1. Opens an unconnected IPv4 UDP socket bound to an ephemeral local port.
+    /// 2. Probes STUN on that exact socket fd to learn the client's external `(ip, port)`.
+    /// 3. Invokes `onLocalPublicEndpoint(ip, port)` so the caller sends `udp_punch` over WS.
+    /// 4. Connects the same bound fd to `(publicHost, publicPort)` and sends `HELLO` packets
+    ///    with a 1.2s timeout (stopping cleanly if hole punch fails so WS/Relay continues).
+    public func startWithStunPunch(
+        publicHost: String,
+        publicPort: UInt16,
+        token: Data,
+        aesKey: Data? = nil,
+        onLocalPublicEndpoint: @escaping (String, UInt16) -> Void
+    ) {
+        guard token.count == Self.tokenLength, publicPort > 0, !publicHost.isEmpty else { return }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            guard let fd = Self.openBoundIPv4UdpSocket() else { return }
+
+            if let mapped = StunClient.discoverPublicEndpoint(existingSocketFd: fd, timeoutSeconds: 1.5) {
+                onLocalPublicEndpoint(mapped.publicIp, mapped.publicPort)
+            }
+
+            guard Self.connectUdpSocket(fd: fd, host: publicHost, port: publicPort) else {
+                close(fd)
+                return
+            }
+
+            self.queue.async { [weak self] in
+                guard let self else {
+                    close(fd)
+                    return
+                }
+                self.stopLocked(notifyDisconnect: false)
+
+                self.sockFd = fd
+                self.token = token
+                if let keyData = aesKey, keyData.count == 32 {
+                    self.aesKey = SymmetricKey(data: keyData)
+                } else {
+                    self.aesKey = nil
+                }
+                self.isActive = true
+                self.isConnected = false
+                self.helloSentCount = 0
+                self.frames.removeAll()
+                self.lastDeliveredFrameId = nil
+                self.lastAudioSeq = nil
+                self.awaitingKeyframe = true
+
+                let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: self.queue)
+                source.setEventHandler { [weak self] in
+                    self?.drainSocketLocked()
+                }
+                source.setCancelHandler {
+                    close(fd)
+                }
+                self.readSource = source
+                source.resume()
+
+                // Send up to 6 HELLO packets 100ms apart to bridge NAT punch timing
+                self.sendControlPacketLocked(type: Self.packetTypeHello)
+                self.helloSentCount = 1
+
+                let hTimer = DispatchSource.makeTimerSource(queue: self.queue)
+                hTimer.schedule(deadline: .now() + Self.helloIntervalSeconds, repeating: Self.helloIntervalSeconds)
+                hTimer.setEventHandler { [weak self] in
+                    guard let self, self.isActive, !self.isConnected else {
+                        self?.helloTimer?.cancel()
+                        self?.helloTimer = nil
+                        return
+                    }
+                    if self.helloSentCount >= 6 {
+                        self.helloTimer?.cancel()
+                        self.helloTimer = nil
+                        return
+                    }
+                    self.sendControlPacketLocked(type: Self.packetTypeHello)
+                    self.helloSentCount += 1
+                }
+                self.helloTimer = hTimer
+                hTimer.resume()
+
+                // 1.2s hole-punch timeout before falling back cleanly to WS/Relay
+                let timeoutTimer = DispatchSource.makeTimerSource(queue: self.queue)
+                timeoutTimer.schedule(deadline: .now() + 1.2)
+                timeoutTimer.setEventHandler { [weak self] in
+                    guard let self, self.isActive, !self.isConnected else { return }
+                    self.stopLocked(notifyDisconnect: false)
+                }
+                self.handshakeTimeoutTimer = timeoutTimer
+                timeoutTimer.resume()
+            }
+        }
+    }
+
+    private static func openBoundIPv4UdpSocket() -> Int32? {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return nil }
+        var rcvBuf = receiveBufferSize
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, socklen_t(MemoryLayout<Int32>.size))
+        let flags = fcntl(fd, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+        var local = sockaddr_in()
+        local.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        local.sin_family = sa_family_t(AF_INET)
+        local.sin_port = 0
+        local.sin_addr = in_addr(s_addr: INADDR_ANY.bigEndian)
+        let bindRes = withUnsafePointer(to: &local) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                bind(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindRes == 0 else {
+            close(fd)
+            return nil
+        }
+        return fd
+    }
+
+    private static func connectUdpSocket(fd: Int32, host: String, port: UInt16) -> Bool {
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+        hints.ai_protocol = IPPROTO_UDP
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, String(port), &hints, &res) == 0, let first = res else {
+            return false
+        }
+        defer { freeaddrinfo(res) }
+        return connect(fd, first.pointee.ai_addr, first.pointee.ai_addrlen) == 0
     }
 
     public func stop() {
@@ -275,6 +414,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
         frames.removeAll()
         lastDeliveredFrameId = nil
+        lastAudioSeq = nil
         awaitingKeyframe = true
         token = Data()
         aesKey = nil
@@ -338,9 +478,55 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             handleVideoPacketLocked(count: count, isParity: false)
         case Self.packetTypeFecParity:
             handleVideoPacketLocked(count: count, isParity: true)
+        case Self.packetTypeAudio:
+            handleAudioPacketLocked(count: count)
         default:
             break
         }
+    }
+
+    /// Handles strictly video-first UDP audio packet (`0x14`), completely isolated
+    /// from video `lastDeliveredFrameId` / `awaitingKeyframe` / `frames`.
+    private func handleAudioPacketLocked(count: Int) {
+        guard count >= Self.videoHeaderSize else { return }
+        let seq = (UInt32(recvScratch[4]) << 24)
+            | (UInt32(recvScratch[5]) << 16)
+            | (UInt32(recvScratch[6]) << 8)
+            | UInt32(recvScratch[7])
+        let payloadLen = Int((UInt16(recvScratch[16]) << 8) | UInt16(recvScratch[17]))
+        let isEncrypted = (recvScratch[18] & Self.encryptedFlag) != 0
+
+        if let lastSeq = lastAudioSeq, !Self.isFrameNewer(seq, than: lastSeq) {
+            return
+        }
+
+        let payload: Data
+        if isEncrypted {
+            guard count >= Self.videoHeaderSize + payloadLen + Self.gcmTagSize,
+                  let key = aesKey else {
+                return
+            }
+            let nonceBytes: [UInt8] = [
+                Self.magic0, Self.magic1, Self.packetTypeAudio, recvScratch[13],
+                recvScratch[4], recvScratch[5], recvScratch[6], recvScratch[7],
+                recvScratch[8], recvScratch[9], recvScratch[10], recvScratch[11]
+            ]
+            let header20 = Data(bytes: &recvScratch[0], count: Self.videoHeaderSize)
+            let ciphertext = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
+            let tag = Data(bytes: &recvScratch[Self.videoHeaderSize + payloadLen], count: Self.gcmTagSize)
+            guard let nonce = try? AES.GCM.Nonce(data: nonceBytes),
+                  let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag),
+                  let plaintext = try? AES.GCM.open(box, using: key, authenticating: header20) else {
+                return
+            }
+            payload = plaintext
+        } else {
+            guard count >= Self.videoHeaderSize + payloadLen else { return }
+            payload = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
+        }
+
+        lastAudioSeq = seq
+        onAudioFrame?(payload)
     }
 
     private func handleHelloAckLocked(count: Int) {

@@ -46,6 +46,7 @@ final class UdpVideoServer {
     static let packetFecParity: UInt8 = 0x11
     static let packetNack: UInt8      = 0x12
     static let packetFeedback: UInt8  = 0x13
+    static let packetAudio: UInt8     = 0x14
 
     static let defaultPort: UInt16 = 7789
     static let maxFragmentPayload: Int = 1200
@@ -145,6 +146,18 @@ final class UdpVideoServer {
     private var pacerRunning = false
     private var sessions: [Data: PeerSession] = [:]
 
+    // Cached public STUN endpoint (60s TTL) for P2P NAT hole punching
+    private var _publicEndpoint: (ip: String, port: UInt16)?
+    private var lastStunRefreshAt: Date = .distantPast
+    private var pendingStunTxID: Data?
+    private static let stunTtlSeconds: TimeInterval = 60.0
+
+    var publicEndpoint: (ip: String, port: UInt16)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _publicEndpoint
+    }
+
     private(set) var listeningPort: UInt16 = 0
 
     private init() {}
@@ -201,7 +214,78 @@ final class UdpVideoServer {
 
         ConnectionLogger.shared.logStep(sessionId: "udp", step: "udp_video_started",
                                         detail: "port=\(boundPort) dualStack=\(dualStack)")
+        refreshPublicEndpointAsync(force: true)
         return true
+    }
+
+    /// Probes STUN directly out of the bound `sockfd` (60s TTL) so the discovered
+    /// external `(ip, port)` matches our exact UDP listening port for NAT hole punching.
+    func refreshPublicEndpointAsync(force: Bool = false) {
+        lock.lock()
+        let fd = sockfd
+        let dualStack = isIPv6
+        let now = Date()
+        if fd < 0 || (!force && now.timeIntervalSince(lastStunRefreshAt) < Self.stunTtlSeconds) {
+            lock.unlock()
+            return
+        }
+        lastStunRefreshAt = now
+        let txID = StunClient.randomTransactionID()
+        pendingStunTxID = txID
+        lock.unlock()
+
+        let request = StunClient.buildBindingRequest(txID: txID)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            for server in StunClient.defaultServers {
+                guard var dest = self.resolveUdpTarget(host: server.host, port: server.port, asDualStackIPv6: dualStack) else {
+                    continue
+                }
+                self.lock.lock()
+                let curFd = self.sockfd
+                self.lock.unlock()
+                guard curFd >= 0 else { return }
+                self.sendDataPacket(fd: curFd, data: request, peerAddr: &dest.addr, peerLen: dest.len)
+            }
+        }
+    }
+
+    /// Sends 3 `HELLO_ACK` datagrams 50ms apart to `(ip, port)` to punch a NAT pinhole
+    /// for incoming client `HELLO` packets during STUN UDP hole punching.
+    func sendHolePunch(token: Data, ip: String, port: UInt16) {
+        guard token.count == 16, port > 0, !ip.isEmpty else { return }
+        lock.lock()
+        let dualStack = isIPv6
+        let hasSession = sessions[token] != nil
+        lock.unlock()
+        guard hasSession else { return }
+
+        var ack = [UInt8](repeating: 0, count: 20)
+        ack[0] = Self.magic0
+        ack[1] = Self.magic1
+        ack[2] = Self.version
+        ack[3] = Self.packetHelloAck
+        token.copyBytes(to: &ack[4], count: 16)
+        let ackData = Data(ack)
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self,
+                  let dest = self.resolveUdpTarget(host: ip, port: port, asDualStackIPv6: dualStack) else {
+                return
+            }
+            for i in 0..<3 {
+                let delayMs = i * 50
+                self.ioQueue.asyncAfter(deadline: .now() + .milliseconds(delayMs)) { [weak self] in
+                    guard let self else { return }
+                    self.lock.lock()
+                    let fd = self.sockfd
+                    self.lock.unlock()
+                    guard fd >= 0 else { return }
+                    var addrCopy = dest.addr
+                    self.sendDataPacket(fd: fd, data: ackData, peerAddr: &addrCopy, peerLen: dest.len)
+                }
+            }
+        }
     }
 
     func stop() {
@@ -554,6 +638,85 @@ final class UdpVideoServer {
         return ok
     }
 
+    /// Strictly video-first UDP audio transmission (`packetType = 0x14`).
+    /// - Returns `false` if UDP is inactive or frame exceeds single-packet MTU (caller uses WS TCP).
+    /// - Under congestion (`pendingPaced > 4` or `fecLevel == .heavy`) or socket `EAGAIN`/`ENOBUFS`,
+    ///   silently drops the audio packet and returns `true` so audio never competes with video or
+    ///   falls back to TCP head-of-line blocking.
+    /// - Never caches in NACK ring buffer, never emits FEC parity, never enqueues into `pacingQueue`,
+    ///   and never increments `windowSentDataPackets`.
+    func sendAudioFrame(
+        token: Data,
+        seq: UInt32,
+        ptsMs: UInt32,
+        data: Data
+    ) -> Bool {
+        let totalLen = data.count
+        guard totalLen > 0, totalLen <= Self.maxFragmentPayload else {
+            return false
+        }
+
+        lock.lock()
+        let fd = sockfd
+        guard fd >= 0,
+              let session = sessions[token],
+              session.isActive,
+              let peerAddr = session.peerAddr else {
+            lock.unlock()
+            return false
+        }
+        let pendingPaced = session.pacingQueue.count - session.pacingReadIndex
+        if pendingPaced > 4 || session.fecLevel == .heavy {
+            lock.unlock()
+            return true
+        }
+        let peerLen = session.peerLen
+        let symmetricKey = session.symmetricKey
+        lock.unlock()
+
+        let encryptedFlag: UInt8 = (symmetricKey != nil) ? 0x01 : 0x00
+        var packetBuf = [UInt8](repeating: 0, count: Self.headerSize + totalLen + Self.gcmTagSize)
+        writeHeader(
+            into: &packetBuf,
+            packetType: Self.packetAudio,
+            frameId: seq,
+            ptsMs: ptsMs,
+            flags: 0,
+            fragIndex: 0,
+            fragCount: 1,
+            fecGroupSize: 0,
+            payloadLen: UInt16(totalLen),
+            encFlag: encryptedFlag,
+            fecFlags: 0
+        )
+
+        let wireLen: Int? = data.withUnsafeBytes { rawBuf in
+            guard let basePtr = rawBuf.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            if let key = symmetricKey {
+                let slice = UnsafeBufferPointer(start: basePtr, count: totalLen)
+                return sealIntoPacketBuffer(
+                    packetBuf: &packetBuf,
+                    plaintext: slice,
+                    key: key,
+                    packetType: Self.packetAudio,
+                    fragIndex: 0,
+                    frameId: seq,
+                    ptsMs: ptsMs
+                )
+            } else {
+                for j in 0..<totalLen {
+                    packetBuf[Self.headerSize + j] = basePtr[j]
+                }
+                return Self.headerSize + totalLen
+            }
+        }
+        guard let wireLen else { return true }
+
+        var addrCopy = peerAddr
+        _ = sendPacket(fd: fd, buffer: packetBuf, length: wireLen, peerAddr: &addrCopy, peerLen: peerLen)
+        return true
+    }
+
     // MARK: - Private helpers
 
     private func sealIntoPacketBuffer(
@@ -687,6 +850,14 @@ final class UdpVideoServer {
                 if err == EAGAIN || err == EWOULDBLOCK { break }
                 break
             }
+            // RFC 5389 STUN Binding Success Response (0x0101 + magic cookie 0x2112A442)
+            if n >= 20,
+               recvBuf[0] == 0x01, recvBuf[1] == 0x01,
+               recvBuf[4] == 0x21, recvBuf[5] == 0x12,
+               recvBuf[6] == 0xA4, recvBuf[7] == 0x42 {
+                handleStunResponse(Data(recvBuf[0..<n]))
+                continue
+            }
             guard n >= 20,
                   recvBuf[0] == Self.magic0,
                   recvBuf[1] == Self.magic1,
@@ -709,6 +880,62 @@ final class UdpVideoServer {
             default:
                 break
             }
+        }
+    }
+
+    private func handleStunResponse(_ data: Data) {
+        lock.lock()
+        let txID = pendingStunTxID
+        lock.unlock()
+        guard let txID, let mapped = StunClient.parseBindingResponse(data, expectedTxID: txID) else {
+            return
+        }
+        lock.lock()
+        _publicEndpoint = (ip: mapped.publicIp, port: mapped.publicPort)
+        pendingStunTxID = nil
+        lock.unlock()
+        ConnectionLogger.shared.logStep(
+            sessionId: "udp",
+            step: "udp_stun_discovered",
+            detail: "\(mapped.publicIp):\(mapped.publicPort)"
+        )
+    }
+
+    private func resolveUdpTarget(host: String, port: UInt16, asDualStackIPv6: Bool) -> (addr: sockaddr_storage, len: socklen_t)? {
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+        hints.ai_protocol = IPPROTO_UDP
+
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, String(port), &hints, &res) == 0, let first = res else {
+            return nil
+        }
+        defer { freeaddrinfo(res) }
+        guard let rawAddr = first.pointee.ai_addr else { return nil }
+        let ipv4 = rawAddr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+
+        var storage = sockaddr_storage()
+        if asDualStackIPv6 {
+            var v6 = sockaddr_in6()
+            v6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            v6.sin6_family = sa_family_t(AF_INET6)
+            v6.sin6_port = ipv4.sin_port
+            // IPv4-mapped IPv6 address ::ffff:a.b.c.d
+            let ipBytes = withUnsafeBytes(of: ipv4.sin_addr.s_addr) { Array($0) }
+            v6.sin6_addr.__u6_addr.__u6_addr8 = (
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF,
+                ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3]
+            )
+            withUnsafeMutablePointer(to: &storage) { ptr in
+                ptr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee = v6 }
+            }
+            return (storage, socklen_t(MemoryLayout<sockaddr_in6>.size))
+        } else {
+            withUnsafeMutablePointer(to: &storage) { ptr in
+                ptr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee = ipv4 }
+            }
+            return (storage, socklen_t(MemoryLayout<sockaddr_in>.size))
         }
     }
 

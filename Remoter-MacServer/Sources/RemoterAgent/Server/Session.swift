@@ -22,6 +22,9 @@ final class Session {
     private var encoder: VideoEncoder?
     private var audioEncoder: AudioEncoder?
     private var audioEnabled = false
+    private var audioSeq: UInt32 = 0
+    private var micPlayer: MicPlayer?
+    private var micEnabled = false
     private var cursorMonitor: CursorMonitor?
     private let lastFrameLock = NSLock()
     private var _lastFrame: CVPixelBuffer?
@@ -320,6 +323,13 @@ final class Session {
         // 未加密文本消息兜底（E2E 握手前）
         print("[Session] binary non-E2E prefix=\(data[0]) len=\(data.count)")
 
+        // Opt-in client microphone PCM passthrough (0x04) -> virtual audio device
+        if authenticated && micEnabled && data.count > 1 && data[0] == FrameType.micAudio.rawValue {
+            bytesRecv += Int64(data.count)
+            micPlayer?.enqueuePcm(Data(data[1...]))
+            return
+        }
+
         // Regular binary (file chunk)
         guard authenticated, data.count > 1, data[0] == FrameType.fileChunk.rawValue else { return }
         guard data.count > 21 else { return }
@@ -362,6 +372,9 @@ final class Session {
         }
         cursorMonitor?.stop()
         cursorMonitor = nil
+        micEnabled = false
+        micPlayer?.stop()
+        micPlayer = nil
         if displayAwakeHeld {
             displayAwakeHeld = false
             PowerManager.shared.setDisplayActive(false)
@@ -707,6 +720,35 @@ final class Session {
             audioEnabled = enabled
             if enabled { startAudioStream() } else { stopAudioStream() }
 
+        case .setMicEnabled(let enabled):
+            if enabled {
+                let player = micPlayer ?? MicPlayer()
+                if player.start() {
+                    micPlayer = player
+                    micEnabled = true
+                    sendJson([
+                        "type": "mic_status",
+                        "available": true,
+                        "enabled": true,
+                        "device": player.activeDeviceName
+                    ])
+                } else {
+                    micEnabled = false
+                    micPlayer = nil
+                    sendJson([
+                        "type": "mic_status",
+                        "available": false,
+                        "enabled": false,
+                        "reason": "no_virtual_audio_device"
+                    ])
+                }
+            } else {
+                micEnabled = false
+                micPlayer?.stop()
+                micPlayer = nil
+                sendJson(["type": "mic_status", "available": true, "enabled": false])
+            }
+
         case .setPrivacyScreen(let enabled):
             Task { @MainActor in
                 if enabled {
@@ -819,6 +861,11 @@ final class Session {
 
         case .webrtcICE(let json):
             webrtc?.handleRemoteICE(json)
+
+        case .udpPunch(let ip, let port):
+            guard !ip.isEmpty, port > 0 else { break }
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "udp_punch", detail: "\(ip):\(port)")
+            UdpVideoServer.shared.sendHolePunch(token: udpSessionToken, ip: ip, port: port)
 
         case .clientStats(_, _, let rx):
             // TEMP DIAGNOSTIC — the sender side measures healthy during
@@ -1050,6 +1097,20 @@ final class Session {
             let enc = AudioEncoder()
             enc.onEncodedFrame = { [weak self] data in
                 guard let self, self.connection.isActive else { return }
+                if self.usingUdpVideo {
+                    let seq = self.audioSeq
+                    self.audioSeq &+= 1
+                    let nowMs = UInt32(Date().timeIntervalSince(self.connectTime ?? Date()) * 1000)
+                    if UdpVideoServer.shared.sendAudioFrame(
+                        token: self.udpSessionToken,
+                        seq: seq,
+                        ptsMs: nowMs,
+                        data: data
+                    ) {
+                        self.bytesSent += Int64(data.count)
+                        return
+                    }
+                }
                 var pkt = Data(capacity: 1 + data.count)
                 pkt.append(FrameType.audioFrame.rawValue)
                 pkt.append(data)
@@ -1423,13 +1484,19 @@ final class Session {
                         )
                     }
                 )
+                UdpVideoServer.shared.refreshPublicEndpointAsync()
                 UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: currentBitrate)
-                sendJson([
+                var udpOffer: [String: Any] = [
                     "type": "udp_offer",
                     "port": Int(udpPort),
                     "session_token": udpSessionTokenHex,
                     "encrypted": (cryptoKey != nil)
-                ])
+                ]
+                if let pub = UdpVideoServer.shared.publicEndpoint {
+                    udpOffer["publicIp"] = pub.ip
+                    udpOffer["publicPort"] = Int(pub.port)
+                }
+                sendJson(udpOffer)
             }
 
             c.onFrame = { [weak self] pixelBuffer, _, _ in

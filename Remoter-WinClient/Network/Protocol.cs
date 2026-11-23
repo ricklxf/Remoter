@@ -301,6 +301,9 @@ public static class ClientMessages
 
     public static byte[] VirtualDisplay(string action, int? width = null, int? height = null, int? fps = null) =>
         Serialize(new { type = "virtual_display", action, width, height, fps });
+
+    public static byte[] UdpPunch(string ip, int port) =>
+        Serialize(new { type = "udp_punch", ip, port });
 }
 
 /// <summary>
@@ -325,7 +328,12 @@ public abstract record ServerMessage
     public sealed record ChromaActive(ChromaMode Mode) : ServerMessage;
     public sealed record HdrActive(bool Enabled) : ServerMessage;
     public sealed record ForceCanvas(bool Enabled) : ServerMessage;
-    public sealed record UdpOffer(int Port, string SessionTokenHex, bool Encrypted = false) : ServerMessage;
+    public sealed record UdpOffer(
+        int Port,
+        string SessionTokenHex,
+        bool Encrypted = false,
+        string? PublicIp = null,
+        int PublicPort = 0) : ServerMessage;
     public sealed record UdpActive(bool Enabled) : ServerMessage;
     public sealed record VirtualDisplayActive(bool Enabled, int? DisplayId = null) : ServerMessage;
     public sealed record InputLockChanged(bool Locked) : ServerMessage;
@@ -382,7 +390,9 @@ public abstract record ServerMessage
             "udp_offer" => new UdpOffer(
                 Port: root.ReadInt("port"),
                 SessionTokenHex: root.ReadString("session_token"),
-                Encrypted: root.ReadBool("encrypted", defaultValue: false)),
+                Encrypted: root.ReadBool("encrypted", defaultValue: false),
+                PublicIp: root.ReadNullableString("publicIp"),
+                PublicPort: root.ReadInt("publicPort")),
 
             "udp_active" => new UdpActive(root.ReadBool("enabled")),
 

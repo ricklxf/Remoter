@@ -317,4 +317,51 @@ struct ProtocolAndCryptoTests {
         #expect(RemoterConnection.isSameIPv4Subnet(targetHostOrder: loopback) == true)
         #expect(RemoterConnection.parseIPv4HostOrder("not-an-ip") == nil)
     }
+
+    // MARK: - RFC 5389 STUN Client Tests
+
+    @Test("RFC 5389 STUN Binding Request and XOR-MAPPED-ADDRESS round-trip")
+    func stunRfc5389XorMappedAddressRoundTrip() throws {
+        let txID = Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C])
+        let req = StunClient.buildBindingRequest(txID: txID)
+        #expect(req.count == 20)
+        #expect(req[0] == 0x00 && req[1] == 0x01) // Binding Request
+        #expect(req[4] == 0x21 && req[5] == 0x12 && req[6] == 0xA4 && req[7] == 0x42) // Magic Cookie
+        #expect(req.subdata(in: 8..<20) == txID)
+
+        // Build a synthetic Binding Success Response (0x0101) with XOR-MAPPED-ADDRESS (203.0.113.42:54321)
+        let attr = try #require(StunClient.encodeXorMappedAddressAttribute(ip: "203.0.113.42", port: 54321))
+        #expect(attr.count == 12)
+        var resp = Data([
+            0x01, 0x01, // Binding Success Response
+            0x00, UInt8(attr.count), // Message Length = 12
+            0x21, 0x12, 0xA4, 0x42   // Magic Cookie
+        ])
+        resp.append(txID)
+        resp.append(attr)
+
+        let parsed = try #require(StunClient.parseBindingResponse(resp, expectedTxID: txID))
+        #expect(parsed.publicIp == "203.0.113.42")
+        #expect(parsed.publicPort == 54321)
+
+        // Mismatched transaction ID must be rejected
+        let wrongTx = Data(repeating: 0xAA, count: 12)
+        #expect(StunClient.parseBindingResponse(resp, expectedTxID: wrongTx) == nil)
+
+        // Fallback MAPPED-ADDRESS (0x0001) response (198.51.100.7:12345)
+        let mappedAttr = Data([
+            0x00, 0x01, // MAPPED-ADDRESS
+            0x00, 0x08, // Length = 8
+            0x00, 0x01, // IPv4
+            0x30, 0x39, // 12345 BE
+            198, 51, 100, 7
+        ])
+        var mappedResp = Data([0x01, 0x01, 0x00, 12, 0x21, 0x12, 0xA4, 0x42])
+        mappedResp.append(txID)
+        mappedResp.append(mappedAttr)
+
+        let parsedMapped = try #require(StunClient.parseBindingResponse(mappedResp, expectedTxID: txID))
+        #expect(parsedMapped.publicIp == "198.51.100.7")
+        #expect(parsedMapped.publicPort == 12345)
+    }
 }

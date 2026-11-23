@@ -38,6 +38,12 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
     private let connectButton = Theme.makeButton(title: "连  接", style: .primary, fontSize: 14, weight: .semibold)
     private let statusLabel = Theme.makeLabel("", size: 12, color: Theme.textMuted)
 
+    // LAN mDNS auto-discovery quick-pick pills
+    private let lanBrowser = LanDiscoveryBrowser()
+    private var lanPeers: [DiscoveredLanPeer] = []
+    private let lanSection = NSStackView()
+    private let lanPillsStack = NSStackView()
+
     private var selectedDevice: SavedDevice?
 
     public init() {
@@ -56,6 +62,16 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
         super.init(window: window)
         buildUI()
         reloadDevices()
+        lanBrowser.onPeersChanged = { [weak self] peers in
+            DispatchQueue.main.async {
+                self?.updateLanPeers(peers)
+            }
+        }
+        lanBrowser.start()
+    }
+
+    deinit {
+        lanBrowser.stop()
     }
 
     @available(*, unavailable)
@@ -84,6 +100,7 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
 
     public func showAndFocus(errorMessage: String? = nil) {
         reloadDevices()
+        lanBrowser.start()
         if let errorMessage, !errorMessage.isEmpty {
             setStatus(errorMessage, isError: true)
         }
@@ -314,10 +331,25 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
         let userSection = makeVerticalField(label: usernameLabel, field: usernameField)
         let secretSection = makeVerticalField(label: secretLabel, field: secretField)
 
-        let mainStack = NSStackView(views: [hostPortRow, authSection, userSection, secretSection, rememberCheckbox])
+        // Compact "局域网设备" quick-pick pill list (hidden when no LAN peers discovered)
+        let lanLabel = Theme.makeLabel("局域网设备 (点击自动填入)", size: 11.5, weight: .medium, color: Theme.accent)
+        lanPillsStack.orientation = .horizontal
+        lanPillsStack.alignment = .centerY
+        lanPillsStack.spacing = 6
+        lanPillsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        lanSection.orientation = .vertical
+        lanSection.alignment = .leading
+        lanSection.spacing = 4
+        lanSection.translatesAutoresizingMaskIntoConstraints = false
+        lanSection.addArrangedSubview(lanLabel)
+        lanSection.addArrangedSubview(lanPillsStack)
+        lanSection.isHidden = true
+
+        let mainStack = NSStackView(views: [lanSection, hostPortRow, authSection, userSection, secretSection, rememberCheckbox])
         mainStack.orientation = .vertical
         mainStack.alignment = .leading
-        mainStack.spacing = 12
+        mainStack.spacing = 10
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
         directContainer.addSubview(mainStack)
@@ -326,10 +358,45 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
             mainStack.trailingAnchor.constraint(equalTo: directContainer.trailingAnchor),
             mainStack.topAnchor.constraint(equalTo: directContainer.topAnchor),
 
+            lanSection.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
             hostPortRow.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
             userSection.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
             secretSection.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
         ])
+    }
+
+    private func updateLanPeers(_ peers: [DiscoveredLanPeer]) {
+        self.lanPeers = peers
+        for view in lanPillsStack.arrangedSubviews {
+            lanPillsStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        guard !peers.isEmpty else {
+            lanSection.isHidden = true
+            return
+        }
+        lanSection.isHidden = false
+        for (idx, peer) in peers.prefix(4).enumerated() {
+            let btn = Theme.makeButton(title: "📡 \(peer.name)", style: .toolbar, fontSize: 11.5, weight: .medium)
+            btn.tag = idx
+            btn.target = self
+            btn.action = #selector(lanPeerPillClicked(_:))
+            btn.toolTip = "\(peer.name) — \(peer.host):\(peer.wsPort)"
+            btn.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            lanPillsStack.addArrangedSubview(btn)
+        }
+    }
+
+    @objc private func lanPeerPillClicked(_ sender: NSButton) {
+        let idx = sender.tag
+        guard idx >= 0 && idx < lanPeers.count else { return }
+        let peer = lanPeers[idx]
+        modeSegmented.selectedSegment = 0
+        updateModeVisibility()
+        hostField.stringValue = peer.host
+        portField.stringValue = "\(peer.wsPort)"
+        setStatus("已填入局域网设备: \(peer.name) (\(peer.host):\(peer.wsPort))")
+        window?.makeFirstResponder(secretField)
     }
 
     private func buildRelayContainer() {

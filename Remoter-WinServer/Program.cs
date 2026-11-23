@@ -46,6 +46,15 @@ public class Program
         
         try
         {
+            UdpVideoServer.Shared.Start(7789);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Global] UdpVideoServer start failed (falling back to WS): {ex.Message}");
+        }
+
+        try
+        {
             Application.Run(new MainForm());
         }
         catch (Exception ex)
@@ -54,6 +63,10 @@ public class Program
             AppLog.Write($"[Global] StackTrace: {ex.StackTrace}");
             MessageBox.Show($"程序发生错误：{ex.Message}\n\n请查看日志文件获取详细信息。", 
                 "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UdpVideoServer.Shared.Stop();
         }
     }
 }

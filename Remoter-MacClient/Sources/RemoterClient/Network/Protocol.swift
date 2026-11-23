@@ -310,6 +310,10 @@ public enum ClientMessages {
         serialize(["type": "power_action", "action": action])
     }
 
+    public static func udpPunch(ip: String, port: UInt16) -> Data {
+        serialize(["type": "udp_punch", "ip": ip, "port": Int(port)])
+    }
+
     public static func virtualDisplay(
         action: String,
         width: Int? = nil,
@@ -336,7 +340,7 @@ public enum ServerMessage: Equatable, Sendable {
     case chromaActive(ChromaMode)
     case hdrActive(enabled: Bool)
     case forceCanvas(enabled: Bool)
-    case udpOffer(port: Int, sessionTokenHex: String, encrypted: Bool)
+    case udpOffer(port: Int, sessionTokenHex: String, encrypted: Bool, publicIp: String? = nil, publicPort: Int? = nil)
     case udpActive(enabled: Bool)
     case virtualDisplayActive(enabled: Bool, displayId: Int?)
     case inputLockChanged(locked: Bool)
@@ -404,10 +408,14 @@ public enum ServerMessage: Equatable, Sendable {
             return .forceCanvas(enabled: readBool(root, "enabled"))
 
         case "udp_offer":
+            let pubIp = readOptionalString(root, "publicIp")
+            let pubPortRaw = readInt(root, "publicPort", defaultValue: 0)
             return .udpOffer(
                 port: readInt(root, "port"),
                 sessionTokenHex: readString(root, "session_token"),
-                encrypted: readBool(root, "encrypted", defaultValue: false)
+                encrypted: readBool(root, "encrypted", defaultValue: false),
+                publicIp: (pubIp?.isEmpty == false) ? pubIp : nil,
+                publicPort: pubPortRaw > 0 ? pubPortRaw : nil
             )
 
         case "udp_active":

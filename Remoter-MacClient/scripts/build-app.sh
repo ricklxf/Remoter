@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_NAME="RemoterClient"
 BUNDLE_ID="com.remoter.client"
-APP_VERSION="2.0.121"
+APP_VERSION="$(sed -n 's/.*kAppVersion *= *"\([^"]*\)".*/\1/p' "${ROOT_DIR}/Sources/RemoterClient/AppVersion.swift" | head -n 1)"
+APP_VERSION="${APP_VERSION:-3.0.0}"
 
 BUILD_CONFIG="debug"
 DO_INSTALL=0

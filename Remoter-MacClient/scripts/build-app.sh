@@ -58,6 +58,10 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
+if [[ -f "${ROOT_DIR}/Resources/AppIcon.icns" ]]; then
+    cp "${ROOT_DIR}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+fi
+
 printf 'APPL????' > "${CONTENTS_DIR}/PkgInfo"
 
 cat > "${CONTENTS_DIR}/Info.plist" <<EOF
@@ -71,6 +75,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <string>Remoter Client</string>
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleInfoDictionaryVersion</key>

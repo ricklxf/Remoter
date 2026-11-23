@@ -181,6 +181,8 @@ final class Session {
     // separate knobs, not one bundled "quality" choice.
     private var autoFpsEnabled = false
     private var autoBitrateEnabled = false
+    private var manualFpsSelected = false
+    private var manualBitrateSelected = false
     private var autoFpsIndex = 0
     private var autoBitrateIndex = 0
     private var autoFpsCleanStreak = 0
@@ -462,6 +464,7 @@ final class Session {
             webrtc?.offLanHinted = clientNotOnLan
             webrtc?.lanFloorAllowed = lan
             webrtc?.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
+            UdpVideoServer.shared.setFecSuppressionAllowed(token: udpSessionToken, allowed: lan)
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
 
         case .key(let code, let down, let mods):
@@ -533,30 +536,42 @@ final class Session {
 
         case .fpsSet(let fps, let auto):
             autoFpsEnabled = auto
+            manualFpsSelected = !auto
             if auto {
-                // Race with the RTP-ready one-shot bump below (onFrame,
-                // ~line 900): that bump only fires on the false→true
-                // transition of usingRtpVideo, so if THIS message (client's
-                // initial auto=true on mount) arrives after RTP already
-                // flipped it, starting at tier 0 here would overwrite the
-                // bump and get permanently stuck at the bottom — no second
-                // chance ever comes. Start at the top tier ourselves
-                // whenever RTP is already live, same as that bump does.
-                autoFpsIndex = usingRtpVideo ? autoFpsTopIndex : 0
-                autoFpsCleanStreak = 0
-                applyFps(Self.autoFpsTiers[autoFpsIndex])
+                if usingRtpVideo {
+                    autoFpsIndex = autoFpsTopIndex
+                    autoFpsCleanStreak = 0
+                    applyFps(Self.autoFpsTiers[autoFpsIndex])
+                } else if usingUdpVideo {
+                    autoFpsIndex = min(1, autoFpsTopIndex) // 60fps floor for direct UDP
+                    autoFpsCleanStreak = 0
+                    applyFps(max(60, Self.autoFpsTiers[autoFpsIndex]))
+                } else {
+                    autoFpsIndex = 0
+                    autoFpsCleanStreak = 0
+                    applyFps(Self.autoFpsTiers[autoFpsIndex])
+                }
             } else {
                 applyFps(fps)
             }
 
         case .bitrateSet(let bitrate, let auto):
             autoBitrateEnabled = auto
+            manualBitrateSelected = !auto
             webrtc?.tunnelCapActive = clientNotOnLan && auto
             if auto {
-                // Same race as .fpsSet above, same fix.
-                autoBitrateIndex = usingRtpVideo ? Self.autoBitrateTiers.count - 1 : 0
-                autoBitrateCleanStreak = 0
-                applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
+                if usingRtpVideo {
+                    autoBitrateIndex = Self.autoBitrateTiers.count - 1
+                    autoBitrateCleanStreak = 0
+                    applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
+                } else if usingUdpVideo {
+                    autoBitrateCleanStreak = 0
+                    applyBitrate(max(6_000_000, currentBitrate))
+                } else {
+                    autoBitrateIndex = 0
+                    autoBitrateCleanStreak = 0
+                    applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
+                }
             } else {
                 applyBitrate(bitrate)
             }
@@ -1336,6 +1351,7 @@ final class Session {
                 UdpVideoServer.shared.registerSession(
                     token: udpSessionToken,
                     aesKey: cryptoKey,
+                    allowFecSuppression: !clientNotOnLan,
                     onActivated: { [weak self] active in
                         guard let self, !self.isClosed else { return }
                         self.usingUdpVideo = active
@@ -1347,6 +1363,18 @@ final class Session {
                         )
                         self.sendJson(["type": "udp_active", "enabled": active])
                         if active {
+                            var qualityBumped = false
+                            if !self.manualFpsSelected && self.currentFps < 60 {
+                                self.applyFps(60, notify: false)
+                                qualityBumped = true
+                            }
+                            if !self.manualBitrateSelected && self.currentBitrate < 6_000_000 {
+                                self.applyBitrate(6_000_000, notify: false)
+                                qualityBumped = true
+                            }
+                            if qualityBumped {
+                                self.notifyQualityActive()
+                            }
                             self.encoder?.forceKeyframe()
                         }
                     },
@@ -1495,11 +1523,11 @@ final class Session {
             let transportLabel = usingRtpVideo ? "rtp" : (usingUdpVideo ? "udp" : (usingWebRTCVideo ? "webrtc" : "ws"))
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(transportLabel) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
-            // On the RTP path libwebrtc's GCC owns bandwidth adaptation and
-            // the browser handles decode-overload (frame dropping + PLI), so
-            // our reactive stepping would just fight it — only run it for
-            // the fallback (WS/DataChannel + WebCodecs) transport.
-            if !usingRtpVideo && (autoFpsEnabled || autoBitrateEnabled) { evaluateAutoQuality() }
+            // On RTP, libwebrtc's GCC owns adaptation; on direct UDP,
+            // handleUdpLossFeedback owns bitrate adaptation and a single lost
+            // UDP packet's kfReq must NEVER slash 60fps -> 30fps. Only run
+            // evaluateAutoQuality() on the WS/DataChannel fallback transport.
+            if !usingRtpVideo && !usingUdpVideo && (autoFpsEnabled || autoBitrateEnabled) { evaluateAutoQuality() }
             sentFrames = 0
             backpressureDrops = 0
             keyframesForced = 0
@@ -1518,6 +1546,7 @@ final class Session {
     /// consecutive clean windows, so it settles instead of oscillating
     /// right at the edge of what the client/link can sustain.
     private func evaluateAutoQuality() {
+        guard !usingRtpVideo && !usingUdpVideo else { return }
         var fpsChanged = false
         var bitrateChanged = false
 
@@ -1605,7 +1634,7 @@ final class Session {
     /// - loss >= 5%: step down 20% (floor 4 Mbps)
     /// - loss < 1% for 3 consecutive windows (6s): step up 25% (ceiling autoBitrateTiers.last)
     private func handleUdpLossFeedback(_ lossRatio: Double) {
-        guard usingUdpVideo, autoBitrateEnabled else { return }
+        guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
         scrollBoostLock.lock()
         let boosting = scrollBoostActive
         scrollBoostLock.unlock()

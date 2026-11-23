@@ -74,6 +74,8 @@ final class UdpVideoServer {
         var windowSentDataPackets: UInt64 = 0
         var windowNackPackets: UInt64 = 0
         var cleanWindows: Int = 0
+        var allowFecSuppression: Bool = true
+        var hasEverSeenNack: Bool = false
         var fecLevel: FecLevel = .light
         var deltaFecGroupSize: UInt8 = 8
         var keyFecGroupSize: UInt8 = 4
@@ -85,10 +87,16 @@ final class UdpVideoServer {
         var ringWriteCursor: Int = 0
         var nackRetransmits: UInt64 = 0
 
-        init(aesKey: Data?, onActivated: @escaping (Bool) -> Void, onLossFeedback: ((Double) -> Void)?) {
+        init(
+            aesKey: Data?,
+            allowFecSuppression: Bool,
+            onActivated: @escaping (Bool) -> Void,
+            onLossFeedback: ((Double) -> Void)?
+        ) {
             if let aesKey, aesKey.count == 32 {
                 self.symmetricKey = SymmetricKey(data: aesKey)
             }
+            self.allowFecSuppression = allowFecSuppression
             self.onActivated = onActivated
             self.onLossFeedback = onLossFeedback
         }
@@ -193,6 +201,7 @@ final class UdpVideoServer {
     func registerSession(
         token: Data,
         aesKey: Data? = nil,
+        allowFecSuppression: Bool = true,
         onActivated: @escaping (Bool) -> Void,
         onLossFeedback: ((Double) -> Void)? = nil
     ) {
@@ -202,11 +211,35 @@ final class UdpVideoServer {
             // Preserve active UDP peer across pipeline rebuilds (resolution/codec switch)
             existing.onActivated = onActivated
             existing.onLossFeedback = onLossFeedback
+            existing.allowFecSuppression = allowFecSuppression
+            if !allowFecSuppression && existing.fecLevel == .suppressed {
+                existing.fecLevel = .light
+                existing.deltaFecGroupSize = 8
+                existing.keyFecGroupSize = 4
+            }
             if let aesKey, aesKey.count == 32 {
                 existing.symmetricKey = SymmetricKey(data: aesKey)
             }
         } else {
-            sessions[token] = PeerSession(aesKey: aesKey, onActivated: onActivated, onLossFeedback: onLossFeedback)
+            sessions[token] = PeerSession(
+                aesKey: aesKey,
+                allowFecSuppression: allowFecSuppression,
+                onActivated: onActivated,
+                onLossFeedback: onLossFeedback
+            )
+        }
+        lock.unlock()
+    }
+
+    func setFecSuppressionAllowed(token: Data, allowed: Bool) {
+        lock.lock()
+        if let session = sessions[token] {
+            session.allowFecSuppression = allowed
+            if !allowed && session.fecLevel == .suppressed {
+                session.fecLevel = .light
+                session.deltaFecGroupSize = 8
+                session.keyFecGroupSize = 4
+            }
         }
         lock.unlock()
     }
@@ -652,6 +685,7 @@ final class UdpVideoServer {
         lock.lock()
         if let session = sessions[token], session.isActive {
             session.windowNackPackets += UInt64(count)
+            session.hasEverSeenNack = true
             if let boundAddr = session.peerAddr {
                 destAddr = boundAddr
                 destLen = session.peerLen
@@ -730,7 +764,7 @@ final class UdpVideoServer {
                 newLevel = .moderate
                 newDeltaFec = 4
                 newKeyFec = 2
-            } else if session.cleanWindows >= 3 {
+            } else if session.allowFecSuppression && !session.hasEverSeenNack && session.cleanWindows >= 3 {
                 newLevel = .suppressed
                 newDeltaFec = 0
                 newKeyFec = 8

@@ -1333,7 +1333,19 @@ public final class RemoterConnection: @unchecked Sendable {
 
     // MARK: - Public Send API (Thread-Safe, Non-Blocking)
 
+    private func trySendUdpInput(_ utf8Json: Data, redundant: Bool) -> Bool {
+        stateLock.lock()
+        let udp = _udpReceiver
+        let active = _udpActive
+        stateLock.unlock()
+        guard active, let udp else { return false }
+        return udp.sendInput(utf8Json, redundant: redundant)
+    }
+
     public func sendMouseMove(x: Double, y: Double, dragging: String? = nil) {
+        if trySendUdpInput(ClientMessages.mouseMove(x: x, y: y, dragging: dragging), redundant: false) {
+            return
+        }
         stateLock.lock()
         let queue = _sendQueue
         stateLock.unlock()
@@ -1341,11 +1353,17 @@ public final class RemoterConnection: @unchecked Sendable {
     }
 
     public func sendMouseButton(button: String, down: Bool, x: Double, y: Double) {
-        enqueueControlJson(ClientMessages.mouseButton(button: button, down: down, x: x, y: y))
+        let json = ClientMessages.mouseButton(button: button, down: down, x: x, y: y)
+        if !trySendUdpInput(json, redundant: true) {
+            enqueueControlJson(json)
+        }
     }
 
     public func sendMouseDoubleClick(button: String, x: Double, y: Double) {
-        enqueueControlJson(ClientMessages.mouseDoubleClick(button: button, x: x, y: y))
+        let json = ClientMessages.mouseDoubleClick(button: button, x: x, y: y)
+        if !trySendUdpInput(json, redundant: true) {
+            enqueueControlJson(json)
+        }
     }
 
     public func sendMouseScroll(
@@ -1357,6 +1375,13 @@ public final class RemoterConnection: @unchecked Sendable {
         phase: Int? = nil,
         momentumPhase: Int? = nil
     ) {
+        let json = ClientMessages.mouseScroll(
+            dx: dx, dy: dy, px: px, py: py,
+            isPrecise: isPrecise, phase: phase, momentumPhase: momentumPhase
+        )
+        if trySendUdpInput(json, redundant: true) {
+            return
+        }
         stateLock.lock()
         let queue = _sendQueue
         stateLock.unlock()
@@ -1372,7 +1397,10 @@ public final class RemoterConnection: @unchecked Sendable {
     }
 
     public func sendKey(code: String, down: Bool, modifiers: [String]) {
-        enqueueControlJson(ClientMessages.key(code: code, down: down, modifiers: modifiers))
+        let json = ClientMessages.key(code: code, down: down, modifiers: modifiers)
+        if !trySendUdpInput(json, redundant: true) {
+            enqueueControlJson(json)
+        }
     }
 
     public func sendTextInput(_ text: String) {

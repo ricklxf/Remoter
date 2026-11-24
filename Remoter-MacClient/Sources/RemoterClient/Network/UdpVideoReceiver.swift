@@ -17,8 +17,10 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     public static let packetTypeFecParity: UInt8 = 0x11
     public static let packetTypeNack: UInt8 = 0x12
     public static let packetTypeAudio: UInt8 = 0x14
+    public static let packetTypeInput: UInt8 = 0x20
 
     public static let controlPacketSize = 20
+    public static let inputHeaderSize = 25
     public static let videoHeaderSize = 20
     public static let tokenLength = 16
     public static let gcmTagSize = 16
@@ -89,7 +91,18 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     private var aesKey: SymmetricKey?
     private var isActive = false
     private var isConnected = false
+    private var serverSupportsUdpInput = false
+    private var inputSeq: UInt32 = 0
     private var helloSentCount = 0
+
+    // Thread-safe snapshot for fast lock-free input routing check
+    private let inputStateLock = NSLock()
+    private var _canSendUdpInput = false
+    public var supportsUdpInput: Bool {
+        inputStateLock.lock()
+        defer { inputStateLock.unlock() }
+        return _canSendUdpInput
+    }
 
     private var frames: [UInt32: FrameBuffer] = [:]
     private var lastDeliveredFrameId: UInt32?
@@ -101,6 +114,73 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
     deinit {
         stop()
+    }
+
+    /// Sends a low-latency encrypted input JSON message over UDP (packetType 0x20),
+    /// bypassing WebSocket TCP head-of-line blocking under packet loss.
+    /// When `redundant` is true (clicks/scrolls/keys), resends the same `inputSeq` 5ms later.
+    @discardableResult
+    public func sendInput(_ utf8Json: Data, redundant: Bool) -> Bool {
+        guard !utf8Json.isEmpty, utf8Json.count <= 1400, supportsUdpInput else { return false }
+        queue.async { [weak self] in
+            guard let self, self.isActive, self.isConnected, self.serverSupportsUdpInput,
+                  self.sockFd >= 0, self.token.count == Self.tokenLength else { return }
+
+            self.inputSeq &+= 1
+            let seq = self.inputSeq
+            let encrypted = self.aesKey != nil
+            var header = [UInt8](repeating: 0, count: Self.inputHeaderSize)
+            header[0] = Self.magic0
+            header[1] = Self.magic1
+            header[2] = Self.version
+            header[3] = Self.packetTypeInput
+            self.token.copyBytes(to: &header[4], count: Self.tokenLength)
+            header[20] = UInt8((seq >> 24) & 0xFF)
+            header[21] = UInt8((seq >> 16) & 0xFF)
+            header[22] = UInt8((seq >> 8) & 0xFF)
+            header[23] = UInt8(seq & 0xFF)
+            header[24] = encrypted ? Self.encryptedFlag : 0x00
+
+            var wire = Data(header)
+            if let key = self.aesKey {
+                var nonceBytes = [UInt8](repeating: 0, count: 12)
+                nonceBytes[0] = Self.magic0
+                nonceBytes[1] = Self.magic1
+                nonceBytes[2] = Self.packetTypeInput
+                nonceBytes[3] = 0x00
+                for i in 0..<4 { nonceBytes[4 + i] = header[4 + i] }
+                nonceBytes[8]  = header[20]
+                nonceBytes[9]  = header[21]
+                nonceBytes[10] = header[22]
+                nonceBytes[11] = header[23]
+                guard let nonce = try? AES.GCM.Nonce(data: nonceBytes),
+                      let sealed = try? AES.GCM.seal(utf8Json, using: key, nonce: nonce, authenticating: wire) else {
+                    return
+                }
+                wire.append(sealed.ciphertext)
+                wire.append(sealed.tag)
+            } else {
+                wire.append(utf8Json)
+            }
+
+            let fd = self.sockFd
+            wire.withUnsafeBytes { raw in
+                if let ptr = raw.baseAddress {
+                    _ = Darwin.send(fd, ptr, wire.count, 0)
+                }
+            }
+            if redundant {
+                self.queue.asyncAfter(deadline: .now() + .milliseconds(5)) { [weak self] in
+                    guard let self, self.isActive, self.sockFd == fd else { return }
+                    wire.withUnsafeBytes { raw in
+                        if let ptr = raw.baseAddress {
+                            _ = Darwin.send(fd, ptr, wire.count, 0)
+                        }
+                    }
+                }
+            }
+        }
+        return true
     }
 
     // MARK: - Hex Token Helper
@@ -393,6 +473,11 @@ public final class UdpVideoReceiver: @unchecked Sendable {
         let wasConnected = isConnected
         isActive = false
         isConnected = false
+        serverSupportsUdpInput = false
+        inputSeq = 0
+        inputStateLock.lock()
+        _canSendUdpInput = false
+        inputStateLock.unlock()
 
         helloTimer?.cancel()
         helloTimer = nil
@@ -540,6 +625,14 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             return true
         }
         guard matches else { return }
+
+        let supportsInput = count >= 21 && (recvScratch[20] & 0x01) != 0
+        if supportsInput {
+            serverSupportsUdpInput = true
+            inputStateLock.lock()
+            _canSendUdpInput = true
+            inputStateLock.unlock()
+        }
 
         if !isConnected {
             isConnected = true

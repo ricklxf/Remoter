@@ -100,6 +100,7 @@ public sealed class ConnectForm : Form
     private bool _isEditingNote;
     private bool _suppressComboEvent;
     private bool _suppressAddressEvent;
+    private bool _hasError;
     private bool _connecting;
     private CancellationTokenSource? _connectCts;
     private Image? _logoImage;
@@ -241,7 +242,7 @@ public sealed class ConnectForm : Form
             ForeColor = TextMuted,
             BadgeFill = BgCard,
             BadgeBorder = BorderSubtle,
-            AutoSize = true,
+            AutoSize = false,
             Padding = new Padding(7, 2, 7, 2),
         };
 
@@ -787,7 +788,8 @@ public sealed class ConnectForm : Form
         }
 
         // Error banner
-        if (_errorBanner.Visible)
+        _errorBanner.Visible = _hasError;
+        if (_hasError)
         {
             _errorBanner.Location = new Point(CardPadX, y);
             y += _errorBanner.Height + 12;
@@ -817,9 +819,10 @@ public sealed class ConnectForm : Form
         bool hasMachineHeader = _selectedSaved != null &&
             (!string.IsNullOrWhiteSpace(_selectedSaved.ComputerName) ||
              !string.IsNullOrWhiteSpace(_selectedSaved.ModelId));
+        bool showModelBadge = hasMachineHeader && !string.IsNullOrWhiteSpace(_selectedSaved?.ModelId);
 
         _machineNameLabel.Visible = hasMachineHeader;
-        _modelBadgeLabel.Visible = hasMachineHeader && !string.IsNullOrWhiteSpace(_selectedSaved?.ModelId);
+        _modelBadgeLabel.Visible = showModelBadge;
         _savedDivider.Visible = hasMachineHeader;
 
         if (hasMachineHeader && _selectedSaved != null)
@@ -829,13 +832,15 @@ public sealed class ConnectForm : Form
                 : _selectedSaved.DisplayName;
 
             int badgeW = 0;
-            if (_modelBadgeLabel.Visible)
+            if (showModelBadge)
             {
-                _modelBadgeLabel.Text = _selectedSaved.ModelId!;
-                var pref = _modelBadgeLabel.GetPreferredSize(Size.Empty);
-                _modelBadgeLabel.Size = pref;
-                badgeW = pref.Width + 8;
-                _modelBadgeLabel.Location = new Point(InnerWidth - padX - pref.Width, cy + 1);
+                string modelText = _selectedSaved.ModelId!.Trim();
+                _modelBadgeLabel.Text = modelText;
+                var textSize = TextRenderer.MeasureText(modelText, _modelBadgeLabel.Font);
+                var badgeSize = new Size(textSize.Width + 14, Math.Max(20, textSize.Height + 4));
+                _modelBadgeLabel.Size = badgeSize;
+                badgeW = badgeSize.Width + 8;
+                _modelBadgeLabel.Location = new Point(InnerWidth - padX - badgeSize.Width, cy + 2);
             }
 
             _machineNameLabel.Location = new Point(padX, cy);
@@ -1115,6 +1120,7 @@ public sealed class ConnectForm : Form
 
     private void ShowError(string message)
     {
+        _hasError = true;
         _errorBanner.SetMessage(message);
         _errorBanner.Visible = true;
         Relayout();
@@ -1122,7 +1128,8 @@ public sealed class ConnectForm : Form
 
     private void ClearError()
     {
-        if (!_errorBanner.Visible) return;
+        if (!_hasError) return;
+        _hasError = false;
         _errorBanner.Visible = false;
         Relayout();
     }

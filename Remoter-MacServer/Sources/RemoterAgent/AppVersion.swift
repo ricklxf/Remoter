@@ -1,1 +1,1 @@
-let kAppVersion = "3.0.27"
+let kAppVersion = "3.0.28"

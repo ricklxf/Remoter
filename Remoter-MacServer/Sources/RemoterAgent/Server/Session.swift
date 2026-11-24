@@ -220,7 +220,9 @@ final class Session {
 
     // Keepalive: send a JSON message every 3s so the client's stale-timeout (6s)
     // doesn't fire when the screen is static and CGDisplayStream pushes no frames.
+    // Also reaps half-open zombie TCP sessions after 15s of zero inbound client traffic.
     private var keepaliveTimer: DispatchSourceTimer?
+    private var lastClientActivityAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
 
     // Low-priority reverse sync: this agent's own clipboard → controller.
     // Deliberately much slower than the controller→agent path (which is
@@ -299,12 +301,14 @@ final class Session {
     }
 
     func handleText(_ text: String) {
+        lastClientActivityAt = CFAbsoluteTimeGetCurrent()
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         routeMessage(json)
     }
 
     func handleBinary(_ data: Data) {
+        lastClientActivityAt = CFAbsoluteTimeGetCurrent()
         guard data.count > 0 else { return }
 
         // 0xE0 = encrypted JSON frame (sent after E2E handshake)
@@ -1990,10 +1994,23 @@ final class Session {
 
     private func startKeepalive() {
         stopKeepalive()
+        lastClientActivityAt = CFAbsoluteTimeGetCurrent()
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
         timer.setEventHandler { [weak self] in
-            self?.sendJson(["type": "keepalive"])
+            guard let self, !self.isClosed else { return }
+            let idleSec = CFAbsoluteTimeGetCurrent() - self.lastClientActivityAt
+            if self.authenticated && idleSec > 15.0 {
+                ConnectionLogger.shared.logStep(
+                    sessionId: self.id.uuidString,
+                    step: "session_zombie_reaped",
+                    detail: "idleSec=\(String(format: "%.1f", idleSec))"
+                )
+                self.connection.close()
+                self.close()
+                return
+            }
+            self.sendJson(["type": "keepalive"])
         }
         timer.resume()
         keepaliveTimer = timer

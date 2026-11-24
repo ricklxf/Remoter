@@ -82,6 +82,7 @@ sealed class H264Encoder : IDisposable
     private static readonly Guid CODECAPI_AVEncCommonMeanBitRate       = new("f7222374-2144-4815-b550-a37f8e12ee52");
     private static readonly Guid CODECAPI_AVEncCommonMaxBitRate        = new("9651eae4-39b9-4ebf-85ef-d7f444ec7465");
     private static readonly Guid CODECAPI_AVEncMPVDefaultBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
+    private static readonly Guid CODECAPI_AVEncMPVGOPSize              = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
     private static readonly Guid CODECAPI_AVEncVideoForceKeyFrame      = new("398c1b98-8353-475a-9ef2-8f265d260345");
     private const uint eAVEncCommonRateControlMode_PeakConstrainedVBR  = 3;
 
@@ -252,6 +253,9 @@ sealed class H264Encoder : IDisposable
         if (_codecApi == null) return;
         TrySetCodecApiValue(CODECAPI_AVEncCommonLowLatency, true);
         TrySetCodecApiValue(CODECAPI_AVEncMPVDefaultBPictureCount, 0u);
+        // Long GOP (7200 frames = ~2 min @ 60fps) prevents unsolicited ~200KB periodic keyframes
+        // from bursting into WAN/WireGuard tunnels; on-demand ForceKeyframe() handles all recovery.
+        TrySetCodecApiValue(CODECAPI_AVEncMPVGOPSize, 7200u);
         TrySetCodecApiValue(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_PeakConstrainedVBR);
         ApplyBitrateLocked(bitrateBps);
     }

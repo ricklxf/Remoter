@@ -82,12 +82,24 @@ sealed class Session
     // Triggers encoder rebuild on the capture-loop thread (e.g. H.264 <-> H.265 / JPEG switch).
     private volatile bool _rebuildEncoder = false;
 
-    // Direct UDP 7789 video transport state (parity with Remoter-MacServer)
+    // Direct UDP 7789 video & input transport state (parity with Remoter-MacServer)
     private byte[]?       _udpSessionToken;
     private volatile bool _usingUdpVideo = false;
     private volatile bool _isClientLan = false;
     private int           _udpCleanBitrateStreak = 0;
+    private int           _udpStableAtCapStreak = 0;
+    private int?          _udpLearnedCeilingBps = null;
+    private long          _udpLossCapSetAtTicks = 0;
+    private double        _udpLastLossRatio = 0;
+    private int           _udpDelayOveruseStreak = 0;
+    private int           _udpDelayCleanStreak = 0;
+    private long          _udpLastGccAdjustTicks = 0;
     private long          _lastKeyframeReqTicks = 0;
+    private long          _lastInboundTicks = Environment.TickCount64;
+    private int           _sentFrames5s = 0;
+    private int           _kfForced5s = 0;
+    private int           _kfReq5s = 0;
+    private long          _lastSent5sLogTicks = Environment.TickCount64;
     
     // Statistics for overlay
     private int    _frameCount = 0;
@@ -120,6 +132,7 @@ sealed class Session
 
     public void HandleText(string text)
     {
+        Volatile.Write(ref _lastInboundTicks, Environment.TickCount64);
         if (_textCount++ < 5)
             AppLog.Write($"[Session] Rx#{_textCount} {text[..Math.Min(40, text.Length)]}");
         try
@@ -132,6 +145,7 @@ sealed class Session
 
     public void HandleBinary(byte[] data)
     {
+        Volatile.Write(ref _lastInboundTicks, Environment.TickCount64);
         if (data.Length == 0) return;
 
         // 0xE0 = E2E-encrypted JSON
@@ -403,12 +417,15 @@ sealed class Session
                 Send(new { type = "pong" }); break;
 
             case ClientMsg.RequestKeyframe:
+                Interlocked.Increment(ref _kfReq5s);
                 if (_usingUdpVideo)
                 {
                     long nowTicks = Environment.TickCount64;
-                    if (nowTicks - _lastKeyframeReqTicks < 200) break;
+                    long cooldownMs = _udpLastLossRatio >= 0.03 ? 800 : 400;
+                    if (nowTicks - _lastKeyframeReqTicks < cooldownMs) break;
                     _lastKeyframeReqTicks = nowTicks;
                 }
+                Interlocked.Increment(ref _kfForced5s);
                 _encoder?.ForceKeyframe();
                 break;
 
@@ -618,11 +635,14 @@ sealed class Session
                 Send(new { type = "udp_active", enabled = active });
                 if (active)
                 {
+                    UdpVideoServer.Shared.UpdatePacingBitrate(token, _targetBitrateBps);
                     _encoder?.ForceKeyframe();
                 }
                 AppLog.Write($"[Session] Direct UDP video {(active ? "activated" : "deactivated (falling back to WS)")}");
             },
-            onLossFeedback: HandleUdpLossFeedback);
+            onLossFeedback: HandleUdpLossFeedback,
+            onTransportFeedback: HandleUdpTransportFeedback,
+            onInputMessage: HandleUdpInputMessage);
 
         udp.SetFecSuppressionAllowed(token, _isClientLan);
 
@@ -647,40 +667,172 @@ sealed class Session
         }
     }
 
+    private void HandleUdpInputMessage(string json)
+    {
+        Volatile.Write(ref _lastInboundTicks, Environment.TickCount64);
+        if (!_authed) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            Route(ClientMsg.Parse(doc.RootElement));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Session] UDP input parse error: {ex.Message}");
+        }
+    }
+
+    private void CancelScrollBoost()
+    {
+        lock (_scrollBoostLock)
+        {
+            _scrollBoostGen++;
+            _scrollBoostActive = false;
+        }
+    }
+
+    private void ApplyUdpBitrate(int nextBps)
+    {
+        _targetBitrateBps = nextBps;
+        _encoder?.SetBitrate(nextBps);
+        if (_udpSessionToken is { } tok)
+        {
+            UdpVideoServer.Shared.UpdatePacingBitrate(tok, nextBps);
+        }
+    }
+
     private void HandleUdpLossFeedback(double lossRatio, ulong sentPackets)
     {
+        _udpLastLossRatio = lossRatio;
         if (_encoder == null || _manualBitrate) return;
 
-        if (lossRatio >= 0.05)
+        bool wan = !_isClientLan;
+        int hardCeilingBps = wan ? 8_000_000 : 25_000_000;
+        int width = _capturer?.Width ?? 1920;
+        int floorBps = wan
+            ? (width >= 2560 ? 2_500_000 : 2_000_000)
+            : (width >= 2560 ? 5_000_000 : 4_000_000);
+        ulong minLossPackets = wan ? 120UL : 400UL;
+        double lossThreshold = wan ? 0.05 : 0.08;
+        long nowTicks = Environment.TickCount64;
+
+        if (lossRatio >= lossThreshold && sentPackets >= minLossPackets)
         {
+            CancelScrollBoost();
             _udpCleanBitrateStreak = 0;
-            int nextBps = Math.Max(4_000_000, _targetBitrateBps * 4 / 5);
-            if (nextBps != _targetBitrateBps)
-            {
-                _targetBitrateBps = nextBps;
-                _encoder.SetBitrate(_targetBitrateBps);
-                AppLog.Write($"[Session] UDP loss={lossRatio * 100:F1}% -> bitrate step down to {_targetBitrateBps / 1_000_000.0:F1} Mbps");
-            }
+            _udpStableAtCapStreak = 0;
+            int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * 0.75), floorBps, hardCeilingBps);
+            int learnedCap = Math.Clamp((int)Math.Round(_targetBitrateBps * 0.80), floorBps, hardCeilingBps);
+            _udpLearnedCeilingBps = Math.Max(floorBps, Math.Min(_udpLearnedCeilingBps ?? hardCeilingBps, learnedCap));
+            _udpLossCapSetAtTicks = nowTicks;
+            ApplyUdpBitrate(nextBps);
+            AppLog.Write($"[Session] udp_bitrate_adapt dir=down loss={lossRatio:F3} sent={sentPackets} br={nextBps / 1000}k cap={(_udpLearnedCeilingBps ?? hardCeilingBps) / 1000}k");
         }
-        else if (lossRatio < 0.01 && sentPackets >= 60)
+        else if (lossRatio < 0.01)
         {
-            _udpCleanBitrateStreak++;
-            if (_udpCleanBitrateStreak >= 2)
+            bool boosting;
+            lock (_scrollBoostLock) { boosting = _scrollBoostActive; }
+            if (boosting) return;
+
+            ulong minRampPackets = _targetBitrateBps < 4_000_000 ? 10UL : 60UL;
+            if (sentPackets < minRampPackets) return;
+            int effectiveCeiling = Math.Clamp(_udpLearnedCeilingBps ?? hardCeilingBps, floorBps, hardCeilingBps);
+
+            if (_targetBitrateBps < effectiveCeiling)
+            {
+                _udpStableAtCapStreak = 0;
+                _udpCleanBitrateStreak++;
+                if (_udpCleanBitrateStreak >= 3)
+                {
+                    _udpCleanBitrateStreak = 0;
+                    int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * 1.20), floorBps, effectiveCeiling);
+                    if (nextBps > _targetBitrateBps)
+                    {
+                        ApplyUdpBitrate(nextBps);
+                        AppLog.Write($"[Session] udp_bitrate_adapt dir=up loss={lossRatio:F3} sent={sentPackets} br={nextBps / 1000}k cap={effectiveCeiling / 1000}k");
+                    }
+                }
+            }
+            else if (_udpLearnedCeilingBps is int cap)
             {
                 _udpCleanBitrateStreak = 0;
-                int capBps = _isClientLan ? 25_000_000 : 12_000_000;
-                int nextBps = Math.Min(capBps, _targetBitrateBps * 5 / 4);
-                if (nextBps > _targetBitrateBps)
+                if (nowTicks - _udpLossCapSetAtTicks < 12_000) return;
+                _udpStableAtCapStreak++;
+                if (_udpStableAtCapStreak >= 3)
                 {
-                    _targetBitrateBps = nextBps;
-                    _encoder.SetBitrate(_targetBitrateBps);
-                    AppLog.Write($"[Session] UDP clean ({sentPackets} pkts, lan={_isClientLan}) -> bitrate step up to {_targetBitrateBps / 1_000_000.0:F1} Mbps");
+                    _udpStableAtCapStreak = 0;
+                    int probedCap = Math.Min(hardCeilingBps, (int)Math.Round(cap * 1.25));
+                    _udpLearnedCeilingBps = probedCap >= hardCeilingBps ? null : probedCap;
+                    if (probedCap > _targetBitrateBps)
+                    {
+                        ApplyUdpBitrate(probedCap);
+                        AppLog.Write($"[Session] udp_bitrate_adapt dir=probe_up loss={lossRatio:F3} sent={sentPackets} br={probedCap / 1000}k cap={(_udpLearnedCeilingBps ?? hardCeilingBps) / 1000}k");
+                    }
                 }
             }
         }
         else
         {
             _udpCleanBitrateStreak = 0;
+            _udpStableAtCapStreak = 0;
+        }
+    }
+
+    private void HandleUdpTransportFeedback(double delayGradientMs, double lossRatio, double jitterMs, int recvBps)
+    {
+        Volatile.Write(ref _lastInboundTicks, Environment.TickCount64);
+        if (_encoder == null || _manualBitrate) return;
+
+        bool wan = !_isClientLan;
+        int hardCeilingBps = wan ? 8_000_000 : 25_000_000;
+        int width = _capturer?.Width ?? 1920;
+        int floorBps = wan
+            ? (width >= 2560 ? 2_500_000 : 2_000_000)
+            : (width >= 2560 ? 5_000_000 : 4_000_000);
+        long nowTicks = Environment.TickCount64;
+
+        if (delayGradientMs >= 12.0 && recvBps >= 1_000_000)
+        {
+            _udpDelayCleanStreak = 0;
+            _udpDelayOveruseStreak++;
+            if (_udpDelayOveruseStreak >= 2 && (nowTicks - _udpLastGccAdjustTicks) >= 1200)
+            {
+                _udpDelayOveruseStreak = 0;
+                _udpLastGccAdjustTicks = nowTicks;
+                CancelScrollBoost();
+                int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * 0.90), floorBps, hardCeilingBps);
+                if (nextBps != _targetBitrateBps)
+                {
+                    ApplyUdpBitrate(nextBps);
+                    AppLog.Write($"[Session] udp_gcc_delay dir=down gradMs={delayGradientMs:F1} jitterMs={jitterMs:F1} recvKbps={recvBps / 1000} br={nextBps / 1000}k");
+                }
+            }
+        }
+        else if (delayGradientMs < 4.0 && lossRatio < 0.005)
+        {
+            _udpDelayOveruseStreak = 0;
+            if (recvBps < 800_000) return;
+            bool boosting;
+            lock (_scrollBoostLock) { boosting = _scrollBoostActive; }
+            if (boosting) return;
+            _udpDelayCleanStreak++;
+            int effectiveCeiling = Math.Clamp(_udpLearnedCeilingBps ?? hardCeilingBps, floorBps, hardCeilingBps);
+            if (_udpDelayCleanStreak >= 8 && _targetBitrateBps < effectiveCeiling && (nowTicks - _udpLastGccAdjustTicks) >= 1500)
+            {
+                _udpDelayCleanStreak = 0;
+                _udpLastGccAdjustTicks = nowTicks;
+                int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * 1.08), floorBps, effectiveCeiling);
+                if (nextBps != _targetBitrateBps)
+                {
+                    ApplyUdpBitrate(nextBps);
+                    AppLog.Write($"[Session] udp_gcc_delay dir=up gradMs={delayGradientMs:F1} jitterMs={jitterMs:F1} recvKbps={recvBps / 1000} br={nextBps / 1000}k");
+                }
+            }
+        }
+        else
+        {
+            _udpDelayOveruseStreak = 0;
+            _udpDelayCleanStreak = 0;
         }
     }
 
@@ -705,14 +857,33 @@ sealed class Session
             }
             lastFrameTime = DateTime.UtcNow;
             
-            // Calculate FPS for overlay
+            // Calculate FPS for overlay + 5s telemetry + 15s zombie TCP session reaper
             _frameCount++;
+            _sentFrames5s++;
             var now = DateTime.UtcNow;
             if ((now - _fpsCalcTime).TotalSeconds >= 1.0)
             {
                 _currentFpsDisplay = _frameCount / (now - _fpsCalcTime).TotalSeconds;
                 _frameCount = 0;
                 _fpsCalcTime = now;
+            }
+            long nowTicks5s = Environment.TickCount64;
+            if (nowTicks5s - _lastSent5sLogTicks >= 5000)
+            {
+                double dtSec = Math.Max(0.1, (nowTicks5s - _lastSent5sLogTicks) / 1000.0);
+                _lastSent5sLogTicks = nowTicks5s;
+                int frames = _sentFrames5s; _sentFrames5s = 0;
+                int kfForced = Interlocked.Exchange(ref _kfForced5s, 0);
+                int kfReq = Interlocked.Exchange(ref _kfReq5s, 0);
+                int capKbps = (_udpLearnedCeilingBps ?? (!_isClientLan ? 8_000_000 : 25_000_000)) / 1000;
+                AppLog.Write($"[Session] sent_5s sent={frames} fps={frames / dtSec:F0} transport={(_usingUdpVideo ? "udp" : "ws")} br={_targetBitrateBps / 1000}k cap={capKbps}k loss={_udpLastLossRatio * 100:F1}% kfForced={kfForced} kfReq={kfReq}");
+
+                if (_authed && (nowTicks5s - Volatile.Read(ref _lastInboundTicks)) > 15_000)
+                {
+                    AppLog.Write("[Session] session_zombie_reaped: no inbound WS/UDP activity for >15s, closing half-open session");
+                    Close();
+                    break;
+                }
             }
             
             // Check if capturer is available
@@ -900,6 +1071,9 @@ sealed class Session
     private void BoostBitrateWhileScrolling()
     {
         if (_encoder == null) return;
+        if (_udpLastLossRatio >= 0.02) return;
+        if (!_isClientLan && _udpLearnedCeilingBps != null) return;
+
         int gen;
         bool starting;
         lock (_scrollBoostLock)
@@ -912,8 +1086,13 @@ sealed class Session
 
         if (starting)
         {
-            int boosted = (int)Math.Min((long)(_targetBitrateBps * 1.5), 37_500_000L);
-            _encoder?.SetBitrate(boosted);
+            long maxCap = _udpLearnedCeilingBps ?? (!_isClientLan ? 8_000_000L : 37_500_000L);
+            int boosted = (int)Math.Min((long)(_targetBitrateBps * 1.5), maxCap);
+            if (boosted > _targetBitrateBps)
+            {
+                _encoder.SetBitrate(boosted);
+                if (_udpSessionToken is { } tok) UdpVideoServer.Shared.UpdatePacingBitrate(tok, boosted);
+            }
         }
 
         _ = Task.Delay(1200).ContinueWith(_ =>
@@ -924,6 +1103,7 @@ sealed class Session
                 _scrollBoostActive = false;
             }
             _encoder?.SetBitrate(_targetBitrateBps);
+            if (_udpSessionToken is { } tok) UdpVideoServer.Shared.UpdatePacingBitrate(tok, _targetBitrateBps);
         }, TaskScheduler.Default);
     }
 

@@ -1179,8 +1179,21 @@ public sealed class RemoterConnection : IDisposable
 
     // ── Public Send API (Thread-Safe, Non-Blocking) ──────────────────────
 
+    private bool TrySendUdpInput(byte[] utf8Json, bool redundant)
+    {
+        if (!_udpActive) return false;
+        UdpVideoReceiver? udp;
+        lock (_stateLock) { udp = _udpReceiver; }
+        return udp != null && udp.TrySendInput(utf8Json, redundant);
+    }
+
     public void SendMouseMove(double x, double y, string? dragging = null)
     {
+        if (_udpActive)
+        {
+            var json = ClientMessages.MouseMove(x, y, dragging);
+            if (TrySendUdpInput(json, redundant: false)) return;
+        }
         bool shouldQueue = false;
         lock (_coalesceLock)
         {
@@ -1197,11 +1210,19 @@ public sealed class RemoterConnection : IDisposable
         }
     }
 
-    public void SendMouseButton(string button, bool down, double x, double y) =>
-        EnqueueControlJson(ClientMessages.MouseButton(button, down, x, y));
+    public void SendMouseButton(string button, bool down, double x, double y)
+    {
+        var json = ClientMessages.MouseButton(button, down, x, y);
+        if (!TrySendUdpInput(json, redundant: true))
+            EnqueueControlJson(json);
+    }
 
-    public void SendMouseDoubleClick(string button, double x, double y) =>
-        EnqueueControlJson(ClientMessages.MouseDoubleClick(button, x, y));
+    public void SendMouseDoubleClick(string button, double x, double y)
+    {
+        var json = ClientMessages.MouseDoubleClick(button, x, y);
+        if (!TrySendUdpInput(json, redundant: true))
+            EnqueueControlJson(json);
+    }
 
     public void SendMouseScroll(
         int dx,
@@ -1212,6 +1233,11 @@ public sealed class RemoterConnection : IDisposable
         int? phase = null,
         int? momentumPhase = null)
     {
+        if (_udpActive)
+        {
+            var json = ClientMessages.MouseScroll(dx, dy, px, py, isPrecise, phase, momentumPhase);
+            if (TrySendUdpInput(json, redundant: true)) return;
+        }
         bool shouldQueue = false;
         lock (_coalesceLock)
         {
@@ -1253,8 +1279,12 @@ public sealed class RemoterConnection : IDisposable
         }
     }
 
-    public void SendKey(string code, bool down, string[] modifiers) =>
-        EnqueueControlJson(ClientMessages.Key(code, down, modifiers));
+    public void SendKey(string code, bool down, string[] modifiers)
+    {
+        var json = ClientMessages.Key(code, down, modifiers);
+        if (!TrySendUdpInput(json, redundant: true))
+            EnqueueControlJson(json);
+    }
 
     public void SendTextInput(string text)
     {

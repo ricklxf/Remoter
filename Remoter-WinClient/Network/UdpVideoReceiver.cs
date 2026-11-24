@@ -28,10 +28,12 @@ public sealed class UdpVideoReceiver : IDisposable
     private const byte PacketNack      = 0x12;
     private const byte PacketFeedback  = 0x13;
     private const byte PacketAudio     = 0x14;
+    private const byte PacketInput     = 0x20;
 
     private const byte HeaderFlagEncrypted = 0x01;
 
     private const int ControlPacketSize = 20;
+    private const int InputHeaderSize = 25;
     private const int FeedbackPacketSize = 28;
     private const int FeedbackIntervalMs = 200;
     private const int VideoHeaderSize = 20;
@@ -75,6 +77,8 @@ public sealed class UdpVideoReceiver : IDisposable
     private byte[]? _token;
     private AesGcm? _aesGcm;
     private bool _connected;
+    private bool _supportsUdpInput;
+    private int _inputSeq;
     private bool _hasCompletedFrame;
     private uint _lastCompletedFrameId;
     private bool _hasLastAudioSeq;
@@ -95,6 +99,7 @@ public sealed class UdpVideoReceiver : IDisposable
     private long _lastFeedbackSentTick;
 
     public bool IsConnected => Volatile.Read(ref _connected);
+    public bool SupportsUdpInput => Volatile.Read(ref _connected) && Volatile.Read(ref _supportsUdpInput);
 
     public event Action<bool>? ConnectedChanged;
     public event Action<VideoFramePacket>? FrameReceived;
@@ -121,6 +126,8 @@ public sealed class UdpVideoReceiver : IDisposable
                 ? new AesGcm(aesKey, tagSizeInBytes: GcmTagSize)
                 : null;
             _connected = false;
+            _supportsUdpInput = false;
+            _inputSeq = 0;
             _hasCompletedFrame = false;
             _lastCompletedFrameId = 0;
             _hasLastAudioSeq = false;
@@ -186,6 +193,8 @@ public sealed class UdpVideoReceiver : IDisposable
                 ? new AesGcm(aesKey, tagSizeInBytes: GcmTagSize)
                 : null;
             _connected = false;
+            _supportsUdpInput = false;
+            _inputSeq = 0;
             _hasCompletedFrame = false;
             _lastCompletedFrameId = 0;
             _hasLastAudioSeq = false;
@@ -286,6 +295,7 @@ public sealed class UdpVideoReceiver : IDisposable
             _aesGcm = null;
             wasConnected = _connected;
             _connected = false;
+            _supportsUdpInput = false;
             _awaitingKeyframe = true;
             _hasDelayRef = false;
             _ewmaDelayGradMs = 0;
@@ -509,10 +519,15 @@ public sealed class UdpVideoReceiver : IDisposable
         {
             if (buf.Length < ControlPacketSize) return;
             bool becameConnected = false;
+            bool serverSupportsInput = buf.Length >= 21 && (buf[20] & 0x01) != 0;
             lock (_lock)
             {
                 if (_token != null && buf.AsSpan(4, 16).SequenceEqual(_token))
                 {
+                    if (serverSupportsInput)
+                    {
+                        _supportsUdpInput = true;
+                    }
                     if (!_connected)
                     {
                         _connected = true;
@@ -922,6 +937,88 @@ public sealed class UdpVideoReceiver : IDisposable
                 IsKeyframe: next.IsKeyframe,
                 Codec: next.Codec));
         }
+    }
+
+    /// <summary>
+    /// Sends a low-latency encrypted input JSON message over UDP (packetType 0x20),
+    /// bypassing WebSocket TCP head-of-line blocking under packet loss.
+    /// When <paramref name="redundant"/> is true (discrete clicks/keys/scrolls),
+    /// sends a duplicate copy 5ms later with the same inputSeq (server deduplicates via 64-bit mask).
+    /// Returns false if UDP input is not active so caller can fall back to WebSocket TCP.
+    /// </summary>
+    public bool TrySendInput(byte[] utf8Json, bool redundant)
+    {
+        if (utf8Json == null || utf8Json.Length == 0 || utf8Json.Length > 1400) return false;
+        if (!SupportsUdpInput) return false;
+
+        UdpClient? udp;
+        byte[]? pkt;
+        uint seq = unchecked((uint)Interlocked.Increment(ref _inputSeq));
+
+        lock (_lock)
+        {
+            if (_disposed || !_connected || !_supportsUdpInput || _udp == null || _token == null)
+            {
+                return false;
+            }
+            udp = _udp;
+            bool encrypted = _aesGcm != null;
+            int totalLen = InputHeaderSize + utf8Json.Length + (encrypted ? GcmTagSize : 0);
+            pkt = new byte[totalLen];
+            pkt[0] = Magic0;
+            pkt[1] = Magic1;
+            pkt[2] = ProtocolVersion;
+            pkt[3] = PacketInput;
+            Buffer.BlockCopy(_token, 0, pkt, 4, 16);
+            BinaryPrimitives.WriteUInt32BigEndian(pkt.AsSpan(20, 4), seq);
+            pkt[24] = encrypted ? HeaderFlagEncrypted : (byte)0x00;
+
+            if (encrypted)
+            {
+                Span<byte> nonce = stackalloc byte[12];
+                nonce[0] = Magic0;
+                nonce[1] = Magic1;
+                nonce[2] = PacketInput;
+                nonce[3] = 0x00;
+                _token.AsSpan(0, 4).CopyTo(nonce.Slice(4, 4));
+                pkt.AsSpan(20, 4).CopyTo(nonce.Slice(8, 4));
+
+                try
+                {
+                    _aesGcm!.Encrypt(
+                        nonce,
+                        utf8Json,
+                        pkt.AsSpan(InputHeaderSize, utf8Json.Length),
+                        pkt.AsSpan(InputHeaderSize + utf8Json.Length, GcmTagSize),
+                        associatedData: pkt.AsSpan(0, InputHeaderSize));
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                Buffer.BlockCopy(utf8Json, 0, pkt, InputHeaderSize, utf8Json.Length);
+            }
+        }
+
+        _ = SendInputDatagramAsync(udp, pkt, redundant);
+        return true;
+    }
+
+    private static async Task SendInputDatagramAsync(UdpClient udp, byte[] pkt, bool redundant)
+    {
+        try
+        {
+            await udp.SendAsync(pkt).ConfigureAwait(false);
+            if (redundant)
+            {
+                await Task.Delay(5).ConfigureAwait(false);
+                await udp.SendAsync(pkt).ConfigureAwait(false);
+            }
+        }
+        catch { }
     }
 
     private static async Task SendNackAsync(UdpClient udp, byte[] nackPacket)

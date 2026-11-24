@@ -1490,6 +1490,10 @@ final class Session {
                             jitterMs: jitterMs,
                             recvBps: recvBps
                         )
+                    },
+                    onInputMessage: { [weak self] jsonText in
+                        guard let self, !self.isClosed else { return }
+                        self.handleText(jsonText)
                     }
                 )
                 UdpVideoServer.shared.refreshPublicEndpointAsync()

@@ -46,6 +46,7 @@ final class UdpVideoServer {
     static let packetFecParity: UInt8 = 0x11
     static let packetNack: UInt8      = 0x12
     static let packetFeedback: UInt8  = 0x13
+    static let packetInput: UInt8     = 0x20
     static let packetAudio: UInt8     = 0x14
 
     static let defaultPort: UInt16 = 7789
@@ -74,6 +75,12 @@ final class UdpVideoServer {
         var onActivated: (Bool) -> Void
         var onLossFeedback: ((Double, UInt64) -> Void)?
         var onTransportFeedback: ((Double, Double, Double, Int) -> Void)?
+        var onInputMessage: ((String) -> Void)?
+
+        // 64-packet sliding-window deduplication for 2x-redundant UDP input packets
+        var hasInputSeq: Bool = false
+        var maxInputSeq: UInt32 = 0
+        var inputSeenMask: UInt64 = 0
 
         // 1ms token-bucket pacer state (prevents WireGuard/router burst tail-drops on 2K keyframes)
         var pacingBitrateBps: Int = 12_000_000
@@ -105,7 +112,8 @@ final class UdpVideoServer {
             allowFecSuppression: Bool,
             onActivated: @escaping (Bool) -> Void,
             onLossFeedback: ((Double, UInt64) -> Void)?,
-            onTransportFeedback: ((Double, Double, Double, Int) -> Void)?
+            onTransportFeedback: ((Double, Double, Double, Int) -> Void)?,
+            onInputMessage: ((String) -> Void)?
         ) {
             if let aesKey, aesKey.count == 32 {
                 self.symmetricKey = SymmetricKey(data: aesKey)
@@ -114,6 +122,39 @@ final class UdpVideoServer {
             self.onActivated = onActivated
             self.onLossFeedback = onLossFeedback
             self.onTransportFeedback = onTransportFeedback
+            self.onInputMessage = onInputMessage
+        }
+
+        /// Returns true if `seq` has not been seen yet (and marks it seen).
+        func acceptInputSeq(_ seq: UInt32) -> Bool {
+            if !hasInputSeq {
+                hasInputSeq = true
+                maxInputSeq = seq
+                inputSeenMask = 1
+                return true
+            }
+            let diff = Int32(bitPattern: seq &- maxInputSeq)
+            if diff > 0 {
+                let shift = Int(diff)
+                if shift >= 64 {
+                    inputSeenMask = 1
+                } else {
+                    inputSeenMask = (inputSeenMask << shift) | 1
+                }
+                maxInputSeq = seq
+                return true
+            } else {
+                let age = Int(-diff)
+                if age >= 64 {
+                    return false
+                }
+                let bit: UInt64 = 1 << age
+                if (inputSeenMask & bit) != 0 {
+                    return false
+                }
+                inputSeenMask |= bit
+                return true
+            }
         }
 
         func storeInRing(key: UInt64, datagram: Data) {
@@ -320,7 +361,8 @@ final class UdpVideoServer {
         allowFecSuppression: Bool = true,
         onActivated: @escaping (Bool) -> Void,
         onLossFeedback: ((Double, UInt64) -> Void)? = nil,
-        onTransportFeedback: ((Double, Double, Double, Int) -> Void)? = nil
+        onTransportFeedback: ((Double, Double, Double, Int) -> Void)? = nil,
+        onInputMessage: ((String) -> Void)? = nil
     ) {
         guard token.count == 16 else { return }
         lock.lock()
@@ -329,6 +371,7 @@ final class UdpVideoServer {
             existing.onActivated = onActivated
             existing.onLossFeedback = onLossFeedback
             existing.onTransportFeedback = onTransportFeedback
+            existing.onInputMessage = onInputMessage
             existing.allowFecSuppression = allowFecSuppression
             if !allowFecSuppression && existing.fecLevel == .suppressed {
                 existing.fecLevel = .light
@@ -344,7 +387,8 @@ final class UdpVideoServer {
                 allowFecSuppression: allowFecSuppression,
                 onActivated: onActivated,
                 onLossFeedback: onLossFeedback,
-                onTransportFeedback: onTransportFeedback
+                onTransportFeedback: onTransportFeedback,
+                onInputMessage: onInputMessage
             )
         }
         lock.unlock()
@@ -836,7 +880,7 @@ final class UdpVideoServer {
         lock.unlock()
         guard fd >= 0 else { return }
 
-        var recvBuf = [UInt8](repeating: 0, count: 128)
+        var recvBuf = [UInt8](repeating: 0, count: 2048)
         while true {
             var srcAddr = sockaddr_storage()
             var srcLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
@@ -877,6 +921,8 @@ final class UdpVideoServer {
                 handleNack(fd: fd, token: token, buf: recvBuf, length: n, srcAddr: srcAddr, srcLen: srcLen)
             case Self.packetFeedback:
                 handleFeedback(token: token, buf: recvBuf, length: n, srcAddr: srcAddr, srcLen: srcLen)
+            case Self.packetInput:
+                handleInput(token: token, buf: recvBuf, length: n, srcAddr: srcAddr, srcLen: srcLen)
             default:
                 break
             }
@@ -957,15 +1003,16 @@ final class UdpVideoServer {
         }
         lock.unlock()
 
-        // Reply HELLO_ACK: [0x52, 0x55, 0x01, 0x02] + 16-byte token
-        var ack = [UInt8](repeating: 0, count: 20)
+        // Reply HELLO_ACK (21B): [0x52, 0x55, 0x01, 0x02] + 16-byte token + 0x01 (supports UDP input 0x20)
+        var ack = [UInt8](repeating: 0, count: 21)
         ack[0] = Self.magic0
         ack[1] = Self.magic1
         ack[2] = Self.version
         ack[3] = Self.packetHelloAck
         token.copyBytes(to: &ack[4], count: 16)
+        ack[20] = 0x01
         var addrCopy = srcAddr
-        _ = sendPacket(fd: fd, buffer: ack, length: 20, peerAddr: &addrCopy, peerLen: srcLen)
+        _ = sendPacket(fd: fd, buffer: ack, length: 21, peerAddr: &addrCopy, peerLen: srcLen)
 
         callbackToFire?(true)
     }
@@ -1090,6 +1137,78 @@ final class UdpVideoServer {
         lock.unlock()
 
         callback?(delayGradMs, lossRatio, jitterMs, recvBps)
+    }
+
+    /// Handles incoming 0x20 INPUT packet:
+    /// [0x52, 0x55, 0x01, 0x20] + 16B token + inputSeq(BE4) + encFlags(1B) + payload [+ 16B GCM tag]
+    private func handleInput(
+        token: Data,
+        buf: [UInt8],
+        length: Int,
+        srcAddr: sockaddr_storage,
+        srcLen: socklen_t
+    ) {
+        let hdrLen = 25
+        guard length > hdrLen else { return }
+        let inputSeq: UInt32 = (UInt32(buf[20]) << 24) |
+                               (UInt32(buf[21]) << 16) |
+                               (UInt32(buf[22]) << 8) |
+                               UInt32(buf[23])
+        let isEncrypted = (buf[24] & 0x01) != 0
+
+        var key: SymmetricKey?
+        var callback: ((String) -> Void)?
+        var accepted = false
+
+        lock.lock()
+        if let session = sessions[token], session.isActive {
+            session.peerAddr = srcAddr
+            session.peerLen = srcLen
+            session.lastKeepaliveAt = Date()
+            key = session.symmetricKey
+            callback = session.onInputMessage
+            if callback != nil {
+                accepted = session.acceptInputSeq(inputSeq)
+            }
+        }
+        lock.unlock()
+
+        guard accepted, let callback else { return }
+
+        let plaintextData: Data
+        if isEncrypted {
+            guard let key, length > hdrLen + Self.gcmTagSize else { return }
+            let ctLen = length - hdrLen - Self.gcmTagSize
+            var nonceBytes = [UInt8](repeating: 0, count: 12)
+            nonceBytes[0] = Self.magic0
+            nonceBytes[1] = Self.magic1
+            nonceBytes[2] = Self.packetInput
+            nonceBytes[3] = 0x00
+            for i in 0..<4 { nonceBytes[4 + i] = buf[4 + i] }
+            nonceBytes[8]  = buf[20]
+            nonceBytes[9]  = buf[21]
+            nonceBytes[10] = buf[22]
+            nonceBytes[11] = buf[23]
+
+            guard let nonce = try? AES.GCM.Nonce(data: nonceBytes),
+                  let sealedBox = try? AES.GCM.SealedBox(
+                      nonce: nonce,
+                      ciphertext: Data(buf[hdrLen..<(hdrLen + ctLen)]),
+                      tag: Data(buf[(hdrLen + ctLen)..<length])
+                  ),
+                  let opened = try? AES.GCM.open(sealedBox, using: key, authenticating: Data(buf[0..<hdrLen])) else {
+                return
+            }
+            plaintextData = opened
+        } else {
+            // Reject unencrypted input if session requires E2E encryption
+            guard key == nil else { return }
+            plaintextData = Data(buf[hdrLen..<length])
+        }
+
+        if let jsonText = String(data: plaintextData, encoding: .utf8) {
+            callback(jsonText)
+        }
     }
 
     /// 1ms token-bucket pacer tick: smoothly drains queued large-frame datagrams at

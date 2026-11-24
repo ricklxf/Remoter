@@ -1239,10 +1239,24 @@ final class UdpVideoServer {
                 // keyframes never time out on the receiver while still smoothing 0.2ms micro-bursts.
                 let pendingCount = session.pacingQueue.count - session.pacingReadIndex
                 let estQueuedBytes = Double(pendingCount) * 1236.0
-                let drainTargetBps = (estQueuedBytes / 0.014) * 8.0
-                let paceRateBps = max(Double(session.pacingBitrateBps) * 2.5, drainTargetBps, 24_000_000.0)
+                let paceRateBps: Double
+                let maxPacketsPerTick: Int
+                if !session.allowFecSuppression {
+                    // WAN / tunnel mode: cap burst pacing to 10-16 Mbps (max 6 pkts/ms) so a
+                    // 180-packet 2K keyframe drains smoothly over ~90-120ms (well within the
+                    // client's 350ms keyframe timeout) instead of blasting 127 Mbps in 14ms
+                    // and overflowing WireGuard/router UDP buffers!
+                    let targetBps = max(Double(session.pacingBitrateBps) * 2.5, 10_000_000.0)
+                    paceRateBps = min(targetBps, 16_000_000.0)
+                    maxPacketsPerTick = 6
+                } else {
+                    // LAN mode: drain large frames within 14ms for sub-frame latency
+                    let drainTargetBps = (estQueuedBytes / 0.014) * 8.0
+                    paceRateBps = max(Double(session.pacingBitrateBps) * 2.5, drainTargetBps, 24_000_000.0)
+                    maxPacketsPerTick = 24
+                }
                 let addBytes = (paceRateBps / 8.0) * dt
-                let maxBucket = max(7200.0, (paceRateBps / 8.0) * 0.004)
+                let maxBucket = max(session.allowFecSuppression ? 7200.0 : 3600.0, (paceRateBps / 8.0) * 0.004)
                 session.pacingBudgetBytes = min(maxBucket, session.pacingBudgetBytes + addBytes)
 
                 var toSend: [Data] = []
@@ -1251,7 +1265,7 @@ final class UdpVideoServer {
                     session.pacingReadIndex += 1
                     session.pacingBudgetBytes -= Double(pkt.count)
                     toSend.append(pkt)
-                    if toSend.count >= 24 { break }
+                    if toSend.count >= maxPacketsPerTick { break }
                 }
 
                 if session.pacingReadIndex >= session.pacingQueue.count {

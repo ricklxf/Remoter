@@ -128,6 +128,7 @@ public sealed class RemoterConnection : IDisposable
     public event Action<StreamInfo>? StreamStarted;
     public event Action<VideoFramePacket>? VideoFrameReceived;
     public event Action<AudioFramePacket>? AudioFrameReceived;
+    public event Action<bool, bool, string?, string?>? MicStatusChanged;
     public event Action<VideoCodecType>? CodecChanged;
     public event Action<int, int>? QualityActiveChanged;
     public event Action<ChromaMode>? ChromaActiveChanged;
@@ -977,6 +978,10 @@ public sealed class RemoterConnection : IDisposable
                 VirtualDisplayActiveChanged?.Invoke(vda.Enabled, vda.DisplayId);
                 break;
 
+            case ServerMessage.MicStatus ms:
+                MicStatusChanged?.Invoke(ms.Available, ms.Enabled, ms.Device, ms.Reason);
+                break;
+
             case ServerMessage.Keepalive:
             case ServerMessage.Unknown:
                 break;
@@ -1388,6 +1393,28 @@ public sealed class RemoterConnection : IDisposable
 
     public void SendSetAudio(bool enabled) =>
         EnqueueControlJson(ClientMessages.SetAudio(enabled));
+
+    public void SendSetMicEnabled(bool enabled) =>
+        EnqueueControlJson(ClientMessages.SetMicEnabled(enabled));
+
+    /// <summary>
+    /// Sends a 48 kHz mono 16-bit LE PCM microphone chunk ([0x04] + pcm) via the low-priority
+    /// bulk channel using non-blocking TryWrite so video and input are NEVER delayed.
+    /// </summary>
+    public void SendMicPcm(byte[] pcm)
+    {
+        if (pcm == null || pcm.Length == 0 || _state != ConnectionState.Streaming) return;
+        var writer = _bulkChannel?.Writer;
+        if (writer == null) return;
+
+        var pkt = new byte[1 + pcm.Length];
+        pkt[0] = FrameType.MicAudio;
+        Buffer.BlockCopy(pcm, 0, pkt, 1, pcm.Length);
+        if (writer.TryWrite(pkt))
+        {
+            SignalSender();
+        }
+    }
 
     public void SendSetMuted(bool muted) =>
         EnqueueControlJson(ClientMessages.SetMuted(muted));

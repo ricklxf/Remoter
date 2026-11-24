@@ -38,6 +38,7 @@ public sealed class DesktopForm : Form
     private readonly MfVideoDecoder _mfDecoder = new();
     private readonly JpegDecoder _jpegDecoder = new();
     private readonly WasapiAudioPlayer _audioPlayer = new();
+    private readonly MicCapturer _micCapturer = new();
     private bool _useFfmpeg;
 
     private readonly object _renderLock = new();
@@ -68,6 +69,7 @@ public sealed class DesktopForm : Form
     private bool _mfInitialized;
     private bool _rendererInitialized;
     private bool _audioOn;
+    private bool _micOn;
     private bool _privacyOn;
     private bool _virtualDisplayOn;
     private bool _fullscreen;
@@ -891,6 +893,39 @@ public sealed class DesktopForm : Form
             _conn.SendSetAudio(enable);
         };
 
+        _micCapturer.PcmCaptured += pcm =>
+        {
+            if (_micOn && !_disposed)
+            {
+                _conn.SendMicPcm(pcm);
+            }
+        };
+
+        _toolbar.MicToggled += enable =>
+        {
+            if (enable)
+            {
+                if (!_micCapturer.Start())
+                {
+                    _micOn = false;
+                    _toolbar.UpdateState(micOn: false);
+                    _conn.SendSetMicEnabled(false);
+                    ShowUploadToast("无法打开本地麦克风，请检查麦克风设备或系统权限", autoHide: true);
+                    return;
+                }
+                _micOn = true;
+                _toolbar.UpdateState(micOn: true);
+                _conn.SendSetMicEnabled(true);
+            }
+            else
+            {
+                _micOn = false;
+                _micCapturer.Stop();
+                _toolbar.UpdateState(micOn: false);
+                _conn.SendSetMicEnabled(false);
+            }
+        };
+
         _toolbar.ClipboardToggled += enable =>
         {
             _settings.ClipboardSyncEnabled = enable;
@@ -957,6 +992,7 @@ public sealed class DesktopForm : Form
     {
         _conn.VideoFrameReceived += OnVideoFrameReceived;
         _conn.AudioFrameReceived += OnAudioFrameReceived;
+        _conn.MicStatusChanged += OnMicStatusChanged;
         _conn.StreamStarted += OnStreamUpdated;
         _conn.CodecChanged += OnCodecChanged;
         _conn.QualityActiveChanged += OnQualityActiveChanged;
@@ -975,6 +1011,7 @@ public sealed class DesktopForm : Form
     {
         _conn.VideoFrameReceived -= OnVideoFrameReceived;
         _conn.AudioFrameReceived -= OnAudioFrameReceived;
+        _conn.MicStatusChanged -= OnMicStatusChanged;
         _conn.StreamStarted -= OnStreamUpdated;
         _conn.CodecChanged -= OnCodecChanged;
         _conn.QualityActiveChanged -= OnQualityActiveChanged;
@@ -987,6 +1024,34 @@ public sealed class DesktopForm : Form
         _conn.AuthSucceeded -= OnAuthSucceeded;
         _conn.ServerHelloReceived -= OnServerHelloReceived;
         _conn.Disconnected -= OnDisconnected;
+    }
+
+    private void OnMicStatusChanged(bool available, bool enabled, string? device, string? reason)
+    {
+        SafeBeginInvoke(() =>
+        {
+            if (_disposed) return;
+            if (!available)
+            {
+                _micOn = false;
+                _micCapturer.Stop();
+                _toolbar.UpdateState(micOn: false);
+                string msg = string.Equals(reason, "no_virtual_audio_device", StringComparison.OrdinalIgnoreCase)
+                    ? "被控端未安装虚拟音频设备（BlackHole / VB-Cable），无法回传麦克风"
+                    : "被控端暂不支持麦克风回传";
+                ShowUploadToast(msg, autoHide: true);
+            }
+            else if (!enabled && _micOn)
+            {
+                _micOn = false;
+                _micCapturer.Stop();
+                _toolbar.UpdateState(micOn: false);
+            }
+            else if (enabled && !string.IsNullOrWhiteSpace(device))
+            {
+                ShowUploadToast($"🎤 麦克风已回传至 {device}", autoHide: true);
+            }
+        });
     }
 
     // ── Connection event handlers (called from background thread) ────────
@@ -1135,9 +1200,12 @@ public sealed class DesktopForm : Form
 
     private void OnDisconnected(string reason)
     {
+        _micOn = false;
+        _micCapturer.Stop();
         SafeBeginInvoke(() =>
         {
             if (_disposed) return;
+            _toolbar.UpdateState(micOn: false);
             if (!string.IsNullOrWhiteSpace(reason))
             {
                 MessageBox.Show(this, $"远端连接已断开: {reason}", "Remoter", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1508,6 +1576,7 @@ public sealed class DesktopForm : Form
             bitrateAuto: _settings.AutoBitrate,
             codec: _settings.PreferredCodec == VideoCodecType.H265 ? "h265" : "h264",
             audioOn: _audioOn,
+            micOn: _micOn,
             clipboardOn: _settings.ClipboardSyncEnabled,
             privacyOn: _privacyOn,
             pointerLocked: _inputManager.IsPointerLocked,
@@ -1707,6 +1776,7 @@ public sealed class DesktopForm : Form
 
             _ = Task.Run(() =>
             {
+                try { _micCapturer.Dispose(); } catch { }
                 lock (_audioLock)
                 {
                     try { _audioPlayer.Dispose(); } catch { }

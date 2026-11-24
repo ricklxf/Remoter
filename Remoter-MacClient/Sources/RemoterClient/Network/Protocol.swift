@@ -8,6 +8,7 @@ public enum FrameType: UInt8, Sendable {
     case videoFrame = 0x01
     case fileChunk  = 0x02
     case audioFrame = 0x03
+    case micAudio   = 0x04
     case encrypted  = 0xE0
 }
 
@@ -254,6 +255,10 @@ public enum ClientMessages {
         serialize(["type": "set_audio", "enabled": enabled])
     }
 
+    public static func setMicEnabled(_ enabled: Bool) -> Data {
+        serialize(["type": "set_mic_enabled", "enabled": enabled])
+    }
+
     public static func setMuted(_ muted: Bool) -> Data {
         serialize(["type": "set_muted", "muted": muted])
     }
@@ -343,6 +348,7 @@ public enum ServerMessage: Equatable, Sendable {
     case udpOffer(port: Int, sessionTokenHex: String, encrypted: Bool, publicIp: String? = nil, publicPort: Int? = nil)
     case udpActive(enabled: Bool)
     case virtualDisplayActive(enabled: Bool, displayId: Int?)
+    case micStatus(available: Bool, enabled: Bool, device: String?, reason: String?)
     case inputLockChanged(locked: Bool)
     case cursorShape(CursorShapeInfo)
     case pong(encodeMs: Int)
@@ -426,6 +432,14 @@ public enum ServerMessage: Equatable, Sendable {
             return .virtualDisplayActive(
                 enabled: readBool(root, "enabled"),
                 displayId: displayId
+            )
+
+        case "mic_status":
+            return .micStatus(
+                available: readBool(root, "available"),
+                enabled: readBool(root, "enabled"),
+                device: readOptionalString(root, "device"),
+                reason: readOptionalString(root, "reason")
             )
 
         case "input_lock_changed":

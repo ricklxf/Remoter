@@ -29,6 +29,7 @@ export type ConnEvent =
   | { type: 'force_canvas'; enabled: boolean }
   | { type: 'virtual_display_active'; enabled: boolean; displayId?: number }
   | { type: 'audio_frame'; data: ArrayBuffer }
+  | { type: 'mic_status'; available: boolean; enabled: boolean; device?: string; reason?: string }
   | { type: 'cursor_shape'; pngBase64: string; hotX: number; hotY: number }
   | { type: 'media_stream'; stream: MediaStream }
   | { type: 'input_lock_changed'; locked: boolean }
@@ -40,6 +41,7 @@ export type ConnEvent =
 const VIDEO_FRAME   = 0x01
 const FILE_CHUNK    = 0x02
 const AUDIO_FRAME   = 0x03
+const MIC_AUDIO     = 0x04
 const ENCRYPTED_MSG = 0xE0
 
 interface DownloadState {
@@ -345,6 +347,19 @@ export class Connection {
   }
   sendSetAudio(enabled: boolean): void {
     this.sendJson({ type: 'set_audio', enabled })
+  }
+  sendSetMicEnabled(enabled: boolean): void {
+    this.sendJson({ type: 'set_mic_enabled', enabled })
+  }
+  /** Sends a 48 kHz mono 16-bit LE PCM mic chunk ([0x04] + pcm).
+   * Strictly video/input-first: silently drops the packet if outbound WS buffer exceeds 64 KB. */
+  sendMicPcm(pcm: Uint8Array): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    if (this.ws.bufferedAmount > 65536) return
+    const pkt = new Uint8Array(1 + pcm.byteLength)
+    pkt[0] = MIC_AUDIO
+    pkt.set(pcm, 1)
+    this.ws.send(pkt.buffer)
   }
   sendSetPrivacyScreen(enabled: boolean): void {
     this.sendJson({ type: 'set_privacy_screen', enabled })
@@ -903,6 +918,17 @@ export class Connection {
           type: 'virtual_display_active',
           enabled: Boolean(msg.enabled),
           displayId: typeof msg.display_id === 'number' ? msg.display_id : undefined,
+        })
+        break
+      }
+
+      case 'mic_status': {
+        this.emit({
+          type: 'mic_status',
+          available: Boolean(msg.available),
+          enabled: Boolean(msg.enabled),
+          device: typeof msg.device === 'string' ? msg.device : undefined,
+          reason: typeof msg.reason === 'string' ? msg.reason : undefined,
         })
         break
       }

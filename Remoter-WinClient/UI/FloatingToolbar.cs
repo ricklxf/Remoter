@@ -30,6 +30,7 @@ public sealed class FloatingToolbar : Form
     // Interactive controls
     private readonly Button _qualityBtn;
     private readonly Button _audioBtn;
+    private readonly Button _micBtn;
     private readonly Button _clipboardBtn;
     private readonly Button _privacyBtn;
     private readonly Button _pointerLockBtn;
@@ -60,6 +61,7 @@ public sealed class FloatingToolbar : Form
     private bool _bitrateAuto = true;
     private string _codec = "h264";
     private bool _audioOn;
+    private bool _micOn;
     private bool _clipboardOn = true;
     private bool _privacyOn;
     private bool _pointerLocked;
@@ -84,6 +86,7 @@ public sealed class FloatingToolbar : Form
     public event Action<int, bool>? BitrateChanged;
     public event Action<string>? CodecChanged;
     public event Action<bool>? AudioToggled;
+    public event Action<bool>? MicToggled;
     public event Action<bool>? ClipboardToggled;
     public event Action<bool>? PrivacyToggled;
     public event Action? PointerLockToggled;
@@ -162,6 +165,7 @@ public sealed class FloatingToolbar : Form
         _displayBtn     = CreateBarButton("显示器 ▾", 78);
         _displayBtn.Visible = false;
         _audioBtn       = CreateBarButton("声音: 关", 72);
+        _micBtn         = CreateBarButton("麦克风: 关", 82);
         _clipboardBtn   = CreateBarButton("剪贴板: 开", 82);
         SetToggleStyle(_clipboardBtn, _clipboardOn);
         _privacyBtn     = CreateBarButton("隐私屏", 64);
@@ -176,6 +180,7 @@ public sealed class FloatingToolbar : Form
         _displayBtn.Click += (_, _) => ShowMenuUnder(_displayMenu, _displayBtn);
         _powerBtn.Click += (_, _) => ShowMenuUnder(_powerMenu, _powerBtn);
         _audioBtn.Click += (_, _) => AudioToggled?.Invoke(!_audioOn);
+        _micBtn.Click += (_, _) => MicToggled?.Invoke(!_micOn);
         _clipboardBtn.Click += (_, _) => ClipboardToggled?.Invoke(!_clipboardOn);
         _privacyBtn.Click += (_, _) => PrivacyToggled?.Invoke(!_privacyOn);
         _pointerLockBtn.Click += (_, _) => PointerLockToggled?.Invoke();
@@ -187,6 +192,7 @@ public sealed class FloatingToolbar : Form
         _barPanel.Controls.Add(_qualityBtn);
         _barPanel.Controls.Add(_displayBtn);
         _barPanel.Controls.Add(_audioBtn);
+        _barPanel.Controls.Add(_micBtn);
         _barPanel.Controls.Add(_clipboardBtn);
         _barPanel.Controls.Add(_privacyBtn);
         _barPanel.Controls.Add(_pointerLockBtn);
@@ -303,6 +309,7 @@ public sealed class FloatingToolbar : Form
         bool? bitrateAuto = null,
         string? codec = null,
         bool? audioOn = null,
+        bool? micOn = null,
         bool? clipboardOn = null,
         bool? privacyOn = null,
         bool? pointerLocked = null,
@@ -332,6 +339,12 @@ public sealed class FloatingToolbar : Form
             _audioOn = audioOn.Value;
             _audioBtn.Text = _audioOn ? "声音: 开" : "声音: 关";
             SetToggleStyle(_audioBtn, _audioOn);
+        }
+        if (micOn.HasValue)
+        {
+            _micOn = micOn.Value;
+            _micBtn.Text = _micOn ? "麦克风: 开" : "麦克风: 关";
+            SetToggleStyle(_micBtn, _micOn);
         }
         if (clipboardOn.HasValue)
         {

@@ -158,6 +158,21 @@ public final class RemoterConnection: @unchecked Sendable {
             return scroll
         }
 
+        func tryEnqueueBulk(_ data: Data) -> Bool {
+            var waiter: CheckedContinuation<Void, Never>?
+            let accepted: Bool = lock.withLock {
+                if closed { return false }
+                let count = bulkItems.count - bulkHead
+                guard count < RemoterConnection.maxBulkQueueDepth else { return false }
+                bulkItems.append(data)
+                waiter = consumerWaiter
+                consumerWaiter = nil
+                return true
+            }
+            waiter?.resume()
+            return accepted
+        }
+
         func enqueueBulk(_ data: Data) async throws {
             while true {
                 try Task.checkCancellation()
@@ -521,6 +536,7 @@ public final class RemoterConnection: @unchecked Sendable {
     public var onHdrActiveChanged: ((Bool) -> Void)?
     public var onForceCanvasChanged: ((Bool) -> Void)?
     public var onVirtualDisplayActiveChanged: ((Bool) -> Void)?
+    public var onMicStatus: ((_ available: Bool, _ enabled: Bool, _ device: String?, _ reason: String?) -> Void)?
     public var onCursorShape: ((CursorShapeInfo) -> Void)?
     public var onClipboardReceived: ((ClipboardData) -> Void)?
     public var onInputLockChanged: ((Bool) -> Void)?
@@ -1153,6 +1169,9 @@ public final class RemoterConnection: @unchecked Sendable {
         case .virtualDisplayActive(let enabled, _):
             onVirtualDisplayActiveChanged?(enabled)
 
+        case .micStatus(let available, let enabled, let device, let reason):
+            onMicStatus?(available, enabled, device, reason)
+
         case .keepalive, .unknown:
             break
         }
@@ -1518,6 +1537,22 @@ public final class RemoterConnection: @unchecked Sendable {
 
     public func sendSetAudio(enabled: Bool) {
         enqueueControlJson(ClientMessages.setAudio(enabled: enabled))
+    }
+
+    public func sendSetMicEnabled(_ enabled: Bool) {
+        enqueueControlJson(ClientMessages.setMicEnabled(enabled))
+    }
+
+    /// Sends `[0x04] + pcm` (48kHz mono 16-bit LE) over WebSocket non-blockingly.
+    /// Silently drops if disconnected or outbound bulk queue is full (strictly video/input first).
+    public func sendMicPcm(_ pcm: Data) {
+        guard !pcm.isEmpty, isConnected else { return }
+        let queue = stateLock.withLock { _sendQueue }
+        guard let queue else { return }
+        var frame = Data(capacity: 1 + pcm.count)
+        frame.append(FrameType.micAudio.rawValue)
+        frame.append(pcm)
+        _ = queue.tryEnqueueBulk(frame)
     }
 
     public func sendSetMuted(_ muted: Bool) {

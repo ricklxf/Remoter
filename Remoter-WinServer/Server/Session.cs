@@ -36,6 +36,7 @@ sealed class Session
     private AudioCapturer?    _audioCapturer;
     private AudioEncoder?     _audioEncoder;
     private bool              _audioEnabled = false;
+    private bool              _privacyEnabled = false;
 
     private bool   _authed    = false;
     private bool   _inputEnabled = true;
@@ -177,7 +178,11 @@ sealed class Session
         UnregisterUdpSession();
         StopClipboardMonitor(flush: false);
         StopAudioStream();
-        PrivacyScreen.SetEnabled(false);
+        if (_privacyEnabled)
+        {
+            _privacyEnabled = false;
+            PrivacyScreen.SetEnabled(false);
+        }
 
         // 主动断开WebSocket连接
         try
@@ -409,6 +414,7 @@ sealed class Session
                 break;
 
             case ClientMsg.SetPrivacyScreen p:
+                _privacyEnabled = p.Enabled;
                 PrivacyScreen.SetEnabled(p.Enabled);
                 break;
 

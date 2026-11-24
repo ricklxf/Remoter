@@ -15,6 +15,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private let connection: RemoterConnection
     private let videoDecoder = VideoDecoder()
     private let audioPlayer = AudioPlayer()
+    private let micCapturer = MicCapturer()
     private let clipboardSync = ClipboardSync()
     private let rendererView: MetalRendererView
     private let inputManager: InputManager
@@ -53,6 +54,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private var closeErrorMessage: String?
     private var privacyEnabled = false
     private var virtualDisplayEnabled = false
+    private var micEnabled = false
     private var isFullscreen = false
     private var statsHudVisible = true
     private var hasSentCodecCaps = false
@@ -386,6 +388,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         connection.onAudioFrame = { [weak self] packet in
             self?.audioPlayer.enqueue(packet)
         }
+        micCapturer.onPcmChunk = { [weak self] pcm in
+            self?.connection.sendMicPcm(pcm)
+        }
 
         // Pointer lock feedback
         inputManager.onPointerLockChanged = { [weak self] locked in
@@ -528,6 +533,39 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                 self.virtualDisplayEnabled = enabled
                 self.toolbarPanel?.updateState(virtualDisplayOn: enabled)
                 self.showToast(enabled ? "虚拟扩展屏已开启" : "虚拟扩展屏已关闭")
+            }
+        }
+
+        connection.onMicStatus = { [weak self] available, enabled, device, reason in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !available {
+                    self.micCapturer.stop()
+                    self.micEnabled = false
+                    self.toolbarPanel?.updateState(micOn: false)
+                    if reason == "no_virtual_audio_device" {
+                        self.showToast("被控端未安装虚拟音频设备（BlackHole / VB-Cable），无法回传麦克风")
+                    } else {
+                        let detail = reason.map { " (\($0))" } ?? ""
+                        self.showToast("被控端麦克风不可用\(detail)")
+                    }
+                } else if enabled {
+                    if self.micCapturer.start() {
+                        self.micEnabled = true
+                        self.toolbarPanel?.updateState(micOn: true)
+                        let target = device.map { " → \($0)" } ?? ""
+                        self.showToast("麦克风回传已开启\(target)")
+                    } else {
+                        self.micEnabled = false
+                        self.toolbarPanel?.updateState(micOn: false)
+                        self.connection.sendSetMicEnabled(false)
+                        self.showToast("本机麦克风启动失败（请检查麦克风权限）")
+                    }
+                } else {
+                    self.micCapturer.stop()
+                    self.micEnabled = false
+                    self.toolbarPanel?.updateState(micOn: false)
+                }
             }
         }
 
@@ -824,6 +862,19 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             self.toolbarPanel?.updateState(volume: vol)
         }
 
+        toolbar.onMicToggled = { [weak self] enabled in
+            guard let self else { return }
+            if enabled {
+                self.connection.sendSetMicEnabled(true)
+            } else {
+                self.micCapturer.stop()
+                self.micEnabled = false
+                self.toolbarPanel?.updateState(micOn: false)
+                self.connection.sendSetMicEnabled(false)
+                self.showToast("已关闭麦克风回传")
+            }
+        }
+
         toolbar.onPrivacyToggled = { [weak self] enabled in
             guard let self else { return }
             self.privacyEnabled = enabled
@@ -914,10 +965,16 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             showOverlay(title: "正在认证…", subtitle: "验证访问凭据与密钥协商")
         case .reconnecting:
             hasSentCodecCaps = false
+            micCapturer.stop()
+            micEnabled = false
+            toolbarPanel?.updateState(micOn: false)
             showOverlay(title: "连接中断，正在重连…", subtitle: "自动重试中")
         case .streaming:
             hideOverlay()
         case .disconnected, .idle, .error:
+            micCapturer.stop()
+            micEnabled = false
+            toolbarPanel?.updateState(micOn: false)
             break
         }
     }
@@ -1060,6 +1117,8 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         inputManager.resetCursor()
 
         clipboardSync.stop()
+        micCapturer.stop()
+        micEnabled = false
         audioPlayer.stop()
         videoDecoder.invalidate()
         connection.disconnect()

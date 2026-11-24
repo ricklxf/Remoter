@@ -7,6 +7,7 @@ import { Toolbar } from '../components/Toolbar'
 import { FileTransferWindow } from '../components/FileTransferWindow'
 import { VideoCodec } from '../video/Decoder'
 import { AudioPlayer } from '../audio/AudioPlayer'
+import { MicCapturer } from '../audio/MicCapturer'
 
 interface Props {
   conn: Connection
@@ -54,6 +55,11 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
   // don't silently pick up whatever's playing on the remote machine).
   const [audioOn, setAudioOn] = useState(false)
   const audioPlayerRef = useRef<AudioPlayer | null>(null)
+  // Local microphone passthrough (opt-in, default OFF)
+  const [micOn, setMicOn] = useState(false)
+  const micCapturerRef = useRef<MicCapturer | null>(null)
+  const [micToast, setMicToast] = useState<string | null>(null)
+  const micToastTimerRef = useRef<ReturnType<typeof setTimeout>>()
   // Machine-wide lock on the target's own physical keyboard/mouse — off by
   // default, and only ever flipped by the input_lock_changed broadcast (see
   // conn.onEvent below), never optimistically here, since the agent is the
@@ -235,6 +241,24 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
       if (e.type === 'audio_frame') {
         audioPlayerRef.current?.push(e.data)
       }
+      if (e.type === 'mic_status') {
+        if (!e.available) {
+          micCapturerRef.current?.stop()
+          micCapturerRef.current = null
+          setMicOn(false)
+          showMicToast(
+            e.reason === 'no_virtual_audio_device'
+              ? '被控端未安装虚拟音频设备（BlackHole / VB-Cable），无法回传麦克风'
+              : '被控端暂不支持麦克风回传'
+          )
+        } else if (!e.enabled) {
+          micCapturerRef.current?.stop()
+          micCapturerRef.current = null
+          setMicOn(false)
+        } else if (e.device) {
+          showMicToast(`🎤 麦克风已回传至 ${e.device}`)
+        }
+      }
       if (e.type === 'input_lock_changed') {
         setInputLocked(e.locked)
       }
@@ -242,8 +266,20 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     return () => { conn.onEvent = prev }
   }, [conn])
 
-  // Tear the audio player down with the page (tab close / disconnect).
-  useEffect(() => () => { audioPlayerRef.current?.stop(); audioPlayerRef.current = null }, [])
+  // Tear audio player & mic capturer down with the page (tab close / disconnect).
+  useEffect(() => () => {
+    audioPlayerRef.current?.stop()
+    audioPlayerRef.current = null
+    micCapturerRef.current?.stop()
+    micCapturerRef.current = null
+    clearTimeout(micToastTimerRef.current)
+  }, [])
+
+  function showMicToast(msg: string) {
+    setMicToast(msg)
+    clearTimeout(micToastTimerRef.current)
+    micToastTimerRef.current = setTimeout(() => setMicToast(null), 3500)
+  }
 
   // Just requests the change — inputLocked itself only ever updates from the
   // input_lock_changed broadcast above, so it can't drift from what the
@@ -264,6 +300,31 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     } else {
       audioPlayerRef.current?.stop()
       audioPlayerRef.current = null
+    }
+  }
+
+  async function handleToggleMic() {
+    const next = !micOn
+    if (next) {
+      const capturer = new MicCapturer()
+      micCapturerRef.current = capturer
+      const started = await capturer.start((pcm) => {
+        conn.sendMicPcm(pcm)
+      })
+      if (!started) {
+        micCapturerRef.current = null
+        setMicOn(false)
+        conn.sendSetMicEnabled(false)
+        showMicToast('无法打开本地麦克风，请检查浏览器或系统麦克风权限')
+        return
+      }
+      setMicOn(true)
+      conn.sendSetMicEnabled(true)
+    } else {
+      setMicOn(false)
+      micCapturerRef.current?.stop()
+      micCapturerRef.current = null
+      conn.sendSetMicEnabled(false)
     }
   }
 
@@ -402,6 +463,12 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
         </div>
       )}
 
+      {micToast && (
+        <div style={{ ...styles.reconnectBanner, top: isReconnecting ? 52 : 12 }}>
+          {micToast}
+        </div>
+      )}
+
       {/* Web-only: disconnect button */}
       {isWeb && (
         <button style={styles.webDisconnect} onClick={onDisconnect} title="断开连接">
@@ -455,6 +522,8 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
             onZoomChange={setZoom}
             audioOn={audioOn}
             onToggleAudio={handleToggleAudio}
+            micOn={micOn}
+            onToggleMic={handleToggleMic}
             privacyOn={privacyOn}
             onTogglePrivacy={handleTogglePrivacy}
             virtualDisplayOn={virtualDisplayOn}

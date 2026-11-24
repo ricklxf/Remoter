@@ -30,6 +30,7 @@ public final class FloatingToolbarPanel: NSPanel {
     public var onVirtualDisplayToggled: ((Bool) -> Void)?
     public var onAudioToggled: ((Bool) -> Void)?
     public var onVolumeChanged: ((Float) -> Void)?
+    public var onMicToggled: ((Bool) -> Void)?
     public var onPrivacyToggled: ((Bool) -> Void)?
     public var onPointerLockToggled: (() -> Void)?
     public var onMacWinSwapToggled: ((Bool) -> Void)?
@@ -59,6 +60,7 @@ public final class FloatingToolbarPanel: NSPanel {
     private var codec: VideoCodec = .h264
     private var audioOn: Bool = true
     private var volume: Float = 1.0
+    private var micOn: Bool = false
     private var privacyOn: Bool = false
     private var pointerLocked: Bool = false
     private var macWinSwapOn: Bool = true
@@ -84,6 +86,7 @@ public final class FloatingToolbarPanel: NSPanel {
     private let qualityButton = Theme.makeButton(title: "画质 ▾", style: .toolbar, fontSize: 11.5)
     private let audioButton = Theme.makeButton(title: "声音: 开", style: .toolbarActive, fontSize: 11.5)
     private let volumeSlider = NSSlider(value: 1.0, minValue: 0.0, maxValue: 1.0, target: nil, action: nil)
+    private let micButton = Theme.makeButton(title: "麦克风", style: .toolbar, fontSize: 11.5)
     private let privacyButton = Theme.makeButton(title: "隐私屏", style: .toolbar, fontSize: 11.5)
     private let pointerLockButton = Theme.makeButton(title: "游戏鼠标", style: .toolbar, fontSize: 11.5)
     private let keySwapButton = Theme.makeButton(title: "⌘↔Ctrl", style: .toolbarActive, fontSize: 11.5)
@@ -169,6 +172,12 @@ public final class FloatingToolbarPanel: NSPanel {
         audioButton.target = self
         audioButton.action = #selector(audioTapped)
 
+        micButton.target = self
+        micButton.action = #selector(micTapped)
+        micButton.image = NSImage(systemSymbolName: "mic.slash", accessibilityDescription: "麦克风")
+        micButton.imagePosition = .imageLeading
+        micButton.toolTip = "开启/关闭本机麦克风回传到远端"
+
         privacyButton.target = self
         privacyButton.action = #selector(privacyTapped)
 
@@ -206,7 +215,7 @@ public final class FloatingToolbarPanel: NSPanel {
 
         let controls: [NSView] = [
             displayButton, cycleDisplayButton, qualityButton,
-            audioButton, volumeSlider,
+            audioButton, volumeSlider, micButton,
             privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton,
             sep2, fullscreenButton, disconnectButton, collapseButton
         ]
@@ -220,13 +229,14 @@ public final class FloatingToolbarPanel: NSPanel {
         barStack.translatesAutoresizingMaskIntoConstraints = false
         rootContainer.addSubview(barStack)
 
-        for btn in [displayButton, cycleDisplayButton, qualityButton, audioButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton, fullscreenButton, disconnectButton, collapseButton] {
+        for btn in [displayButton, cycleDisplayButton, qualityButton, audioButton, micButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton, fullscreenButton, disconnectButton, collapseButton] {
             btn.heightAnchor.constraint(equalToConstant: 26).isActive = true
         }
         displayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
         cycleDisplayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
         qualityButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
         audioButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
+        micButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
         privacyButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
         pointerLockButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
         keySwapButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 56).isActive = true
@@ -346,6 +356,7 @@ public final class FloatingToolbarPanel: NSPanel {
         codec: VideoCodec? = nil,
         audioOn: Bool? = nil,
         volume: Float? = nil,
+        micOn: Bool? = nil,
         privacyOn: Bool? = nil,
         pointerLocked: Bool? = nil,
         macWinSwapOn: Bool? = nil,
@@ -380,6 +391,11 @@ public final class FloatingToolbarPanel: NSPanel {
         if let volume {
             self.volume = volume
             volumeSlider.floatValue = volume
+        }
+        if let micOn {
+            self.micOn = micOn
+            micButton.buttonStyle = micOn ? .toolbarActive : .toolbar
+            micButton.image = NSImage(systemSymbolName: micOn ? "mic" : "mic.slash", accessibilityDescription: "麦克风")
         }
         if let privacyOn {
             self.privacyOn = privacyOn
@@ -651,6 +667,7 @@ public final class FloatingToolbarPanel: NSPanel {
     @objc private func showPowerMenu() { popMenu(powerMenu, under: powerButton) }
     @objc private func audioTapped() { onAudioToggled?(!audioOn) }
     @objc private func volumeSliderChanged() { onVolumeChanged?(volumeSlider.floatValue) }
+    @objc private func micTapped() { onMicToggled?(!micOn) }
     @objc private func privacyTapped() { onPrivacyToggled?(!privacyOn) }
     @objc private func pointerLockTapped() { onPointerLockToggled?() }
     @objc private func keySwapTapped() { onMacWinSwapToggled?(!macWinSwapOn) }

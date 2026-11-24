@@ -37,6 +37,8 @@ interface Props {
   onZoomChange: (z: number) => void
   audioOn: boolean
   onToggleAudio: () => void
+  micOn: boolean
+  onToggleMic: () => void
   privacyOn?: boolean
   onTogglePrivacy?: () => void
   virtualDisplayOn?: boolean
@@ -116,6 +118,7 @@ export function Toolbar({
   lowLatency, onToggleLowLatency,
   zoom, onZoomChange,
   audioOn, onToggleAudio,
+  micOn, onToggleMic,
   privacyOn, onTogglePrivacy,
   virtualDisplayOn, onToggleVirtualDisplay,
   inputLocked, onToggleInputLock,
@@ -182,6 +185,7 @@ export function Toolbar({
       <ControlMenu
         conn={conn}
         audioOn={audioOn} onToggleAudio={onToggleAudio}
+        micOn={micOn} onToggleMic={onToggleMic}
         privacyOn={privacyOn} onTogglePrivacy={onTogglePrivacy}
         virtualDisplayOn={virtualDisplayOn} onToggleVirtualDisplay={onToggleVirtualDisplay}
         inputLocked={inputLocked} onToggleInputLock={onToggleInputLock}
@@ -190,6 +194,13 @@ export function Toolbar({
       <KeymapMenu />
 
       <div style={s.sep} />
+
+      <ToolBtn
+        icon="🎤"
+        title={micOn ? '关闭麦克风回传' : '开启麦克风回传'}
+        onClick={onToggleMic}
+        active={micOn}
+      />
 
       {displays.length > 1 && (
         <ToolBtn
@@ -621,10 +632,12 @@ function CodecSelect({ value, onChange }: { value: 'h264' | 'h265'; onChange: (c
 
 // ─── Control menu ─────────────────────────────────────────────────────
 
-function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onTogglePrivacy, virtualDisplayOn = false, onToggleVirtualDisplay, inputLocked, onToggleInputLock }: {
+function ControlMenu({ conn, audioOn, onToggleAudio, micOn, onToggleMic, privacyOn = false, onTogglePrivacy, virtualDisplayOn = false, onToggleVirtualDisplay, inputLocked, onToggleInputLock }: {
   conn: Connection
   audioOn: boolean
   onToggleAudio: () => void
+  micOn: boolean
+  onToggleMic: () => void
   privacyOn?: boolean
   onTogglePrivacy?: () => void
   virtualDisplayOn?: boolean
@@ -708,6 +721,13 @@ function ControlMenu({ conn, audioOn, onToggleAudio, privacyOn = false, onToggle
             <span style={s.ctrlItemIcon}>🔊</span>
             <span style={{ flex: 1 }}>转发远端声音</span>
             <Toggle checked={audioOn} onToggle={onToggleAudio} />
+          </div>
+
+          {/* Local microphone passthrough (opt-in, default OFF) */}
+          <div style={s.ctrlItem} title="将本端麦克风声音回传到被控端虚拟音频设备（BlackHole / VB-Cable）">
+            <span style={s.ctrlItemIcon}>🎤</span>
+            <span style={{ flex: 1 }}>回传本地麦克风</span>
+            <Toggle checked={micOn} onToggle={onToggleMic} />
           </div>
 
           {/* Privacy screen (Curtain Mode) */}

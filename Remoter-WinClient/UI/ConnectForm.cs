@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -1315,7 +1316,9 @@ public sealed class ConnectForm : Form
 
     private sealed class RoundedCardPanel : Panel
     {
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public int CornerRadius { get; set; } = 16;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color BorderColor { get; set; } = BorderLight;
 
         public RoundedCardPanel()
@@ -1339,7 +1342,9 @@ public sealed class ConnectForm : Form
 
     private sealed class SavedDeviceCardPanel : Panel
     {
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public int CornerRadius { get; set; } = 10;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color BorderColor { get; set; } = Primary;
 
         public SavedDeviceCardPanel()
@@ -1363,7 +1368,9 @@ public sealed class ConnectForm : Form
 
     private sealed class RoundedBadgeLabel : Label
     {
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color BadgeFill { get; set; } = Color.White;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color BadgeBorder { get; set; } = BorderSubtle;
 
         public RoundedBadgeLabel()
@@ -1391,18 +1398,21 @@ public sealed class ConnectForm : Form
         public TextBox InnerTextBox { get; }
         private bool _focused;
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public string InputText
         {
             get => InnerTextBox.Text;
             set => InnerTextBox.Text = value;
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public string Placeholder
         {
             get => InnerTextBox.PlaceholderText;
             set => InnerTextBox.PlaceholderText = value;
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public bool UsePasswordMask
         {
             get => InnerTextBox.UseSystemPasswordChar;
@@ -1458,11 +1468,17 @@ public sealed class ConnectForm : Form
         private bool _hovered;
         private bool _pressed;
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public int CornerRadius { get; set; } = 8;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color FillColor { get; set; } = Primary;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color HoverFillColor { get; set; } = PrimaryHover;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color TextColor { get; set; } = Color.White;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color BorderColor { get; set; } = Color.Transparent;
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public float BorderWidth { get; set; } = 0f;
 
         public RoundedButton()

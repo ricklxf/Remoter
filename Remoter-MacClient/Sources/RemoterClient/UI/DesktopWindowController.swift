@@ -410,7 +410,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                 self.toolbarPanel?.updateHostOS(hello.os)
 
                 let isWin = hello.os.lowercased().contains("win")
-                self.inputManager.swapMacToWinModifiers = isWin && self.settings.macWinKeySwap
+                let effectiveSwap = isWin && self.settings.macWinKeySwap
+                self.inputManager.swapMacToWinModifiers = effectiveSwap
+                self.toolbarPanel?.updateState(macWinSwapOn: effectiveSwap)
 
                 if self.connectParams.mode == .direct {
                     DeviceStore.shared.updateMachineInfo(

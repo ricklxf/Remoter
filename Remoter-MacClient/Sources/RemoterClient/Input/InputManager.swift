@@ -246,13 +246,29 @@ public final class InputManager {
 
         lastModifierFlags = newFlags
 
+        let mods = KeyCodeMapper.collectModifiers(from: event.modifierFlags, swapMacToWinModifiers: swapMacToWinModifiers)
+
+        // macOS AppKit suppresses `keyUp` for character keys pressed while Command is held
+        // (forwarded via `performKeyEquivalent`). Release any lingering non-modifier keys
+        // before releasing Command so the remote host never stays stuck with shortcut keys held.
+        let isCommandKey = (Int(event.keyCode) == kVK_Command || Int(event.keyCode) == kVK_RightCommand)
+        if isCommandKey && !isDown {
+            let modifierWireCodes: Set<String> = [
+                "MetaLeft", "MetaRight", "ControlLeft", "ControlRight",
+                "AltLeft", "AltRight", "ShiftLeft", "ShiftRight", "CapsLock"
+            ]
+            for held in pressedKeyCodes where !modifierWireCodes.contains(held) {
+                pressedKeyCodes.remove(held)
+                connection.sendKey(code: held, down: false, modifiers: mods)
+            }
+        }
+
         if isDown {
             pressedKeyCodes.insert(code)
         } else {
             pressedKeyCodes.remove(code)
         }
 
-        let mods = KeyCodeMapper.collectModifiers(from: event.modifierFlags, swapMacToWinModifiers: swapMacToWinModifiers)
         connection.sendKey(code: code, down: isDown, modifiers: mods)
     }
 

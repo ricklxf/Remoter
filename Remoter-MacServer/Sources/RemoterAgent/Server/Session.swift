@@ -1781,7 +1781,7 @@ final class Session {
 
         let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
         let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 
@@ -1812,8 +1812,10 @@ final class Session {
             let boosting = scrollBoostActive
             scrollBoostLock.unlock()
             guard !boosting else { return }
-            // Only ramp up on genuinely active traffic (avoid idle 1fps runaway on tunnels)
-            guard sentPackets >= 60 else { return }
+            // Allow idle sessions pinned below 4 Mbps to recover once clean (sentPackets >= 10),
+            // while requiring genuinely active traffic (>= 60 pkts) to probe above 4 Mbps.
+            let minRampPackets: UInt64 = (currentBitrate < 4_000_000) ? 10 : 60
+            guard sentPackets >= minRampPackets else { return }
             let effectiveCeiling = max(floorBps, min(hardCeilingBps, udpLearnedCeilingBps ?? hardCeilingBps))
 
             if currentBitrate < effectiveCeiling {
@@ -1821,7 +1823,7 @@ final class Session {
                 udpCleanBitrateStreak += 1
                 if udpCleanBitrateStreak >= 3 {
                     udpCleanBitrateStreak = 0
-                    let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.15).rounded())))
+                    let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.20).rounded())))
                     if nextBps != currentBitrate {
                         applyBitrate(nextBps, notify: true)
                         ConnectionLogger.shared.logStep(
@@ -1832,13 +1834,13 @@ final class Session {
                     }
                 }
             } else if let cap = udpLearnedCeilingBps {
-                // At learned cap: wait 15s cooldown + 5 clean active windows before gently probing +15%
+                // At learned cap: wait 12s cooldown + 3 clean windows before probing +25%
                 udpCleanBitrateStreak = 0
-                guard now - udpLossCapSetAt >= 15.0 else { return }
+                guard now - udpLossCapSetAt >= 12.0 else { return }
                 udpStableAtCapStreak += 1
-                if udpStableAtCapStreak >= 5 {
+                if udpStableAtCapStreak >= 3 {
                     udpStableAtCapStreak = 0
-                    let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.15).rounded()))
+                    let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.25).rounded()))
                     udpLearnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
                     if probedCap > currentBitrate {
                         applyBitrate(probedCap, notify: true)
@@ -1877,7 +1879,7 @@ final class Session {
 
         let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
         let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 

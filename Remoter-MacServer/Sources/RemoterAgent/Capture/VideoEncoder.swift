@@ -174,14 +174,12 @@ final class VideoEncoder {
         applyPrioritizeSpeed(s, prioritizeSpeed: true)
         applyExpectedFps(s, fps: self.maxFps)
         lastRateControlApplyTime = CACurrentMediaTime()
-        // A keyframe is ~10-20x the size of a delta frame; at 10s intervals
-        // unsolicited ~200KB keyframes burst into WAN/WireGuard tunnels every
-        // 10s (faster than the 15s bitrate probe cooldown), causing self-inflicted
-        // tail drops that pin WAN sessions at the 1.2-1.5 Mbps floor and blur text.
-        // On-demand request_keyframe + NACK/FEC cover every real recovery case, so
-        // keep the periodic safety-net keyframe at 60s (like Parsec/Moonlight/UU).
+        // Disable unsolicited periodic keyframes (0 = infinite GOP, matching Parsec/Moonlight/UU):
+        // remote desktop has no mid-stream joiners or seeking, and on-demand forceKeyframe() +
+        // NACK/FEC cover every real recovery case. Periodic ~180KB keyframes while idle only
+        // inject burst tail-drops into WAN tunnels and crush bitrate down to the floor.
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-                             value: NSNumber(value: 60.0))
+                             value: NSNumber(value: 0.0))
 
         guard VTCompressionSessionPrepareToEncodeFrames(s) == noErr else {
             VTCompressionSessionInvalidate(s)

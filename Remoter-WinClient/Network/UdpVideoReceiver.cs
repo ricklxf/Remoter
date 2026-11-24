@@ -870,7 +870,7 @@ public sealed class UdpVideoReceiver : IDisposable
                                     if (groupMissing >= 2) break;
                                 }
                             }
-                            if (groupMissing >= 2 || fragIndex + 1 >= assembly.FragCount)
+                            if (groupMissing >= 2)
                             {
                                 shouldNack = true;
                             }
@@ -888,7 +888,7 @@ public sealed class UdpVideoReceiver : IDisposable
                                     if (groupMissing >= 2) break;
                                 }
                             }
-                            if (groupMissing >= 2 || fragIndex >= end)
+                            if (groupMissing >= 2)
                             {
                                 shouldNack = true;
                             }

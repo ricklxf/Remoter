@@ -1722,11 +1722,24 @@ final class Session {
     /// sending two back-to-back messages for one logical update.
     /// Holds boosted encoder bitrate until 1.2s after the last scroll event,
     /// ensuring moving text remains crisp without pausing/reconfiguring SCStream.
+    private func cancelScrollBoost() {
+        scrollBoostLock.lock()
+        scrollBoostGen += 1
+        scrollBoostActive = false
+        scrollBoostLock.unlock()
+    }
+
     private func boostBitrateWhileScrolling() {
         // RTP: only the ceiling would move (GCC picks the real rate), and each
         // start/end rewrites the sender's encoding parameters — churn for no
         // effect. The boost only means something for the local VT encoder.
         guard !usingRtpVideo else { return }
+        // Never boost above a congested or loss-capped WAN/tunnel link: doing
+        // 1.5x bitrate on top of FEC during active scrolling blows past the
+        // tunnel ceiling and causes 10-40% packet loss + keyframe freezes.
+        if udpLastLossRatio >= 0.02 { return }
+        if clientNotOnLan && udpLearnedCeilingBps != nil { return }
+
         scrollBoostLock.lock()
         scrollBoostGen += 1
         let gen = scrollBoostGen
@@ -1735,10 +1748,13 @@ final class Session {
         scrollBoostLock.unlock()
 
         if starting {
-            let boosted = min(Int(Double(currentBitrate) * 1.5), 37_500_000)
-            encoder?.setBitrate(boosted)
-            webrtc?.setMaxBitrate(boosted)
-            UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: boosted)
+            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 8_000_000 : 37_500_000)
+            let boosted = min(Int(Double(currentBitrate) * 1.5), cap)
+            if boosted > currentBitrate {
+                encoder?.setBitrate(boosted)
+                webrtc?.setMaxBitrate(boosted)
+                UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: boosted)
+            }
         }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
@@ -1753,31 +1769,26 @@ final class Session {
     }
 
     /// Dynamic UDP bitrate adaptation driven by UdpVideoServer's 2s loss feedback:
-    /// - Resolution-aware quality floor (5 Mbps for >=2K, 4 Mbps for 1080p) so high-res
-    ///   desktops never get crushed down to 2 Mbps blurry mush.
-    /// - UU-style load-gated loss detection: mild random tunnel/Wi-Fi loss (<8%) or loss
-    ///   at low packet volume (sentPackets < 800 in 2s) is absorbed by FEC + NACK without
-    ///   slashing bitrate. Only genuine high-load congestion (loss >= 8% && sentPackets >= 800)
-    ///   steps down 20% and records a learned safe ceiling (85% of triggering bitrate).
+    /// - Resolution-aware quality floor (LAN: 5M/4M, WAN/tunnel: 1.5M/1.2M so FEC overhead
+    ///   never pushes total wire rate back over the bottleneck ceiling).
+    /// - Never suppressed during scrollBoost on loss: congestion immediately cancels scrollBoost
+    ///   and steps bitrate down.
     /// - Below learned ceiling: step up +15% after 3 clean active windows (6s).
     /// - At learned ceiling: hold for 15s cooldown + 5 clean active windows (10s), then probe +15%.
     private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
         udpLastLossRatio = lossRatio
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
-        scrollBoostLock.lock()
-        let boosting = scrollBoostActive
-        scrollBoostLock.unlock()
-        guard !boosting else { return }
 
         let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
         let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 
         let minLossPackets: UInt64 = clientNotOnLan ? 120 : 400
         let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
         if lossRatio >= lossThreshold && sentPackets >= minLossPackets {
+            cancelScrollBoost()
             udpCleanBitrateStreak = 0
             udpStableAtCapStreak = 0
             let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.75).rounded())))
@@ -1786,6 +1797,10 @@ final class Session {
             udpLossCapSetAt = now
             if nextBps != currentBitrate {
                 applyBitrate(nextBps, notify: true)
+            } else {
+                // Even if already at floor, ensure pacing/encoder reflect currentBitrate (not boosted)
+                encoder?.setBitrate(currentBitrate)
+                UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: currentBitrate)
             }
             ConnectionLogger.shared.logStep(
                 sessionId: id.uuidString,
@@ -1793,6 +1808,10 @@ final class Session {
                 detail: "dir=down loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(nextBps) cap=\(udpLearnedCeilingBps ?? hardCeilingBps)"
             )
         } else if lossRatio < 0.01 {
+            scrollBoostLock.lock()
+            let boosting = scrollBoostActive
+            scrollBoostLock.unlock()
+            guard !boosting else { return }
             // Only ramp up on genuinely active traffic (avoid idle 1fps runaway on tunnels)
             guard sentPackets >= 60 else { return }
             let effectiveCeiling = max(floorBps, min(hardCeilingBps, udpLearnedCeilingBps ?? hardCeilingBps))
@@ -1855,18 +1874,15 @@ final class Session {
         recvBps: Int
     ) {
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
-        scrollBoostLock.lock()
-        let boosting = scrollBoostActive
-        scrollBoostLock.unlock()
-        guard !boosting else { return }
 
         let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
         let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 
         if delayGradientMs >= 12.0 && recvBps >= 1_000_000 {
+            cancelScrollBoost()
             udpDelayCleanStreak = 0
             udpDelayOveruseStreak += 1
             if udpDelayOveruseStreak >= 2 && (now - udpLastGccAdjustAt) >= 1.2 {
@@ -1883,6 +1899,10 @@ final class Session {
                 }
             }
         } else if delayGradientMs < 4.0 && lossRatio < 0.005 {
+            scrollBoostLock.lock()
+            let boosting = scrollBoostActive
+            scrollBoostLock.unlock()
+            guard !boosting else { return }
             udpDelayOveruseStreak = 0
             guard recvBps >= 800_000 else { return }
             udpDelayCleanStreak += 1

@@ -1329,13 +1329,16 @@ final class UdpVideoServer {
             let newDeltaFec: UInt8
             let newKeyFec: UInt8
             if lossRatio >= 0.08 {
+                // Cap heavy FEC overhead at +33% (group=3) instead of +50% (group=2)
+                // so FEC protection does not push a congested WAN/tunnel link back into
+                // self-inflicted packet loss and keyframe stalls.
                 newLevel = .heavy
-                newDeltaFec = 2
-                newKeyFec = 2
+                newDeltaFec = 3
+                newKeyFec = 3
             } else if lossRatio >= 0.03 {
                 newLevel = .moderate
                 newDeltaFec = 4
-                newKeyFec = 2
+                newKeyFec = 3
             } else if session.allowFecSuppression && !session.hasEverSeenNack && session.cleanWindows >= 3 {
                 newLevel = .suppressed
                 newDeltaFec = 0

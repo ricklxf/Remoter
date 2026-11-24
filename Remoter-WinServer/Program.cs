@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Vortice.MediaFoundation;
 
@@ -5,9 +6,17 @@ namespace RemoterWin;
 
 public class Program
 {
+    [DllImport("kernel32.dll")]
+    private static extern bool AttachConsole(int dwProcessId);
+
     [STAThread]
-    public static void Main()
+    public static int Main(string[] args)
     {
+        if (args != null && Array.IndexOf(args, "--self-test") >= 0)
+        {
+            try { AttachConsole(-1); } catch { }
+            return RegressionTestRunner.RunAll();
+        }
         try
         {
             MediaFactory.MFStartup();
@@ -68,5 +77,6 @@ public class Program
         {
             UdpVideoServer.Shared.Stop();
         }
+        return 0;
     }
 }

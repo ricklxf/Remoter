@@ -574,6 +574,26 @@ sealed class UdpVideoServer : IDisposable
 
     // ── Background Loops ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// Pure pacing rate calculator shared by PacingLoopAsync and regression self-tests.
+    /// </summary>
+    internal static (double PaceRateBps, int BurstSize) ComputePacingParameters(
+        int pacingBitrateBps,
+        int packetCount,
+        bool isLan)
+    {
+        if (isLan)
+        {
+            double rate = Math.Max(pacingBitrateBps * 2.5, Math.Max((packetCount * 1236.0 / 0.014) * 8.0, 24_000_000.0));
+            return (rate, 8);
+        }
+        else
+        {
+            double rate = Math.Min(Math.Max(pacingBitrateBps * 2.5, 10_000_000.0), 16_000_000.0);
+            return (rate, 4);
+        }
+    }
+
     private async Task PacingLoopAsync(UdpSessionState state, CancellationToken ct)
     {
         var reader = state.PacingChannel.Reader;
@@ -597,13 +617,7 @@ sealed class UdpVideoServer : IDisposable
                     if (udp == null) continue;
 
                     int total = batch.Packets.Count;
-                    // WAN mode: cap pacing to 10-16 Mbps (max 4 pkts/burst) so 2K keyframes drain smoothly
-                    // over ~90-120ms without overflowing WireGuard/router UDP buffers!
-                    // LAN mode: drain fast within ~14ms.
-                    double paceRateBps = isLan
-                        ? Math.Max(bitrateBps * 2.5, Math.Max((total * 1236.0 / 0.014) * 8.0, 24_000_000.0))
-                        : Math.Min(Math.Max(bitrateBps * 2.5, 10_000_000.0), 16_000_000.0);
-                    int burstSize = isLan ? 8 : 4;
+                    var (paceRateBps, burstSize) = ComputePacingParameters(bitrateBps, total, isLan);
                     double bytesPerBurst = burstSize * 1236.0;
                     double stepUs = (bytesPerBurst * 8.0 / paceRateBps) * 1_000_000.0;
                     long stepTicks = (long)(Math.Max(100.0, stepUs) * Stopwatch.Frequency / 1_000_000.0);

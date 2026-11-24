@@ -128,13 +128,18 @@ sealed class InputController
             AppLog.Write($"[Input] Unknown key code: {code}");
     }
 
+    internal static ushort MapWebKeyCodeToVk(string code) =>
+        KeyCodeToVk.TryGetValue(code, out var vk) ? vk : (ushort)0;
+
+    internal static ushort MapModifierToVk(string mod) => ModVk(mod);
+
     private static ushort ModVk(string mod) => mod switch
     {
-        "ctrl"  or "Control" => VK_LCONTROL,
-        "shift" or "Shift"   => VK_LSHIFT,
-        "alt"   or "Alt"     => VK_LMENU,
-        "meta"  or "Meta"    => VK_LWIN,
-        _                    => 0,
+        "ctrl"  or "Control"       => VK_LCONTROL,
+        "shift" or "Shift"         => VK_LSHIFT,
+        "alt"   or "Alt"           => VK_LMENU,
+        "meta"  or "Meta" or "cmd" => VK_LWIN,
+        _                          => 0,
     };
 
     private static void SendKey(ushort vk, bool down)

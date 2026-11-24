@@ -38,6 +38,7 @@ final class KeybotEventTap {
     private var stuckSince: Date?
     private var healTimer: Timer?
     private let healMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+    private var chromiumAppCache: [String: Bool] = [:]
 
     private init() {}
 
@@ -173,7 +174,8 @@ final class KeybotEventTap {
             return Unmanaged.passRetained(event)
         }
 
-        let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        let bundleID = frontApp?.bundleIdentifier ?? ""
 
         if KeybotConfigStore.shared.isGloballyExcluded(bundleID) {
             return Unmanaged.passRetained(event)
@@ -204,9 +206,9 @@ final class KeybotEventTap {
                 } else {
                     endCtrlSwap(proxy: proxy, flags: flags, afterEvent: !isDown)
                 }
-                if mapping.useSyntheticRepost {
-                    // Chromium 系应用（Edge/Chrome）对原地改事件不敏感，识别不出来，
-                    // 必须消耗原事件再发一个全新的合成事件才行
+                if mapping.useSyntheticRepost || isChromiumOrElectronApp(frontApp) {
+                    // Chromium/Electron 系应用（Claude/Edge/Chrome/VSCode/Cursor/Antigravity 等）
+                    // 对原地改 CGEvent 不敏感，必须消耗原事件再发一个全新的合成事件才能稳定触发快捷键
                     postKey(CGKeyCode(targetKC), modifiers: f, isDown: isDown)
                     return nil
                 }
@@ -364,6 +366,36 @@ final class KeybotEventTap {
             event.flags = newFlags
         }
         return Unmanaged.passRetained(event)
+    }
+
+    private func isChromiumOrElectronApp(_ app: NSRunningApplication?) -> Bool {
+        guard let app, let bundleID = app.bundleIdentifier, !bundleID.isEmpty else { return false }
+        if let cached = chromiumAppCache[bundleID] {
+            return cached
+        }
+        var detected = false
+        if let bundleURL = app.bundleURL {
+            let frameworksURL = bundleURL.appendingPathComponent("Contents/Frameworks", isDirectory: true)
+            let markers = [
+                "Electron Framework.framework",
+                "Google Chrome Framework.framework",
+                "Microsoft Edge Framework.framework",
+                "Chromium Embedded Framework.framework",
+                "Brave Browser Framework.framework",
+                "Arc Framework.framework",
+                "Opera Framework.framework",
+                "Vivaldi Framework.framework",
+            ]
+            let fm = FileManager.default
+            for marker in markers {
+                if fm.fileExists(atPath: frameworksURL.appendingPathComponent(marker).path) {
+                    detected = true
+                    break
+                }
+            }
+        }
+        chromiumAppCache[bundleID] = detected
+        return detected
     }
 
     private func postKey(_ keyCode: CGKeyCode, modifiers: CGEventFlags, isDown: Bool) {

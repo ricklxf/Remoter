@@ -1769,15 +1769,19 @@ final class Session {
         scrollBoostLock.unlock()
         guard !boosting else { return }
 
-        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
-        let floorBps = ((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000
+        let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+        let floorBps = clientNotOnLan
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
+            : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 
-        if lossRatio >= 0.08 && sentPackets >= 800 {
+        let minLossPackets: UInt64 = clientNotOnLan ? 120 : 400
+        let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
+        if lossRatio >= lossThreshold && sentPackets >= minLossPackets {
             udpCleanBitrateStreak = 0
             udpStableAtCapStreak = 0
-            let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
-            let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.85).rounded())))
+            let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.75).rounded())))
+            let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
             udpLearnedCeilingBps = max(floorBps, min(udpLearnedCeilingBps ?? hardCeilingBps, learnedCap))
             udpLossCapSetAt = now
             if nextBps != currentBitrate {
@@ -1856,11 +1860,13 @@ final class Session {
         scrollBoostLock.unlock()
         guard !boosting else { return }
 
-        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
-        let floorBps = ((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000
+        let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+        let floorBps = clientNotOnLan
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
+            : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 
-        if delayGradientMs >= 12.0 && recvBps >= 2_000_000 {
+        if delayGradientMs >= 12.0 && recvBps >= 1_000_000 {
             udpDelayCleanStreak = 0
             udpDelayOveruseStreak += 1
             if udpDelayOveruseStreak >= 2 && (now - udpLastGccAdjustAt) >= 1.2 {

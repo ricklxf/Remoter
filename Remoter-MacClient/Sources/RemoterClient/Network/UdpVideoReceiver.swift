@@ -27,8 +27,9 @@ public final class UdpVideoReceiver: @unchecked Sendable {
     public static let encryptedFlag: UInt8 = 0x01
     private static let maxNackIndices = 16
 
-    private static let maxInFlightFrames = 4
-    private static let frameTimeoutMs: UInt64 = 80
+    private static let maxInFlightFrames = 16
+    private static let frameTimeoutMs: UInt64 = 220
+    private static let keyframeTimeoutMs: UInt64 = 350
     private static let handshakeTimeoutSeconds: TimeInterval = 0.6
     private static let helloIntervalSeconds: TimeInterval = 0.1
     private static let keepaliveIntervalSeconds: TimeInterval = 2.0
@@ -937,7 +938,8 @@ public final class UdpVideoReceiver: @unchecked Sendable {
         let now = Self.monotonicMs()
         var droppedAny = false
         for (id, fb) in frames {
-            if now >= fb.createdAtMs && (now - fb.createdAtMs) > Self.frameTimeoutMs {
+            let timeout = fb.isKeyframe ? Self.keyframeTimeoutMs : Self.frameTimeoutMs
+            if now >= fb.createdAtMs && (now - fb.createdAtMs) > timeout {
                 frames.removeValue(forKey: id)
                 droppedAny = true
             }

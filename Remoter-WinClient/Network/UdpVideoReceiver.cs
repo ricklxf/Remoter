@@ -39,9 +39,11 @@ public sealed class UdpVideoReceiver : IDisposable
     private const int VideoHeaderSize = 20;
     private const int GcmTagSize = 16;
     private const int MaxNackIndices = 16;
-    private const int MaxInFlightFrames = 8;
-    private const int FrameTimeoutMs = 120;
+    private const int MaxInFlightFrames = 16;
+    private const int FrameTimeoutMs = 220;
+    private const int KeyframeTimeoutMs = 350;
     private const int TailNackDelayMs = 25;
+    private const int NackRetryCooldownMs = 45;
     private const int CleanupIntervalMs = 20;
     private const int ReceiveBufferBytes = 4 * 1024 * 1024;
     private const int HelloRetryCount = 3;
@@ -65,7 +67,7 @@ public sealed class UdpVideoReceiver : IDisposable
         public int ReceivedCount;
         public bool IsComplete;
         public Dictionary<int, byte[]>? ParityGroups;
-        public HashSet<byte>? NackedFrags;
+        public Dictionary<byte, (long LastTick, byte Count)>? NackedFrags;
     }
 
     private readonly object _lock = new();
@@ -435,7 +437,7 @@ public sealed class UdpVideoReceiver : IDisposable
                         foreach (var kvp in _frames)
                         {
                             var asm = kvp.Value;
-                            int timeout = asm.IsKeyframe ? 200 : FrameTimeoutMs;
+                            int timeout = asm.IsKeyframe ? KeyframeTimeoutMs : FrameTimeoutMs;
                             long age = now - asm.CreatedAtTick;
                             long idleMs = now - asm.LastPacketTick;
                             if (age > timeout)
@@ -445,22 +447,29 @@ public sealed class UdpVideoReceiver : IDisposable
                             }
                             else if (!asm.IsComplete && idleMs >= TailNackDelayMs && _udp != null && _token != null)
                             {
-                                // Proactive tail-loss NACK only after 25ms of SILENCE on this frame
-                                // (never while the server pacer is still actively streaming its packets!).
+                                // Proactive tail-loss NACK & retry (up to 2 rounds, 45ms cooldown)
+                                // only after 25ms of SILENCE on this frame so we never collide with pacing.
                                 List<byte>? missing = null;
                                 for (int i = 0; i < asm.FragCount; i++)
                                 {
                                     if (asm.Fragments[i] != null) continue;
                                     byte idx = (byte)i;
-                                    if (asm.NackedFrags != null && asm.NackedFrags.Contains(idx)) continue;
+                                    if (asm.NackedFrags != null && asm.NackedFrags.TryGetValue(idx, out var info))
+                                    {
+                                        if (info.Count >= 2 || (now - info.LastTick) < NackRetryCooldownMs) continue;
+                                    }
                                     missing ??= new List<byte>();
                                     missing.Add(idx);
                                     if (missing.Count >= MaxNackIndices) break;
                                 }
                                 if (missing != null && missing.Count > 0)
                                 {
-                                    asm.NackedFrags ??= new HashSet<byte>();
-                                    foreach (byte idx in missing) asm.NackedFrags.Add(idx);
+                                    asm.NackedFrags ??= new Dictionary<byte, (long, byte)>();
+                                    foreach (byte idx in missing)
+                                    {
+                                        byte prevCount = asm.NackedFrags.TryGetValue(idx, out var info) ? info.Count : (byte)0;
+                                        asm.NackedFrags[idx] = (now, (byte)(prevCount + 1));
+                                    }
                                     _windowNackPackets += missing.Count;
                                     tailNacks ??= new List<byte[]>();
                                     tailNacks.Add(BuildNackPacket(_token, asm.FrameId, missing));
@@ -686,15 +695,22 @@ public sealed class UdpVideoReceiver : IDisposable
                                 {
                                     if (prevAsm.Fragments[fi] != null) continue;
                                     byte fIdx = (byte)fi;
-                                    if (prevAsm.NackedFrags != null && prevAsm.NackedFrags.Contains(fIdx)) continue;
+                                    if (prevAsm.NackedFrags != null && prevAsm.NackedFrags.TryGetValue(fIdx, out var info))
+                                    {
+                                        if (info.Count >= 2 || (nowTick - info.LastTick) < NackRetryCooldownMs) continue;
+                                    }
                                     prevMissing ??= new List<byte>();
                                     prevMissing.Add(fIdx);
                                     if (prevMissing.Count >= MaxNackIndices) break;
                                 }
                                 if (prevMissing != null && prevMissing.Count > 0)
                                 {
-                                    prevAsm.NackedFrags ??= new HashSet<byte>();
-                                    foreach (byte fIdx in prevMissing) prevAsm.NackedFrags.Add(fIdx);
+                                    prevAsm.NackedFrags ??= new Dictionary<byte, (long, byte)>();
+                                    foreach (byte fIdx in prevMissing)
+                                    {
+                                        byte prevCount = prevAsm.NackedFrags.TryGetValue(fIdx, out var info) ? info.Count : (byte)0;
+                                        prevAsm.NackedFrags[fIdx] = (nowTick, (byte)(prevCount + 1));
+                                    }
                                     _windowNackPackets += prevMissing.Count;
                                     nackPackets ??= new List<byte[]>();
                                     nackPackets.Add(BuildNackPacket(_token, missingFrameId, prevMissing));
@@ -828,11 +844,15 @@ public sealed class UdpVideoReceiver : IDisposable
                 // out-of-order packets that XOR-FEC is about to recover in 0ms.
                 int upper = Math.Min((int)fragIndex, assembly.FragCount);
                 List<byte>? missing = null;
+                long nowNackTick = Environment.TickCount64;
                 for (int i = 0; i < upper; i++)
                 {
                     if (assembly.Fragments[i] != null) continue;
                     byte idx = (byte)i;
-                    if (assembly.NackedFrags != null && assembly.NackedFrags.Contains(idx)) continue;
+                    if (assembly.NackedFrags != null && assembly.NackedFrags.TryGetValue(idx, out var info))
+                    {
+                        if (info.Count >= 2 || (nowNackTick - info.LastTick) < NackRetryCooldownMs) continue;
+                    }
 
                     bool shouldNack = assembly.FecGroupSize == 0;
                     if (!shouldNack && assembly.FecGroupSize > 0)
@@ -886,8 +906,12 @@ public sealed class UdpVideoReceiver : IDisposable
                 if (missing != null && missing.Count > 0)
                 {
                     _windowNackPackets += missing.Count;
-                    assembly.NackedFrags ??= new HashSet<byte>();
-                    foreach (byte idx in missing) assembly.NackedFrags.Add(idx);
+                    assembly.NackedFrags ??= new Dictionary<byte, (long, byte)>();
+                    foreach (byte idx in missing)
+                    {
+                        byte prevCount = assembly.NackedFrags.TryGetValue(idx, out var info) ? info.Count : (byte)0;
+                        assembly.NackedFrags[idx] = (nowNackTick, (byte)(prevCount + 1));
+                    }
                     nackPackets ??= new List<byte[]>();
                     nackPackets.Add(BuildNackPacket(_token, frameId, missing));
                     nackUdp = _udp;

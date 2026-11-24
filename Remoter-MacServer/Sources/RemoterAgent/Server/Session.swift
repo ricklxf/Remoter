@@ -1641,8 +1641,10 @@ final class Session {
         let dt = Date().timeIntervalSince(sentTick)
         if dt >= 5 {
             let transportLabel = usingRtpVideo ? "rtp" : (usingUdpVideo ? "udp" : (usingWebRTCVideo ? "webrtc" : "ws"))
+            let capKbps = (udpLearnedCeilingBps ?? (clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000))) / 1000
+            let lossPct = String(format: "%.1f%%", udpLastLossRatio * 100.0)
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
-                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(transportLabel) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
+                step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(transportLabel) br=\(currentBitrate/1000)k cap=\(capKbps)k loss=\(lossPct) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
             // On RTP, libwebrtc's GCC owns adaptation; on direct UDP,
             // handleUdpLossFeedback owns bitrate adaptation and a single lost
             // UDP packet's kfReq must NEVER slash 60fps -> 30fps. Only run
@@ -1775,30 +1777,120 @@ final class Session {
     ///   and steps bitrate down.
     /// - Below learned ceiling: step up +15% after 3 clean active windows (6s).
     /// - At learned ceiling: hold for 15s cooldown + 5 clean active windows (10s), then probe +15%.
+    /// Pure UDP bitrate adaptation state machine shared by `handleUdpLossFeedback` and regression tests.
+    struct UdpBitrateState {
+        var currentBitrate: Int
+        var learnedCeilingBps: Int? = nil
+        var lossCapSetAt: Double = 0
+        var cleanStreak: Int = 0
+        var stableAtCapStreak: Int = 0
+
+        enum StepAction: Equatable {
+            case hold
+            case down(Int)
+            case up(Int)
+            case probeUp(Int)
+        }
+
+        mutating func step(
+            lossRatio: Double,
+            sentPackets: UInt64,
+            now: Double,
+            clientNotOnLan: Bool,
+            screenWidth: Int,
+            scrollBoostActive: Bool
+        ) -> StepAction {
+            let hardCeilingBps = clientNotOnLan ? 8_000_000 : 25_000_000
+            let floorBps = clientNotOnLan
+                ? ((screenWidth >= 2560) ? 2_500_000 : 2_000_000)
+                : ((screenWidth >= 2560) ? 5_000_000 : 4_000_000)
+            let minLossPackets: UInt64 = clientNotOnLan ? 120 : 400
+            let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
+
+            if lossRatio >= lossThreshold && sentPackets >= minLossPackets {
+                cleanStreak = 0
+                stableAtCapStreak = 0
+                let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.75).rounded())))
+                let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
+                learnedCeilingBps = max(floorBps, min(learnedCeilingBps ?? hardCeilingBps, learnedCap))
+                lossCapSetAt = now
+                currentBitrate = nextBps
+                return .down(nextBps)
+            } else if lossRatio < 0.01 {
+                guard !scrollBoostActive else { return .hold }
+                let minRampPackets: UInt64 = (currentBitrate < 4_000_000) ? 10 : 60
+                guard sentPackets >= minRampPackets else { return .hold }
+                let effectiveCeiling = max(floorBps, min(hardCeilingBps, learnedCeilingBps ?? hardCeilingBps))
+
+                if currentBitrate < effectiveCeiling {
+                    stableAtCapStreak = 0
+                    cleanStreak += 1
+                    if cleanStreak >= 3 {
+                        cleanStreak = 0
+                        let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.20).rounded())))
+                        if nextBps != currentBitrate {
+                            currentBitrate = nextBps
+                            return .up(nextBps)
+                        }
+                    }
+                } else if let cap = learnedCeilingBps {
+                    cleanStreak = 0
+                    guard now - lossCapSetAt >= 12.0 else { return .hold }
+                    stableAtCapStreak += 1
+                    if stableAtCapStreak >= 3 {
+                        stableAtCapStreak = 0
+                        let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.25).rounded()))
+                        learnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
+                        if probedCap > currentBitrate {
+                            currentBitrate = probedCap
+                            return .probeUp(probedCap)
+                        }
+                    }
+                }
+                return .hold
+            } else {
+                cleanStreak = 0
+                stableAtCapStreak = 0
+                return .hold
+            }
+        }
+    }
+
     private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
         udpLastLossRatio = lossRatio
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
 
-        let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
-        let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
-            : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
-        let now = CFAbsoluteTimeGetCurrent()
+        scrollBoostLock.lock()
+        let boosting = scrollBoostActive
+        scrollBoostLock.unlock()
 
-        let minLossPackets: UInt64 = clientNotOnLan ? 120 : 400
-        let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
-        if lossRatio >= lossThreshold && sentPackets >= minLossPackets {
+        var state = UdpBitrateState(
+            currentBitrate: currentBitrate,
+            learnedCeilingBps: udpLearnedCeilingBps,
+            lossCapSetAt: udpLossCapSetAt,
+            cleanStreak: udpCleanBitrateStreak,
+            stableAtCapStreak: udpStableAtCapStreak
+        )
+        let action = state.step(
+            lossRatio: lossRatio,
+            sentPackets: sentPackets,
+            now: CFAbsoluteTimeGetCurrent(),
+            clientNotOnLan: clientNotOnLan,
+            screenWidth: capturer?.screenWidth ?? 1920,
+            scrollBoostActive: boosting
+        )
+        udpLearnedCeilingBps = state.learnedCeilingBps
+        udpLossCapSetAt = state.lossCapSetAt
+        udpCleanBitrateStreak = state.cleanStreak
+        udpStableAtCapStreak = state.stableAtCapStreak
+
+        let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+        switch action {
+        case .down(let nextBps):
             cancelScrollBoost()
-            udpCleanBitrateStreak = 0
-            udpStableAtCapStreak = 0
-            let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.75).rounded())))
-            let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
-            udpLearnedCeilingBps = max(floorBps, min(udpLearnedCeilingBps ?? hardCeilingBps, learnedCap))
-            udpLossCapSetAt = now
             if nextBps != currentBitrate {
                 applyBitrate(nextBps, notify: true)
             } else {
-                // Even if already at floor, ensure pacing/encoder reflect currentBitrate (not boosted)
                 encoder?.setBitrate(currentBitrate)
                 UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: currentBitrate)
             }
@@ -1807,54 +1899,22 @@ final class Session {
                 step: "udp_bitrate_adapt",
                 detail: "dir=down loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(nextBps) cap=\(udpLearnedCeilingBps ?? hardCeilingBps)"
             )
-        } else if lossRatio < 0.01 {
-            scrollBoostLock.lock()
-            let boosting = scrollBoostActive
-            scrollBoostLock.unlock()
-            guard !boosting else { return }
-            // Allow idle sessions pinned below 4 Mbps to recover once clean (sentPackets >= 10),
-            // while requiring genuinely active traffic (>= 60 pkts) to probe above 4 Mbps.
-            let minRampPackets: UInt64 = (currentBitrate < 4_000_000) ? 10 : 60
-            guard sentPackets >= minRampPackets else { return }
-            let effectiveCeiling = max(floorBps, min(hardCeilingBps, udpLearnedCeilingBps ?? hardCeilingBps))
-
-            if currentBitrate < effectiveCeiling {
-                udpStableAtCapStreak = 0
-                udpCleanBitrateStreak += 1
-                if udpCleanBitrateStreak >= 3 {
-                    udpCleanBitrateStreak = 0
-                    let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.20).rounded())))
-                    if nextBps != currentBitrate {
-                        applyBitrate(nextBps, notify: true)
-                        ConnectionLogger.shared.logStep(
-                            sessionId: id.uuidString,
-                            step: "udp_bitrate_adapt",
-                            detail: "dir=up loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(nextBps) cap=\(effectiveCeiling)"
-                        )
-                    }
-                }
-            } else if let cap = udpLearnedCeilingBps {
-                // At learned cap: wait 12s cooldown + 3 clean windows before probing +25%
-                udpCleanBitrateStreak = 0
-                guard now - udpLossCapSetAt >= 12.0 else { return }
-                udpStableAtCapStreak += 1
-                if udpStableAtCapStreak >= 3 {
-                    udpStableAtCapStreak = 0
-                    let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.25).rounded()))
-                    udpLearnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
-                    if probedCap > currentBitrate {
-                        applyBitrate(probedCap, notify: true)
-                        ConnectionLogger.shared.logStep(
-                            sessionId: id.uuidString,
-                            step: "udp_bitrate_adapt",
-                            detail: "dir=probe_up loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(probedCap) cap=\(udpLearnedCeilingBps ?? hardCeilingBps)"
-                        )
-                    }
-                }
-            }
-        } else {
-            udpCleanBitrateStreak = 0
-            udpStableAtCapStreak = 0
+        case .up(let nextBps):
+            applyBitrate(nextBps, notify: true)
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "udp_bitrate_adapt",
+                detail: "dir=up loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(nextBps) cap=\(udpLearnedCeilingBps ?? hardCeilingBps)"
+            )
+        case .probeUp(let probedCap):
+            applyBitrate(probedCap, notify: true)
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "udp_bitrate_adapt",
+                detail: "dir=probe_up loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets) bitrate=\(probedCap) cap=\(udpLearnedCeilingBps ?? hardCeilingBps)"
+            )
+        case .hold:
+            break
         }
     }
 

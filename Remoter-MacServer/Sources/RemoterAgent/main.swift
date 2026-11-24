@@ -2,6 +2,10 @@ import Foundation
 import AppKit
 import ApplicationServices
 
+if CommandLine.arguments.contains("--self-test") {
+    exit(RegressionTestRunner.runAll())
+}
+
 // MARK: - 命令行参数
 
 struct Config {

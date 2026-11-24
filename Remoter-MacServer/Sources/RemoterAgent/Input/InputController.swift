@@ -246,6 +246,41 @@ final class InputController {
         62: .maskControl,   // ControlRight
     ]
 
+    static func mapWebKeyCode(_ code: String) -> CGKeyCode? {
+        keyCodeMap[code]
+    }
+
+    static func computeKeyFlags(
+        code: String,
+        modifiers: [String],
+        virtualCapsLockOn: Bool,
+        down: Bool
+    ) -> (flags: CGEventFlags, isModifierKey: Bool) {
+        var shiftActive = modifiers.contains("shift")
+        if virtualCapsLockOn && code.hasPrefix("Key") { shiftActive.toggle() }
+
+        var flags = CGEventFlags()
+        for mod in modifiers {
+            switch mod {
+            case "meta", "cmd": flags.insert(.maskCommand)
+            case "shift":       break
+            case "alt":         flags.insert(.maskAlternate)
+            case "ctrl":        flags.insert(.maskControl)
+            default: break
+            }
+        }
+        if shiftActive { flags.insert(.maskShift) }
+        if let keyCode = keyCodeMap[code], let modFlag = Self.modifierKeyFlags[keyCode] {
+            if down {
+                flags.insert(modFlag)
+            } else {
+                flags.remove(modFlag)
+            }
+            return (flags, true)
+        }
+        return (flags, false)
+    }
+
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
         if code == "CapsLock" {
             if down { virtualCapsLockOn.toggle() }
@@ -253,7 +288,7 @@ final class InputController {
         }
 
         let src = CGEventSource(stateID: .hidSystemState)
-        guard let keyCode = keyCodeMap[code] else {
+        guard let keyCode = Self.mapWebKeyCode(code) else {
             NSLog("[Input] keyEvent: unknown code=%@", code)
             return
         }
@@ -262,29 +297,16 @@ final class InputController {
             return
         }
 
-        var shiftActive = modifiers.contains("shift")
-        if virtualCapsLockOn && code.hasPrefix("Key") { shiftActive.toggle() }
-
-        var flags = CGEventFlags()
-        for mod in modifiers {
-            switch mod {
-            case "meta", "cmd": flags.insert(.maskCommand)
-            case "shift":       break // handled via shiftActive below
-            case "alt":         flags.insert(.maskAlternate)
-            case "ctrl":        flags.insert(.maskControl)
-            default: break
-            }
-        }
-        if shiftActive { flags.insert(.maskShift) }
+        let (flags, isModifierKey) = Self.computeKeyFlags(
+            code: code,
+            modifiers: modifiers,
+            virtualCapsLockOn: virtualCapsLockOn,
+            down: down
+        )
         // Modifier keys must be posted as .flagsChanged with consistent flag
         // state so KeybotEventTap.handleFlags tracks press/release cleanly.
-        if let modFlag = Self.modifierKeyFlags[keyCode] {
+        if isModifierKey {
             e.type = .flagsChanged
-            if down {
-                flags.insert(modFlag)
-            } else {
-                flags.remove(modFlag)
-            }
         }
         e.flags = flags
         // Post at .cghidEventTap so remote keys flow through .cgSessionEventTap

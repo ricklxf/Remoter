@@ -1158,23 +1158,18 @@ final class UdpVideoServer {
 
         var key: SymmetricKey?
         var callback: ((String) -> Void)?
-        var accepted = false
 
         lock.lock()
         if let session = sessions[token], session.isActive {
-            session.peerAddr = srcAddr
-            session.peerLen = srcLen
-            session.lastKeepaliveAt = Date()
             key = session.symmetricKey
             callback = session.onInputMessage
-            if callback != nil {
-                accepted = session.acceptInputSeq(inputSeq)
-            }
         }
         lock.unlock()
 
-        guard accepted, let callback else { return }
+        guard let callback else { return }
 
+        // Authenticate & decrypt BEFORE mutating peerAddr or the sliding dedup window so
+        // a corrupted/tampered packet with a high inputSeq can NEVER poison maxInputSeq!
         let plaintextData: Data
         if isEncrypted {
             guard let key, length > hdrLen + Self.gcmTagSize else { return }
@@ -1206,6 +1201,17 @@ final class UdpVideoServer {
             plaintextData = Data(buf[hdrLen..<length])
         }
 
+        var accepted = false
+        lock.lock()
+        if let session = sessions[token], session.isActive {
+            session.peerAddr = srcAddr
+            session.peerLen = srcLen
+            session.lastKeepaliveAt = Date()
+            accepted = session.acceptInputSeq(inputSeq)
+        }
+        lock.unlock()
+        guard accepted else { return }
+
         if let jsonText = String(data: plaintextData, encoding: .utf8) {
             callback(jsonText)
         }
@@ -1214,6 +1220,27 @@ final class UdpVideoServer {
     /// 1ms token-bucket pacer tick: smoothly drains queued large-frame datagrams at
     /// `max(pacingBitrateBps * 1.4, 12 Mbps)` so WireGuard/router queues never suffer
     /// micro-burst tail drops on 2K keyframes or fast scrolling.
+    /// Pure pacing rate calculator shared by `drainPacerTick` and regression tests.
+    static func computePacingParameters(
+        pacingBitrateBps: Int,
+        pendingPackets: Int,
+        allowFecSuppression: Bool
+    ) -> (paceRateBps: Double, maxPacketsPerTick: Int) {
+        let estQueuedBytes = Double(pendingPackets) * 1236.0
+        if !allowFecSuppression {
+            // WAN / tunnel mode: cap burst pacing to 10-16 Mbps (max 6 pkts/ms) so a
+            // 180-packet 2K keyframe drains smoothly over ~90-120ms (well within the
+            // client's 350ms keyframe timeout) instead of blasting 127 Mbps in 14ms
+            // and overflowing WireGuard/router UDP buffers!
+            let targetBps = max(Double(pacingBitrateBps) * 2.5, 10_000_000.0)
+            return (min(targetBps, 16_000_000.0), 6)
+        } else {
+            // LAN mode: drain large frames within 14ms for sub-frame latency
+            let drainTargetBps = (estQueuedBytes / 0.014) * 8.0
+            return (max(Double(pacingBitrateBps) * 2.5, drainTargetBps, 24_000_000.0), 24)
+        }
+    }
+
     private func drainPacerTick() {
         let now = CFAbsoluteTimeGetCurrent()
         var batch: [(sockaddr_storage, socklen_t, [Data])] = []
@@ -1238,23 +1265,11 @@ final class UdpVideoServer {
                 // Drain any queued large frame within ~14ms (1 frame interval at 60fps) so
                 // keyframes never time out on the receiver while still smoothing 0.2ms micro-bursts.
                 let pendingCount = session.pacingQueue.count - session.pacingReadIndex
-                let estQueuedBytes = Double(pendingCount) * 1236.0
-                let paceRateBps: Double
-                let maxPacketsPerTick: Int
-                if !session.allowFecSuppression {
-                    // WAN / tunnel mode: cap burst pacing to 10-16 Mbps (max 6 pkts/ms) so a
-                    // 180-packet 2K keyframe drains smoothly over ~90-120ms (well within the
-                    // client's 350ms keyframe timeout) instead of blasting 127 Mbps in 14ms
-                    // and overflowing WireGuard/router UDP buffers!
-                    let targetBps = max(Double(session.pacingBitrateBps) * 2.5, 10_000_000.0)
-                    paceRateBps = min(targetBps, 16_000_000.0)
-                    maxPacketsPerTick = 6
-                } else {
-                    // LAN mode: drain large frames within 14ms for sub-frame latency
-                    let drainTargetBps = (estQueuedBytes / 0.014) * 8.0
-                    paceRateBps = max(Double(session.pacingBitrateBps) * 2.5, drainTargetBps, 24_000_000.0)
-                    maxPacketsPerTick = 24
-                }
+                let (paceRateBps, maxPacketsPerTick) = Self.computePacingParameters(
+                    pacingBitrateBps: session.pacingBitrateBps,
+                    pendingPackets: pendingCount,
+                    allowFecSuppression: session.allowFecSuppression
+                )
                 let addBytes = (paceRateBps / 8.0) * dt
                 let maxBucket = max(session.allowFecSuppression ? 7200.0 : 3600.0, (paceRateBps / 8.0) * 0.004)
                 session.pacingBudgetBytes = min(maxBucket, session.pacingBudgetBytes + addBytes)

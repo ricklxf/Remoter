@@ -228,7 +228,7 @@ final class KeybotEventTap {
     // 修饰键事件只能改变它自己那一位：远控服务端拼 flags 时会吸入系统当前状态，
     // 比如发一个 Control 松开却带着 Keybot 刚设的 Command，把 Command 重新断言成按下，
     // 之后没有人再松开它。这里把"上一次状态里没有、又不属于该键码"的多余位去掉
-    private func stripPhantomModifiers(_ event: CGEvent) {
+    func stripPhantomModifiers(_ event: CGEvent) {
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let table: [CGKeyCode: (CGEventFlags, UInt64)] = [
             55: (.maskCommand, deviceCmdBits), 54: (.maskCommand, deviceCmdBits),
@@ -368,32 +368,33 @@ final class KeybotEventTap {
         return Unmanaged.passRetained(event)
     }
 
+    func isChromiumOrElectronBundle(at bundleURL: URL) -> Bool {
+        let frameworksURL = bundleURL.appendingPathComponent("Contents/Frameworks", isDirectory: true)
+        let markers = [
+            "Electron Framework.framework",
+            "Google Chrome Framework.framework",
+            "Microsoft Edge Framework.framework",
+            "Chromium Embedded Framework.framework",
+            "Brave Browser Framework.framework",
+            "Arc Framework.framework",
+            "Opera Framework.framework",
+            "Vivaldi Framework.framework",
+        ]
+        let fm = FileManager.default
+        for marker in markers {
+            if fm.fileExists(atPath: frameworksURL.appendingPathComponent(marker).path) {
+                return true
+            }
+        }
+        return false
+    }
+
     private func isChromiumOrElectronApp(_ app: NSRunningApplication?) -> Bool {
         guard let app, let bundleID = app.bundleIdentifier, !bundleID.isEmpty else { return false }
         if let cached = chromiumAppCache[bundleID] {
             return cached
         }
-        var detected = false
-        if let bundleURL = app.bundleURL {
-            let frameworksURL = bundleURL.appendingPathComponent("Contents/Frameworks", isDirectory: true)
-            let markers = [
-                "Electron Framework.framework",
-                "Google Chrome Framework.framework",
-                "Microsoft Edge Framework.framework",
-                "Chromium Embedded Framework.framework",
-                "Brave Browser Framework.framework",
-                "Arc Framework.framework",
-                "Opera Framework.framework",
-                "Vivaldi Framework.framework",
-            ]
-            let fm = FileManager.default
-            for marker in markers {
-                if fm.fileExists(atPath: frameworksURL.appendingPathComponent(marker).path) {
-                    detected = true
-                    break
-                }
-            }
-        }
+        let detected = app.bundleURL.map { isChromiumOrElectronBundle(at: $0) } ?? false
         chromiumAppCache[bundleID] = detected
         return detected
     }

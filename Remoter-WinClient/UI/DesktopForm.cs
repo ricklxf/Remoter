@@ -396,10 +396,9 @@ public sealed class DesktopForm : Form
                 {
                     int remaining = Interlocked.Decrement(ref _videoQueueDepth);
 
-                    // Anti-lag backlog guard: if decode falls behind (e.g. 2K@60fps SW decode),
-                    // NEVER accumulate multi-second queue latency. Fast-forward to the newest
-                    // keyframe in queue, or drop stale P-frames & request a fresh IDR if >= 10 deep.
-                    if (remaining >= 6 && pkt.Codec != VideoCodecType.Jpeg)
+                    // Anti-lag backlog guard: only trigger on genuine decode stalls, NEVER on normal
+                    // 6-10 frame NACK recovery bursts (FFmpeg D3D11VA decodes 10 GPU frames in ~5ms).
+                    if (remaining >= 12 && pkt.Codec != VideoCodecType.Jpeg)
                     {
                         var drained = new List<VideoFramePacket>(remaining + 1) { pkt };
                         while (reader.TryRead(out var next))
@@ -425,7 +424,7 @@ public sealed class DesktopForm : Form
                                 ProcessVideoFrame(drained[i]);
                             }
                         }
-                        else if (drained.Count >= 10)
+                        else if (drained.Count >= 30)
                         {
                             lock (_renderLock)
                             {

@@ -233,6 +233,7 @@ final class Session {
     private var clipboardTimer: DispatchSourceTimer?
     private var lastSentClipboardText = ""
     private var lastSentClipboardImageSize = -1
+    private var lastAppliedPasteboardChangeCount = -1
     // Set once the first time startClipboardMonitor() ever captures a
     // baseline for this session — see there for why this must not happen
     // again on every restart.
@@ -543,16 +544,18 @@ final class Session {
             // thread, and a real crash report confirmed NSPasteboard isn't
             // safe to touch off the main thread (see clipboardPlainText()).
             lastSentClipboardText = text
-            DispatchQueue.main.async {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
+            DispatchQueue.main.async { [weak self] in
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(text, forType: .string)
+                self?.lastAppliedPasteboardChangeCount = pb.changeCount
             }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_applied", detail: "len=\(text.count)")
 
         case .clipboardSetImage(let data):
             guard !data.isEmpty, let imgData = Data(base64Encoded: data) else { break }
             lastSentClipboardImageSize = imgData.count
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 pb.declareTypes([.png, .tiff], owner: nil)
@@ -561,6 +564,7 @@ final class Session {
                    let tiff = rep.representation(using: .tiff, properties: [:]) {
                     pb.setData(tiff, forType: .tiff)
                 }
+                self?.lastAppliedPasteboardChangeCount = pb.changeCount
             }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_image_applied", detail: "bytes=\(imgData.count)")
 
@@ -2053,6 +2057,10 @@ final class Session {
     // workflow needs this to run one extra time right as the monitor stops,
     // not just on the regular interval.
     private func checkAndSendClipboardChanges() {
+        let currentChangeCount = DispatchQueue.main.sync { NSPasteboard.general.changeCount }
+        if lastAppliedPasteboardChangeCount >= 0 && currentChangeCount == lastAppliedPasteboardChangeCount {
+            return
+        }
         let text = Self.clipboardPlainText() ?? ""
         if !text.isEmpty && text != lastSentClipboardText {
             lastSentClipboardText = text

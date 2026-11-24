@@ -29,9 +29,12 @@
     </None>
   </ItemGroup>
 
-  <!-- Copy Remoter.ico to output for runtime window/taskbar icon -->
+  <!-- Copy Remoter.ico & high-res bee logo PNG to output for runtime window/taskbar & login UI -->
   <ItemGroup>
     <None Include="..\Remoter-WinServer\Remoter.ico" Link="Remoter.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\Remoter-Client\src\renderer\src\assets\logo.png" Link="RemoterLogo.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

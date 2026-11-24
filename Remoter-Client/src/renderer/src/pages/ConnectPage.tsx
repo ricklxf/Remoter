@@ -3,6 +3,7 @@ import { ConnectParams, ConnectMode, AuthMethod } from '../types'
 import { getSavedAccounts, getAllSavedAccounts, removeSavedAccount, SavedAccount,
          getMachineName, saveMachineName,
          getMachineInfo, MachineInfo } from '../utils/savedAccounts'
+import remoterLogo from '../assets/logo.png'
 
 interface Props {
   onConnect: (params: ConnectParams) => void
@@ -18,24 +19,17 @@ function upgradeToWss(url: string): string {
   return url.startsWith('ws://') ? 'wss://' + url.slice('ws://'.length) : url
 }
 
-// App logo — three hexagons in a triangular cluster, duck-egg-teal gradient
-// (matches the Mac/Windows app icons and the web favicon). Inline SVG rather
-// than a raster image so it stays crisp at any size/DPI.
+// App logo — bee mascot icon matching the Mac/Windows app icons and web favicon.
 function RemoterLogo({ size }: { size: number }): React.JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" fill="none">
-      <defs>
-        <linearGradient id="remoterLogoGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#67E8F9" />
-          <stop offset="100%" stopColor="#08598C" />
-        </linearGradient>
-      </defs>
-      <g stroke="url(#remoterLogoGrad)" strokeWidth={5.47} strokeLinejoin="round" strokeLinecap="round">
-        <polygon points="50,8.82 66.49,18.34 66.49,37.38 50,46.91 33.51,37.38 33.51,18.34" />
-        <polygon points="29.39,44.53 45.88,54.05 45.88,73.09 29.39,82.61 12.89,73.09 12.89,54.05" />
-        <polygon points="70.61,44.53 87.11,54.05 87.11,73.09 70.61,82.61 54.12,73.09 54.12,54.05" />
-      </g>
-    </svg>
+    <img
+      src={remoterLogo}
+      alt="Remoter"
+      width={size}
+      height={size}
+      draggable={false}
+      style={{ display: 'block', objectFit: 'contain', flexShrink: 0 }}
+    />
   )
 }
 

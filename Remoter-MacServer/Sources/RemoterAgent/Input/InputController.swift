@@ -2,6 +2,9 @@ import Foundation
 import CoreGraphics
 import AppKit
 import ApplicationServices
+import IOKit
+import IOKit.hidsystem
+import Carbon.HIToolbox
 
 final class InputController {
     var screenWidth: Int
@@ -227,13 +230,12 @@ final class InputController {
         }
     }
 
-    // Software-simulated Caps Lock: on modern macOS, neither IOHIDSetModifierLockState
-    // nor a synthetic HID keyDown/keyUp for virtualKey 57 actually flips the system's
-    // persisted lock state anymore (confirmed not to work even as root) — Apple has
-    // locked this down, with no lightweight public replacement. So instead of toggling
-    // real OS state, we track our own flag and force-apply Shift to subsequent letter
-    // keys ourselves, same as how a real CapsLock+Shift combo behaves.
+    // UU-style CapsLock tracking: syncs with IOHIDSystem (IOHIDGetModifierLockState /
+    // IOHIDSetModifierLockState / IOHIDPostEvent) + CGEvent(.flagsChanged, .maskAlphaShift),
+    // and carries .maskAlphaShift on subsequent key events so macOS & CJK IMEs (WeType,
+    // Sogou, Apple Pinyin) natively output uppercase ASCII letters while CapsLock is ON.
     private var virtualCapsLockOn = false
+    private var lastNonAsciiSourceID: String?
 
     private static let modifierKeyFlags: [CGKeyCode: CGEventFlags] = [
         54: .maskCommand,   // MetaRight
@@ -256,20 +258,19 @@ final class InputController {
         virtualCapsLockOn: Bool,
         down: Bool
     ) -> (flags: CGEventFlags, isModifierKey: Bool) {
-        var shiftActive = modifiers.contains("shift")
-        if virtualCapsLockOn && code.hasPrefix("Key") { shiftActive.toggle() }
-
         var flags = CGEventFlags()
         for mod in modifiers {
             switch mod {
             case "meta", "cmd": flags.insert(.maskCommand)
-            case "shift":       break
+            case "shift":       flags.insert(.maskShift)
             case "alt":         flags.insert(.maskAlternate)
             case "ctrl":        flags.insert(.maskControl)
             default: break
             }
         }
-        if shiftActive { flags.insert(.maskShift) }
+        if virtualCapsLockOn {
+            flags.insert(.maskAlphaShift)
+        }
         if let keyCode = keyCodeMap[code], let modFlag = Self.modifierKeyFlags[keyCode] {
             if down {
                 flags.insert(modFlag)
@@ -281,9 +282,102 @@ final class InputController {
         return (flags, false)
     }
 
+    /// UU-style CapsLock toggle: updates IOHIDSystem modifier lock state, posts a real
+    /// NX_FLAGSCHANGED HID event + CGEvent(.flagsChanged, virtualKey: 57), and honors
+    /// macOS's "Use Caps Lock key to switch to and from ABC" (TISRomanSwitchState) when enabled.
+    private func handleCapsLockToggle() {
+        // Check macOS "Use Caps Lock to switch ABC" preference first
+        let romanSwitch = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["TISRomanSwitchState"] as? Int == 1
+        if romanSwitch {
+            toggleInputSourceRomanSwitch()
+            return
+        }
+
+        // Sync with real OS CapsLock state if readable, then flip
+        var currentOSState: Bool = virtualCapsLockOn
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass))
+        var connect: io_connect_t = 0
+        var hidOpened = false
+        if service != 0 {
+            if IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &connect) == KERN_SUCCESS {
+                hidOpened = true
+                var osState = false
+                if IOHIDGetModifierLockState(connect, Int32(kIOHIDCapsLockState), &osState) == KERN_SUCCESS {
+                    currentOSState = osState
+                }
+            }
+        }
+        defer {
+            if hidOpened { IOServiceClose(connect) }
+            if service != 0 { IOObjectRelease(service) }
+        }
+
+        let nextState = !currentOSState
+        virtualCapsLockOn = nextState
+
+        if hidOpened {
+            let setKr = IOHIDSetModifierLockState(connect, Int32(kIOHIDCapsLockState), nextState)
+            var ev = NXEventData()
+            ev.key.keyCode = 57 // kVK_CapsLock
+            let hidFlags: UInt32 = nextState ? UInt32(NX_ALPHASHIFTMASK) : 0
+            let postKr = IOHIDPostEvent(
+                connect,
+                UInt32(NX_FLAGSCHANGED),
+                IOGPoint(x: 0, y: 0),
+                &ev,
+                UInt32(kNXEventDataVersion),
+                hidFlags,
+                IOOptionBits(kIOHIDSetGlobalEventFlags)
+            )
+            ConnectionLogger.shared.logStep(
+                sessionId: "input",
+                step: "capslock_toggle",
+                detail: "on=\(nextState) setKr=\(setKr) postKr=\(postKr)"
+            )
+        }
+
+        // Also post CGEvent(.flagsChanged) for virtualKey 57 at .cghidEventTap so
+        // third-party IMEs (e.g. WeType / Sogou) and event taps immediately observe CapsLock.
+        let src = CGEventSource(stateID: .hidSystemState)
+        if let e = CGEvent(keyboardEventSource: src, virtualKey: 57, keyDown: true) {
+            e.type = .flagsChanged
+            e.flags = nextState ? [.maskAlphaShift] : []
+            timedPost(e, tap: .cghidEventTap)
+        }
+    }
+
+    /// Toggles between the current non-ASCII IME (e.g. WeType/Pinyin) and ABC English
+    /// on the main thread when macOS TISRomanSwitchState is enabled.
+    private func toggleInputSourceRomanSwitch() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let cur = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                  let rawID = TISGetInputSourceProperty(cur, kTISPropertyInputSourceID) else { return }
+            let curID = Unmanaged<CFString>.fromOpaque(rawID).takeUnretainedValue() as String
+            let isAscii: Bool = {
+                guard let raw = TISGetInputSourceProperty(cur, kTISPropertyInputSourceIsASCIICapable) else { return false }
+                return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(raw).takeUnretainedValue())
+            }()
+
+            if !isAscii {
+                self.lastNonAsciiSourceID = curID
+                if let ascii = TISCopyCurrentASCIICapableKeyboardInputSource()?.takeRetainedValue() {
+                    TISSelectInputSource(ascii)
+                }
+            } else if let prevID = self.lastNonAsciiSourceID,
+                      let list = TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource],
+                      let prev = list.first(where: { src in
+                          guard let r = TISGetInputSourceProperty(src, kTISPropertyInputSourceID) else { return false }
+                          return (Unmanaged<CFString>.fromOpaque(r).takeUnretainedValue() as String) == prevID
+                      }) {
+                TISSelectInputSource(prev)
+            }
+        }
+    }
+
     func keyEvent(code: String, down: Bool, modifiers: [String]) {
         if code == "CapsLock" {
-            if down { virtualCapsLockOn.toggle() }
+            if down { handleCapsLockToggle() }
             return
         }
 

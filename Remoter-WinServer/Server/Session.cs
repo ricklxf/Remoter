@@ -29,7 +29,7 @@ sealed class Session
     private bool              _hdr10 = false;
 
     private static readonly int[] AutoFpsTiers     = [30, 60, 90, 120];
-    private static readonly int[] AutoBitrateTiers = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000];
+    private static readonly int[] AutoBitrateTiers = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000, 40_000_000];
 
     // Scroll bitrate boost (matches Remoter-MacServer: 1.5x up to 37.5 Mbps for 1.2s)
     private readonly object _scrollBoostLock = new();
@@ -538,7 +538,7 @@ sealed class Session
                     {
                         _targetBitrateBps = 15_000_000;
                         _encoder?.SetBitrate(_targetBitrateBps);
-                        if (_udpSessionToken is { } tok) UdpVideoServer.Shared.UpdatePacingBitrate(tok, _targetBitrateBps);
+                        if (_udpSessionToken is { } lanUdpTok) UdpVideoServer.Shared.UpdatePacingBitrate(lanUdpTok, _targetBitrateBps);
                         qualityBumped = true;
                     }
                     if (!_manualFps && _currentFps < 60)
@@ -584,7 +584,7 @@ sealed class Session
                 }
                 else if (b.Auto)
                 {
-                    _targetBitrateBps = AutoBitrateTiers[^1];
+                    _targetBitrateBps = _isClientLan ? AutoBitrateTiers[^1] : 12_000_000;
                     _encoder?.SetBitrate(_targetBitrateBps);
                 }
                 Send(new { type = "quality_active", fps = _currentFps, bitrate = _targetBitrateBps });
@@ -977,7 +977,7 @@ sealed class Session
         if (_manualBitrate) return;
 
         bool wan = !_isClientLan;
-        int hardCeilingBps = wan ? 8_000_000 : 25_000_000;
+        int hardCeilingBps = wan ? 12_000_000 : 40_000_000;
         int width = _capturer?.Width ?? 1920;
         int floorBps = wan
             ? (width >= 2560 ? 1_500_000 : 1_200_000)
@@ -1087,7 +1087,7 @@ sealed class Session
         if (_encoder == null || _manualBitrate) return;
 
         bool wan = !_isClientLan;
-        int hardCeilingBps = wan ? 8_000_000 : 25_000_000;
+        int hardCeilingBps = wan ? 12_000_000 : 40_000_000;
         int width = _capturer?.Width ?? 1920;
         int floorBps = wan
             ? (width >= 2560 ? 1_500_000 : 1_200_000)
@@ -1186,7 +1186,7 @@ sealed class Session
                 int frames = _sentFrames5s; _sentFrames5s = 0;
                 int kfForced = Interlocked.Exchange(ref _kfForced5s, 0);
                 int kfReq = Interlocked.Exchange(ref _kfReq5s, 0);
-                int capKbps = (_udpLearnedCeilingBps ?? (!_isClientLan ? 8_000_000 : 25_000_000)) / 1000;
+                int capKbps = (_udpLearnedCeilingBps ?? (!_isClientLan ? 12_000_000 : 40_000_000)) / 1000;
                 AppLog.Write($"[Session] sent_5s sent={frames} fps={frames / dtSec:F0} transport={(_usingUdpVideo ? "udp" : "ws")} br={_targetBitrateBps / 1000}k cap={capKbps}k loss={_udpLastLossRatio * 100:F1}% kfForced={kfForced} kfReq={kfReq}");
 
                 if (_authed && (nowTicks5s - Volatile.Read(ref _lastInboundTicks)) > 15_000)
@@ -1402,7 +1402,7 @@ sealed class Session
 
         if (starting)
         {
-            long maxCap = _udpLearnedCeilingBps ?? (!_isClientLan ? 8_000_000L : 37_500_000L);
+            long maxCap = _udpLearnedCeilingBps ?? (!_isClientLan ? 12_000_000L : 50_000_000L);
             int boosted = (int)Math.Min((long)(_targetBitrateBps * 1.5), maxCap);
             if (boosted > _targetBitrateBps)
             {

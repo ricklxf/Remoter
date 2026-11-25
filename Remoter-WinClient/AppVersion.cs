@@ -2,5 +2,5 @@ namespace RemoterWinClient;
 
 internal static class AppVersion
 {
-    public const string Current = "3.0.57";
+    public const string Current = "3.0.58";
 }

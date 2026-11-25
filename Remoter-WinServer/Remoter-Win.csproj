@@ -36,5 +36,8 @@
     <None Include="Remoter.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\Remoter-Client\src\renderer\src\assets\logo.png" Link="RemoterLogo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>

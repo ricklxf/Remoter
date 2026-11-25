@@ -1,794 +1,796 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.IO;
 
 namespace RemoterWin;
 
+/// <summary>
+/// Clean single-card control panel for Remoter-WinServer matching the Remoter login UI:
+/// - Bee mascot logo + "Remoter" title + live status pill badge
+/// - Teal-accented live telemetry &amp; LAN address card with one-click copy
+/// - Structured settings card (PIN toggle/refresh, Web/Admin ports, adaptive quality, CPU cap)
+/// - Full-width primary Start/Stop button, Save/Exit secondary actions, and system tray support
+/// </summary>
 public partial class MainForm : Form
 {
+    // Shared palette matching Remoter Web & WinClient ConnectForm
+    private static readonly Color BgOuter      = Color.FromArgb(241, 245, 249); // #F1F5F9
+    private static readonly Color BgCard       = Color.White;                   // #FFFFFF
+    private static readonly Color BgSubtle     = Color.FromArgb(241, 245, 249); // #F1F5F9
+    private static readonly Color BgSection    = Color.FromArgb(248, 250, 252); // #F8FAFC
+    private static readonly Color BorderSubtle = Color.FromArgb(203, 213, 225); // #CBD5E1
+    private static readonly Color BorderLight  = Color.FromArgb(226, 232, 240); // #E2E8F0
+    private static readonly Color Primary      = Color.FromArgb(13, 148, 136);  // #0D9488
+    private static readonly Color PrimaryHover = Color.FromArgb(15, 118, 110);  // #0F766E
+    private static readonly Color Danger       = Color.FromArgb(220, 38, 38);   // #DC2626
+    private static readonly Color DangerHover  = Color.FromArgb(185, 28, 28);   // #B91C1C
+    private static readonly Color TextDark     = Color.FromArgb(17, 24, 39);    // #111827
+    private static readonly Color TextMuted    = Color.FromArgb(100, 116, 139); // #64748B
+    private static readonly Color TextFaint    = Color.FromArgb(148, 163, 184); // #94A3B8
+    private static readonly Color StatusRunBg  = Color.FromArgb(236, 253, 245); // #ECFDF5
+    private static readonly Color StatusRunFg  = Color.FromArgb(4, 120, 87);    // #047857
+    private static readonly Color StatusRunDot = Color.FromArgb(16, 185, 129);  // #10B981
+    private static readonly Color StatusOffBg  = Color.FromArgb(241, 245, 249); // #F1F5F9
+    private static readonly Color StatusOffDot = Color.FromArgb(239, 68, 68);   // #EF4444
+
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
+
+    private const int CardWidth = 448;
+    private const int CardPadX = 28;
+    private const int InnerWidth = CardWidth - CardPadX * 2; // 392
+    private const int OuterMarginX = 24;
+    private const int OuterMarginY = 20;
+
     // Services
     private WebSocketServer? _server;
     private AdminServer? _admin;
     private RelayClient? _relay;
-    private Dictionary<IWsConn, Session> _sessions = new();
-    
+    private readonly Dictionary<IWsConn, Session> _sessions = new();
+
     // Configuration
     private string _pin = "";
     private ushort _port = 7788;
     private string _relayUrl = "";
-    private bool _isExiting = false;
-    
-    // UI Controls
+    private bool _isExiting;
+    private bool _isStarting;
+
+    // Tray
     private NotifyIcon _trayIcon = null!;
     private ContextMenuStrip _trayMenu = null!;
-    private Label _statusLabel = null!;
-    private Panel _statusIndicator = null!;
-    private Label _statusDetailLabel = null!;
-    private TextBox _webPortTextBox = null!;
-    private TextBox _adminPortTextBox = null!;
-    private Button _startButton = null!;
-    private Button _stopButton = null!;
-    private Button _refreshButton = null!;
-    private Button _applyButton = null!;
-    private Button _cancelButton = null!;
-    private TextBox _pinTextBox = null!;
-    private System.Windows.Forms.Timer _statusTimer = null!;
-    
-    // Adaptive quality controls
-    private CheckBox _adaptiveCheckBox = null!;
-    private TextBox _maxCpuTextBox = null!;
-    private Label _maxCpuLabel = null!;
-    
-    // PIN controls
+
+    // UI Controls
+    private RoundedPanel _card = null!;
+    private StatusPillBadge _statusBadge = null!;
+    private RoundedPanel _monitorCard = null!;
+    private Label _lanAddressLabel = null!;
+    private RoundedButton _copyAddrBtn = null!;
+    private Label _connValueLabel = null!;
+    private Label _uploadValueLabel = null!;
+    private Label _cpuValueLabel = null!;
+
     private CheckBox _pinEnabledCheckBox = null!;
-    
+    private RoundedInputBox _pinInput = null!;
+    private RoundedButton _refreshPinBtn = null!;
+    private RoundedInputBox _webPortInput = null!;
+    private RoundedInputBox _adminPortInput = null!;
+    private CheckBox _adaptiveCheckBox = null!;
+    private RoundedInputBox _maxCpuInput = null!;
+
+    private RoundedButton _primaryActionBtn = null!;
+    private RoundedButton _applyButton = null!;
+    private RoundedButton _exitButton = null!;
+    private Label _toastLabel = null!;
+
+    private System.Windows.Forms.Timer _statusTimer = null!;
+    private System.Windows.Forms.Timer _toastTimer = null!;
+    private Image? _logoImage;
+
     // Performance monitoring
-    private Label _uploadSpeedLabel = null!;
-    private Label _cpuUsageLabel = null!;
-    private Label _connectionCountLabel = null!;
     private Process _currentProcess = null!;
     private TimeSpan _lastCpuTime = TimeSpan.Zero;
     private DateTime _lastCpuCheck = DateTime.Now;
-    private long _lastUploadBytes = 0;
+    private long _lastUploadBytes;
     private DateTime _lastUploadCheck = DateTime.Now;
-    
+
     public MainForm()
     {
         InitializeComponent();
         InitializeTrayIcon();
         LoadConfiguration();
-        SetupStatusTimer();
+        SetupTimers();
+        UpdateStatus(false);
     }
-    
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        EnableLightTitleBar(Handle);
+    }
+
     private void InitializeComponent()
     {
-        this.Text = "Remoter-Win";
-        this.ClientSize = new Size(600, 550);
-        this.MinimumSize = new Size(600, 550);
-        this.FormBorderStyle = FormBorderStyle.FixedDialog;
-        this.MaximizeBox = false;
-        this.StartPosition = FormStartPosition.CenterScreen;
-        
-        // Load custom icon if exists, otherwise use application icon
+        Text = $"Remoter Server v{AppVersion.Current}";
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = BgOuter;
+        ForeColor = TextDark;
+        Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular);
+        DoubleBuffered = true;
+
         try
         {
             var iconPath = Path.Combine(AppContext.BaseDirectory, "Remoter.ico");
             if (File.Exists(iconPath))
             {
-                using (var fs = new FileStream(iconPath, FileMode.Open, FileAccess.Read))
-                {
-                    this.Icon = new Icon(fs);
-                }
+                using var fs = new FileStream(iconPath, FileMode.Open, FileAccess.Read);
+                Icon = new Icon(fs);
             }
             else
-                this.Icon = SystemIcons.Application;
+            {
+                Icon = SystemIcons.Application;
+            }
         }
         catch (Exception ex)
         {
             AppLog.Write($"[Main] Failed to load icon: {ex.Message}");
-            this.Icon = SystemIcons.Application;
+            Icon = SystemIcons.Application;
         }
-        
-        this.BackColor = Color.White;
-        this.Font = new Font("Segoe UI", 9F);
-        
-        // Title bar (modern dark style)
-        var titleBar = new Panel
+
+        _logoImage = LoadLogoImage();
+
+        // ── Main white rounded card ──
+        _card = new RoundedPanel
         {
-            Location = new Point(0, 0),
-            Size = new Size(600, 48),
-            BackColor = Color.FromArgb(32, 32, 32)
+            Location = new Point(OuterMarginX, OuterMarginY),
+            Width = CardWidth,
+            BackColor = BgCard,
+            BorderColor = BorderLight,
+            CornerRadius = 16,
         };
-        
+
+        int y = 28;
+
+        // ── Header: Bee logo + Title + Status pill ──
+        var logoBox = new PictureBox
+        {
+            Location = new Point(CardPadX, y + 2),
+            Size = new Size(34, 34),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            BackColor = Color.Transparent,
+            Image = _logoImage,
+        };
+
         var titleLabel = new Label
         {
-            Location = new Point(16, 12),
-            Size = new Size(200, 24),
-            Text = "Remoter-Win",
-            Font = new Font("Segoe UI", 11F, FontStyle.Regular),
-            ForeColor = Color.White,
-            BackColor = Color.Transparent
+            Text = "Remoter",
+            Location = new Point(CardPadX + 42, y - 2),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 20f, FontStyle.Bold),
+            ForeColor = TextDark,
+            BackColor = Color.Transparent,
         };
-        titleBar.Controls.Add(titleLabel);
-        
-        // Status indicator in title bar
-        _statusIndicator = new Panel
+
+        _statusBadge = new StatusPillBadge
         {
-            Location = new Point(560, 18),
-            Size = new Size(12, 12),
-            BackColor = Color.FromArgb(220, 50, 50) // Red for stopped
+            Size = new Size(86, 26),
+            Location = new Point(CardWidth - CardPadX - 86, y + 6),
         };
-        titleBar.Controls.Add(_statusIndicator);
-        
-        var statusTextLabel = new Label
+
+        var subtitleLabel = new Label
         {
-            Location = new Point(578, 14),
-            Size = new Size(50, 20),
-            Text = "已停止",
-            Font = new Font("Segoe UI", 8F),
-            ForeColor = Color.FromArgb(180, 180, 180),
-            BackColor = Color.Transparent
+            Text = "Windows 被控端服务 · 超清 2K · 60fps",
+            Location = new Point(CardPadX, y + 42),
+            AutoSize = true,
+            Font = new Font("Microsoft YaHei UI", 9f),
+            ForeColor = TextMuted,
+            BackColor = Color.Transparent,
         };
-        titleBar.Controls.Add(statusTextLabel);
-        
-        this.Controls.Add(titleBar);
-        
-        // Main content area
-        var contentPanel = new Panel
+
+        _card.Controls.AddRange(new Control[] { logoBox, titleLabel, _statusBadge, subtitleLabel });
+        y += 74;
+
+        // ── Live Monitor & LAN Address Card ──
+        _monitorCard = new RoundedPanel
         {
-            Location = new Point(0, 48),
-            Size = new Size(600, 502),
-            BackColor = Color.FromArgb(245, 245, 245)
+            Location = new Point(CardPadX, y),
+            Size = new Size(InnerWidth, 108),
+            BackColor = BgSection,
+            BorderColor = BorderSubtle,
+            CornerRadius = 10,
         };
-        
-        // Status display section
-        var statusSection = new Panel
+
+        _lanAddressLabel = new Label
         {
-            Location = new Point(16, 12),
-            Size = new Size(568, 56),
-            BackColor = Color.White
+            Location = new Point(14, 10),
+            Size = new Size(InnerWidth - 90, 24),
+            Font = new Font("Consolas", 10f, FontStyle.Bold),
+            ForeColor = TextDark,
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
+            Text = "ws://127.0.0.1:7788",
         };
-        statusSection.Paint += (s, e) =>
+
+        _copyAddrBtn = new RoundedButton
         {
-            var rect = statusSection.ClientRectangle;
-            using var pen = new Pen(Color.FromArgb(230, 230, 230), 1);
-            e.Graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+            Text = "复制",
+            Location = new Point(InnerWidth - 68, 9),
+            Size = new Size(54, 26),
+            CornerRadius = 6,
+            Font = new Font("Microsoft YaHei UI", 8.5f),
+            FillColor = BgCard,
+            HoverFillColor = BgSubtle,
+            TextColor = TextMuted,
+            BorderColor = BorderSubtle,
+            BorderWidth = 1f,
         };
-        
-        _statusLabel = new Label
+        _copyAddrBtn.Click += (_, _) => CopyLanAddress();
+
+        var monitorDivider = new Panel
         {
-            Location = new Point(12, 8),
-            Size = new Size(544, 40),
-            Text = "服务已停止\n点击启动按钮开始服务",
-            Font = new Font("Segoe UI", 9F),
-            ForeColor = Color.FromArgb(120, 120, 120)
+            Location = new Point(14, 42),
+            Size = new Size(InnerWidth - 28, 1),
+            BackColor = BorderLight,
         };
-        statusSection.Controls.Add(_statusLabel);
-        
-        contentPanel.Controls.Add(statusSection);
-        
-        // Performance monitoring section
-        var perfSection = new Panel
+
+        int colW = (InnerWidth - 28) / 3;
+        _connValueLabel = AddMetricColumn(_monitorCard, 14, 52, colW, "连接数", "0");
+        _uploadValueLabel = AddMetricColumn(_monitorCard, 14 + colW, 52, colW, "上传速度", "0 B/s");
+        _cpuValueLabel = AddMetricColumn(_monitorCard, 14 + colW * 2, 52, InnerWidth - 28 - colW * 2, "CPU 占用", "0.0%");
+
+        _monitorCard.Controls.AddRange(new Control[] { _lanAddressLabel, _copyAddrBtn, monitorDivider });
+        _card.Controls.Add(_monitorCard);
+        y += _monitorCard.Height + 16;
+
+        // ── Settings Card ──
+        var settingsCard = new RoundedPanel
         {
-            Location = new Point(16, 76),
-            Size = new Size(568, 80),
-            BackColor = Color.White
+            Location = new Point(CardPadX, y),
+            Size = new Size(InnerWidth, 186),
+            BackColor = BgSection,
+            BorderColor = BorderLight,
+            CornerRadius = 10,
         };
-        perfSection.Paint += (s, e) =>
+
+        var settingsTitle = new Label
         {
-            var rect = perfSection.ClientRectangle;
-            using var pen = new Pen(Color.FromArgb(230, 230, 230), 1);
-            e.Graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+            Text = "服务设置",
+            Location = new Point(14, 11),
+            AutoSize = true,
+            Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold),
+            ForeColor = TextMuted,
+            BackColor = Color.Transparent,
         };
-        
-        var perfTitleLabel = new Label
-        {
-            Location = new Point(12, 8),
-            Size = new Size(400, 18),
-            Text = "实时监控",
-            Font = new Font("Segoe UI", 8.5F),
-            ForeColor = Color.FromArgb(100, 100, 100)
-        };
-        perfSection.Controls.Add(perfTitleLabel);
-        
-        _connectionCountLabel = new Label
-        {
-            Location = new Point(12, 30),
-            Size = new Size(120, 20),
-            Text = "连接数：0",
-            Font = new Font("Segoe UI", 9F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(50, 50, 50)
-        };
-        perfSection.Controls.Add(_connectionCountLabel);
-        
-        _uploadSpeedLabel = new Label
-        {
-            Location = new Point(140, 30),
-            Size = new Size(120, 20),
-            Text = "上传：0 KB/s",
-            Font = new Font("Segoe UI", 9F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(50, 50, 50)
-        };
-        perfSection.Controls.Add(_uploadSpeedLabel);
-        
-        _cpuUsageLabel = new Label
-        {
-            Location = new Point(280, 30),
-            Size = new Size(120, 20),
-            Text = "CPU：0%",
-            Font = new Font("Segoe UI", 9F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(50, 50, 50)
-        };
-        perfSection.Controls.Add(_cpuUsageLabel);
-        
-        _statusDetailLabel = new Label
-        {
-            Location = new Point(12, 54),
-            Size = new Size(544, 18),
-            Text = "端口：7788 | 管理端口：7790",
-            Font = new Font("Segoe UI", 8F),
-            ForeColor = Color.FromArgb(150, 150, 150)
-        };
-        perfSection.Controls.Add(_statusDetailLabel);
-        
-        contentPanel.Controls.Add(perfSection);
-        
-        // Settings section
-        var settingsSection = new Panel
-        {
-            Location = new Point(16, 152),
-            Size = new Size(568, 140),
-            BackColor = Color.White
-        };
-        settingsSection.Paint += (s, e) =>
-        {
-            var rect = settingsSection.ClientRectangle;
-            using var pen = new Pen(Color.FromArgb(230, 230, 230), 1);
-            e.Graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
-        };
-        
-        var settingsTitleLabel = new Label
-        {
-            Location = new Point(12, 8),
-            Size = new Size(400, 18),
-            Text = "设置",
-            Font = new Font("Segoe UI", 8.5F),
-            ForeColor = Color.FromArgb(100, 100, 100)
-        };
-        settingsSection.Controls.Add(settingsTitleLabel);
-        
-        // PIN enable checkbox
+        settingsCard.Controls.Add(settingsTitle);
+
+        // Row 1: PIN toggle + PIN display + Refresh button
         _pinEnabledCheckBox = new CheckBox
         {
-            Location = new Point(12, 30),
-            Size = new Size(100, 20),
-            Text = "启用PIN码",
+            Text = "启用 PIN 码",
+            Location = new Point(14, 42),
+            AutoSize = true,
             Checked = true,
-            Font = new Font("Segoe UI", 8.5F),
-            ForeColor = Color.FromArgb(60, 60, 60)
+            Font = new Font("Microsoft YaHei UI", 9f),
+            ForeColor = TextDark,
+            BackColor = Color.Transparent,
+            Cursor = Cursors.Hand,
         };
-        _pinEnabledCheckBox.CheckedChanged += (s, e) => UpdatePinEnabled();
-        settingsSection.Controls.Add(_pinEnabledCheckBox);
-        
-        // PIN display
-        _pinTextBox = new TextBox
+        _pinEnabledCheckBox.CheckedChanged += (_, _) => UpdatePinEnabled();
+
+        _refreshPinBtn = new RoundedButton
         {
-            Location = new Point(118, 28),
-            Size = new Size(100, 22),
-            ReadOnly = true,
-            BackColor = Color.FromArgb(250, 250, 250),
-            Font = new Font("Consolas", 10F, FontStyle.Bold),
-            BorderStyle = BorderStyle.FixedSingle,
-            TextAlign = HorizontalAlignment.Center
-        };
-        settingsSection.Controls.Add(_pinTextBox);
-        
-        var refreshPinButton = new Button
-        {
-            Location = new Point(224, 27),
-            Size = new Size(50, 24),
             Text = "刷新",
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(240, 240, 240),
-            ForeColor = Color.FromArgb(60, 60, 60),
-            Font = new Font("Segoe UI", 8F),
-            Cursor = Cursors.Hand
+            Location = new Point(InnerWidth - 14 - 58, 37),
+            Size = new Size(58, 32),
+            CornerRadius = 6,
+            Font = new Font("Microsoft YaHei UI", 8.5f),
+            FillColor = BgCard,
+            HoverFillColor = BgSubtle,
+            TextColor = TextMuted,
+            BorderColor = BorderSubtle,
+            BorderWidth = 1f,
         };
-        refreshPinButton.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
-        refreshPinButton.Click += (s, e) => GenerateNewPin();
-        settingsSection.Controls.Add(refreshPinButton);
-        
-        // Web port
-        var webPortLabel = new Label
+        _refreshPinBtn.Click += (_, _) => GenerateNewPin();
+
+        int pinBoxLeft = 122;
+        _pinInput = new RoundedInputBox
         {
-            Location = new Point(12, 58),
-            Size = new Size(60, 20),
-            Text = "Web端口",
-            TextAlign = ContentAlignment.MiddleRight,
-            Font = new Font("Segoe UI", 8.5F)
+            Location = new Point(pinBoxLeft, 36),
+            Size = new Size(_refreshPinBtn.Left - pinBoxLeft - 8, 34),
+            ReadOnly = true,
         };
-        settingsSection.Controls.Add(webPortLabel);
-        
-        _webPortTextBox = new TextBox
+        _pinInput.InnerTextBox.Font = new Font("Consolas", 11f, FontStyle.Bold);
+        _pinInput.InnerTextBox.TextAlign = HorizontalAlignment.Center;
+
+        // Row 2: Web Port & Admin Port (clean 2-column grid)
+        int halfColW = (InnerWidth - 28 - 12) / 2;
+        var webPortLabel = CreateSmallLabel("Web / 直连端口", 14, 80);
+        _webPortInput = new RoundedInputBox
         {
-            Location = new Point(78, 57),
-            Size = new Size(60, 22),
-            Text = "7788",
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9F)
+            Location = new Point(14, 100),
+            Size = new Size(halfColW, 34),
+            InputText = "7788",
+            Placeholder = "7788",
         };
-        settingsSection.Controls.Add(_webPortTextBox);
-        
-        // Adaptive checkbox
+        _webPortInput.InnerTextBox.TextChanged += (_, _) =>
+        {
+            if (ushort.TryParse(_webPortInput.InputText.Trim(), out ushort p))
+            {
+                _adminPortInput.InputText = (p + 2).ToString();
+            }
+        };
+
+        var adminPortLabel = CreateSmallLabel("管理端口 (只读)", 14 + halfColW + 12, 80);
+        _adminPortInput = new RoundedInputBox
+        {
+            Location = new Point(14 + halfColW + 12, 100),
+            Size = new Size(InnerWidth - 28 - halfColW - 12, 34),
+            InputText = "7790",
+            ReadOnly = true,
+            Enabled = false,
+        };
+
+        // Row 3: Adaptive checkbox + Max CPU %
         _adaptiveCheckBox = new CheckBox
         {
-            Location = new Point(150, 58),
-            Size = new Size(90, 20),
             Text = "画面自适应",
+            Location = new Point(14, 150),
+            AutoSize = true,
             Checked = true,
-            Font = new Font("Segoe UI", 8.5F),
-            ForeColor = Color.FromArgb(60, 60, 60)
-        };
-        settingsSection.Controls.Add(_adaptiveCheckBox);
-        
-        // Max CPU
-        _maxCpuLabel = new Label
-        {
-            Location = new Point(245, 60),
-            Size = new Size(60, 18),
-            Text = "最大CPU",
-            TextAlign = ContentAlignment.MiddleRight,
-            Font = new Font("Segoe UI", 8F)
-        };
-        settingsSection.Controls.Add(_maxCpuLabel);
-        
-        _maxCpuTextBox = new TextBox
-        {
-            Location = new Point(310, 58),
-            Size = new Size(40, 22),
-            Text = "80",
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9F)
-        };
-        settingsSection.Controls.Add(_maxCpuTextBox);
-        
-        var cpuPercentLabel = new Label
-        {
-            Location = new Point(355, 60),
-            Size = new Size(18, 18),
-            Text = "%",
-            Font = new Font("Segoe UI", 8.5F)
-        };
-        settingsSection.Controls.Add(cpuPercentLabel);
-        
-        // Admin port (read-only display)
-        var adminPortLabel = new Label
-        {
-            Location = new Point(380, 60),
-            Size = new Size(72, 18),
-            Text = "管理端口",
-            TextAlign = ContentAlignment.MiddleRight,
-            Font = new Font("Segoe UI", 8F)
-        };
-        settingsSection.Controls.Add(adminPortLabel);
-        
-        _adminPortTextBox = new TextBox
-        {
-            Location = new Point(458, 58),
-            Size = new Size(60, 22),
-            Text = "7790",
-            Enabled = false,
-            BackColor = Color.FromArgb(245, 245, 245),
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9F)
-        };
-        settingsSection.Controls.Add(_adminPortTextBox);
-        
-        contentPanel.Controls.Add(settingsSection);
-        
-        // Button section - 确保在设置区域下方（设置区域结束于292，加上间距16 = 308）
-        var buttonSection = new Panel
-        {
-            Location = new Point(16, 308),
-            Size = new Size(568, 50),
-            BackColor = Color.Transparent
-        };
-        
-        _startButton = new Button
-        {
-            Location = new Point(0, 9),
-            Size = new Size(120, 36),
-            Text = "启动服务",
-            BackColor = Color.FromArgb(0, 135, 80),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
-            Cursor = Cursors.Hand
-        };
-        _startButton.FlatAppearance.BorderSize = 0;
-        _startButton.Click += OnStartButtonClick;
-        buttonSection.Controls.Add(_startButton);
-        
-        _stopButton = new Button
-        {
-            Location = new Point(130, 9),
-            Size = new Size(120, 36),
-            Text = "停止服务",
-            BackColor = Color.FromArgb(200, 50, 50),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
+            Font = new Font("Microsoft YaHei UI", 9f),
+            ForeColor = TextDark,
+            BackColor = Color.Transparent,
             Cursor = Cursors.Hand,
-            Enabled = false
         };
-        _stopButton.FlatAppearance.BorderSize = 0;
-        _stopButton.Click += OnStopButtonClick;
-        buttonSection.Controls.Add(_stopButton);
-        
-        _refreshButton = new Button
+        _adaptiveCheckBox.CheckedChanged += (_, _) =>
         {
-            Location = new Point(260, 9),
-            Size = new Size(100, 36),
-            Text = "刷新",
-            BackColor = Color.FromArgb(240, 240, 240),
-            ForeColor = Color.FromArgb(60, 60, 60),
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
-            Cursor = Cursors.Hand
-        };
-        _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
-        _refreshButton.FlatAppearance.BorderSize = 1;
-        _refreshButton.Click += OnRefreshButtonClick;
-        buttonSection.Controls.Add(_refreshButton);
-        
-        // Exit button - 现代化UI设计，使用灰色调
-        var exitButton = new Button
-        {
-            Location = new Point(370, 9),
-            Size = new Size(100, 36),
-            Text = "退出",
-            BackColor = Color.FromArgb(120, 120, 120),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
-            Cursor = Cursors.Hand
-        };
-        exitButton.FlatAppearance.BorderSize = 0;
-        exitButton.Click += (s, e) => 
-        {
-            _isExiting = true;
-            Application.Exit();
-        };
-        buttonSection.Controls.Add(exitButton);
-        
-        contentPanel.Controls.Add(buttonSection);
-        
-        // Bottom buttons
-        _applyButton = new Button
-        {
-            Location = new Point(16, 320),
-            Size = new Size(260, 36),
-            Text = "应用设置",
-            BackColor = Color.FromArgb(0, 120, 215),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
-            Cursor = Cursors.Hand
-        };
-        _applyButton.FlatAppearance.BorderSize = 0;
-        _applyButton.Click += OnApplyButtonClick;
-        contentPanel.Controls.Add(_applyButton);
-        
-        _cancelButton = new Button
-        {
-            Location = new Point(292, 320),
-            Size = new Size(260, 36),
-            Text = "退出程序",
-            BackColor = Color.FromArgb(240, 240, 240),
-            ForeColor = Color.FromArgb(60, 60, 60),
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
-            Cursor = Cursors.Hand
-        };
-        _cancelButton.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
-        _cancelButton.FlatAppearance.BorderSize = 1;
-        _cancelButton.Click += OnCancelButtonClick;
-        contentPanel.Controls.Add(_cancelButton);
-        
-        this.Controls.Add(contentPanel);
-    }
-    
-    private void SetupStatusTimer()
-    {
-        _statusTimer = new System.Windows.Forms.Timer();
-        _statusTimer.Interval = 2000; // Check every 2 seconds for more responsive updates
-        _statusTimer.Tick += (s, e) => UpdateStatusDisplay();
-        
-        // Initialize process for CPU monitoring
-        _currentProcess = Process.GetCurrentProcess();
-        _lastCpuTime = _currentProcess.TotalProcessorTime;
-        _lastCpuCheck = DateTime.Now;
-    }
-    
-    private void UpdateStatusDisplay()
-    {
-        // Update connection count
-        int connectionCount = _sessions?.Count ?? 0;
-        _connectionCountLabel.Text = $"连接数：{connectionCount}";
-        
-        if (_server != null)
-        {
-            _statusIndicator.BackColor = Color.FromArgb(50, 180, 50); // Green for running
-            _statusLabel.Text = "服务状态：运行中";
-            _statusDetailLabel.Text = $"Web端口：{_port} | 管理端口：{_port + 2} | 连接数：{connectionCount}";
-        }
-        else
-        {
-            _statusIndicator.BackColor = Color.FromArgb(220, 50, 50); // Red for stopped
-            _statusLabel.Text = "服务状态：已停止";
-            _statusDetailLabel.Text = "点击\"启动远控\"开始服务";
-        }
-        
-        // Update upload speed
-        UpdateUploadSpeed();
-        
-        // Update CPU usage
-        UpdateCpuUsage();
-    }
-    
-    private void UpdateUploadSpeed()
-    {
-        if (_server != null && _sessions != null)
-        {
-            long currentUploadBytes = 0;
-            // Calculate total bytes sent from all sessions
             lock (_sessions)
             {
                 foreach (var session in _sessions.Values)
                 {
-                    // Get upload bytes from session (we'll add this property to Session class)
+                    session.SetAdaptiveEnabled(_adaptiveCheckBox.Checked);
+                }
+            }
+        };
+
+        var maxCpuLabel = CreateSmallLabel("最大 CPU (%)", 14 + halfColW + 12, 151);
+        _maxCpuInput = new RoundedInputBox
+        {
+            Location = new Point(InnerWidth - 14 - 72, 143),
+            Size = new Size(72, 32),
+            InputText = "80",
+            Placeholder = "80",
+        };
+        _maxCpuInput.InnerTextBox.TextAlign = HorizontalAlignment.Center;
+
+        settingsCard.Controls.AddRange(new Control[]
+        {
+            _pinEnabledCheckBox, _pinInput, _refreshPinBtn,
+            webPortLabel, _webPortInput, adminPortLabel, _adminPortInput,
+            _adaptiveCheckBox, maxCpuLabel, _maxCpuInput,
+        });
+        _card.Controls.Add(settingsCard);
+        y += settingsCard.Height + 14;
+
+        // ── Inline feedback toast (replaces intrusive popups) ──
+        _toastLabel = new Label
+        {
+            Location = new Point(CardPadX, y),
+            Size = new Size(InnerWidth, 20),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Microsoft YaHei UI", 8.5f),
+            ForeColor = Primary,
+            BackColor = Color.Transparent,
+            Text = "",
+        };
+        _card.Controls.Add(_toastLabel);
+        y += 24;
+
+        // ── Primary Start / Stop Button ──
+        _primaryActionBtn = new RoundedButton
+        {
+            Text = "启动服务",
+            Location = new Point(CardPadX, y),
+            Size = new Size(InnerWidth, 44),
+            CornerRadius = 8,
+            Font = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Bold),
+            FillColor = Primary,
+            HoverFillColor = PrimaryHover,
+            TextColor = Color.White,
+            BorderColor = Color.Transparent,
+        };
+        _primaryActionBtn.Click += (_, _) =>
+        {
+            if (_server != null) StopServices();
+            else StartServices();
+        };
+        _card.Controls.Add(_primaryActionBtn);
+        y += 54;
+
+        // ── Secondary Buttons: Save Settings + Exit ──
+        int secBtnW = (InnerWidth - 10) / 2;
+        _applyButton = new RoundedButton
+        {
+            Text = "保存设置",
+            Location = new Point(CardPadX, y),
+            Size = new Size(secBtnW, 36),
+            CornerRadius = 8,
+            Font = new Font("Microsoft YaHei UI", 9.2f),
+            FillColor = BgSubtle,
+            HoverFillColor = BorderLight,
+            TextColor = TextDark,
+            BorderColor = BorderSubtle,
+            BorderWidth = 1f,
+        };
+        _applyButton.Click += OnApplyButtonClick;
+
+        _exitButton = new RoundedButton
+        {
+            Text = "退出程序",
+            Location = new Point(CardPadX + secBtnW + 10, y),
+            Size = new Size(InnerWidth - secBtnW - 10, 36),
+            CornerRadius = 8,
+            Font = new Font("Microsoft YaHei UI", 9.2f),
+            FillColor = BgSubtle,
+            HoverFillColor = Color.FromArgb(254, 226, 226),
+            TextColor = TextMuted,
+            BorderColor = BorderSubtle,
+            BorderWidth = 1f,
+        };
+        _exitButton.Click += OnCancelButtonClick;
+
+        _card.Controls.AddRange(new Control[] { _applyButton, _exitButton });
+        y += 46;
+
+        // ── Version Footer ──
+        var versionLabel = new Label
+        {
+            Text = $"v{AppVersion.Current}",
+            Location = new Point(CardPadX, y),
+            Size = new Size(InnerWidth, 20),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = TextFaint,
+            BackColor = Color.Transparent,
+        };
+        _card.Controls.Add(versionLabel);
+        y += 30;
+
+        _card.Height = y;
+        ClientSize = new Size(CardWidth + OuterMarginX * 2, _card.Height + OuterMarginY * 2);
+        Controls.Add(_card);
+    }
+
+    private static Label AddMetricColumn(Control parent, int x, int y, int width, string title, string initialValue)
+    {
+        var titleLbl = new Label
+        {
+            Text = title,
+            Location = new Point(x, y),
+            Size = new Size(width, 18),
+            Font = new Font("Microsoft YaHei UI", 8f),
+            ForeColor = TextMuted,
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleCenter,
+        };
+        var valueLbl = new Label
+        {
+            Text = initialValue,
+            Location = new Point(x, y + 20),
+            Size = new Size(width, 24),
+            Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+            ForeColor = TextDark,
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleCenter,
+        };
+        parent.Controls.Add(titleLbl);
+        parent.Controls.Add(valueLbl);
+        return valueLbl;
+    }
+
+    private static Label CreateSmallLabel(string text, int x, int y) => new()
+    {
+        Text = text,
+        Location = new Point(x, y),
+        AutoSize = true,
+        Font = new Font("Microsoft YaHei UI", 8.5f),
+        ForeColor = TextMuted,
+        BackColor = Color.Transparent,
+    };
+
+    private void SetupTimers()
+    {
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _statusTimer.Tick += (_, _) => UpdateStatusDisplay();
+
+        _toastTimer = new System.Windows.Forms.Timer { Interval = 2800 };
+        _toastTimer.Tick += (_, _) =>
+        {
+            _toastTimer.Stop();
+            _toastLabel.Text = "";
+        };
+
+        _currentProcess = Process.GetCurrentProcess();
+        _lastCpuTime = _currentProcess.TotalProcessorTime;
+        _lastCpuCheck = DateTime.Now;
+    }
+
+    private void ShowToast(string message, bool isError = false)
+    {
+        _toastLabel.ForeColor = isError ? Danger : Primary;
+        _toastLabel.Text = message;
+        _toastTimer.Stop();
+        _toastTimer.Start();
+    }
+
+    private void CopyLanAddress()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_lanAddressLabel.Text))
+            {
+                Clipboard.SetText(_lanAddressLabel.Text);
+                ShowToast("已复制局域网连接地址");
+            }
+        }
+        catch { }
+    }
+
+    private void UpdateLanAddressDisplay()
+    {
+        var ips = GetLocalIPs();
+        string ip = ips.FirstOrDefault() ?? "127.0.0.1";
+        _lanAddressLabel.Text = $"ws://{ip}:{_port}";
+    }
+
+    private void UpdateStatusDisplay()
+    {
+        int connectionCount;
+        lock (_sessions) connectionCount = _sessions.Count;
+        _connValueLabel.Text = connectionCount.ToString();
+        UpdateUploadSpeed();
+        UpdateCpuUsage();
+    }
+
+    private void UpdateUploadSpeed()
+    {
+        if (_server != null)
+        {
+            long currentUploadBytes = 0;
+            lock (_sessions)
+            {
+                foreach (var session in _sessions.Values)
+                {
                     currentUploadBytes += session.GetTotalBytesSent();
                 }
             }
-            
+
             var now = DateTime.Now;
             var timeDiff = (now - _lastUploadCheck).TotalSeconds;
-            
             if (timeDiff > 0)
             {
-                var bytesPerSecond = (currentUploadBytes - _lastUploadBytes) / timeDiff;
-                string speedText;
-                
+                var bytesPerSecond = Math.Max(0, (currentUploadBytes - _lastUploadBytes) / timeDiff);
                 if (bytesPerSecond < 1024)
-                    speedText = $"{bytesPerSecond:F0} B/s";
+                    _uploadValueLabel.Text = $"{bytesPerSecond:F0} B/s";
                 else if (bytesPerSecond < 1024 * 1024)
-                    speedText = $"{bytesPerSecond / 1024:F1} KB/s";
+                    _uploadValueLabel.Text = $"{bytesPerSecond / 1024:F1} KB/s";
                 else
-                    speedText = $"{bytesPerSecond / (1024 * 1024):F1} MB/s";
-                
-                _uploadSpeedLabel.Text = $"上传速度：{speedText}";
+                    _uploadValueLabel.Text = $"{bytesPerSecond / (1024 * 1024):F1} MB/s";
             }
-            
+
             _lastUploadBytes = currentUploadBytes;
             _lastUploadCheck = now;
         }
         else
         {
-            _uploadSpeedLabel.Text = "上传速度：0 KB/s";
+            _uploadValueLabel.Text = "0 B/s";
             _lastUploadBytes = 0;
         }
     }
-    
+
     private void UpdateCpuUsage()
     {
         try
         {
             var currentCpuTime = _currentProcess.TotalProcessorTime;
             var currentTime = DateTime.Now;
-            
             var cpuTimeDiff = currentCpuTime - _lastCpuTime;
             var timeDiff = currentTime - _lastCpuCheck;
-            
+
             if (timeDiff.TotalMilliseconds > 0)
             {
-                // 修正CPU计算：使用百分比公式
-                var cpuUsage = (cpuTimeDiff.TotalSeconds / (Environment.ProcessorCount * timeDiff.TotalSeconds)) * 100.0;
-                _cpuUsageLabel.Text = $"CPU：{cpuUsage:F1}%";
-                
-                // Check if CPU usage exceeds limit and notify sessions
-                if (int.TryParse(_maxCpuTextBox.Text, out int maxCpu) && maxCpu > 0)
+                var cpuUsage = Math.Clamp(
+                    (cpuTimeDiff.TotalSeconds / (Environment.ProcessorCount * timeDiff.TotalSeconds)) * 100.0,
+                    0.0, 100.0);
+                _cpuValueLabel.Text = $"{cpuUsage:F1}%";
+
+                if (int.TryParse(_maxCpuInput.InputText.Trim(), out int maxCpu) && maxCpu > 0)
                 {
                     bool cpuLimitReached = cpuUsage > maxCpu;
-                    // Notify all sessions about CPU limit
-                    if (_sessions != null)
+                    lock (_sessions)
                     {
-                        lock (_sessions)
+                        foreach (var session in _sessions.Values)
                         {
-                            foreach (var session in _sessions.Values)
-                            {
-                                session.SetCpuLimitReached(cpuLimitReached);
-                            }
+                            session.SetCpuLimitReached(cpuLimitReached);
                         }
                     }
                 }
-                
-                // Update for next calculation
+
                 _lastCpuTime = currentCpuTime;
                 _lastCpuCheck = currentTime;
             }
         }
         catch
         {
-            _cpuUsageLabel.Text = "CPU：N/A";
+            _cpuValueLabel.Text = "N/A";
         }
     }
-    
+
     private void InitializeTrayIcon()
     {
         _trayMenu = new ContextMenuStrip();
-        _trayMenu.Items.Add("显示主窗口", null, (s, e) => ShowMainWindow());
+        _trayMenu.Items.Add("显示主窗口", null, (_, _) => ShowMainWindow());
         _trayMenu.Items.Add("-");
         _trayMenu.Items.Add("启动服务", null, OnTrayStartClick);
         _trayMenu.Items.Add("停止服务", null, OnTrayStopClick);
         _trayMenu.Items.Add("-");
         _trayMenu.Items.Add("退出", null, OnTrayExitClick);
-        
-        // Load custom icon for tray
+
         Icon? trayIcon = null;
         try
         {
             var iconPath = Path.Combine(AppContext.BaseDirectory, "Remoter.ico");
             if (File.Exists(iconPath))
             {
-                using (var fs = new FileStream(iconPath, FileMode.Open, FileAccess.Read))
-                {
-                    trayIcon = new Icon(fs);
-                }
+                using var fs = new FileStream(iconPath, FileMode.Open, FileAccess.Read);
+                trayIcon = new Icon(fs);
             }
             else
+            {
                 trayIcon = SystemIcons.Application;
+            }
         }
         catch (Exception ex)
         {
             AppLog.Write($"[Main] Failed to load tray icon: {ex.Message}");
             trayIcon = SystemIcons.Application;
         }
-        
+
         _trayIcon = new NotifyIcon
         {
             Icon = trayIcon,
-            Text = "Remoter-Win",
+            Text = "Remoter Server",
             ContextMenuStrip = _trayMenu,
-            Visible = false
+            Visible = false,
         };
-        
         _trayIcon.MouseClick += OnTrayIconMouseClick;
     }
-    
+
     private void LoadConfiguration()
     {
         var cfg = AgentConfig.Load();
         _pin = cfg.Pin.Length > 0 ? cfg.Pin : Random.Shared.Next(100_000, 999_999).ToString();
         _port = cfg.Port > 0 ? cfg.Port : (ushort)7788;
         _relayUrl = cfg.RelayUrl ?? "";
-        
-        _pinTextBox.Text = _pin;
+
+        _pinInput.InputText = _pin;
         _pinEnabledCheckBox.Checked = cfg.PinEnabled;
-        _webPortTextBox.Text = _port.ToString();
-        _adminPortTextBox.Text = (_port + 2).ToString();
-        
-        // Update PIN textbox enabled state
-        _pinTextBox.Enabled = cfg.PinEnabled;
+        _pinInput.Enabled = cfg.PinEnabled;
+        _webPortInput.InputText = _port.ToString();
+        _adminPortInput.InputText = (_port + 2).ToString();
+        UpdateLanAddressDisplay();
     }
-    
+
     private void GenerateNewPin()
     {
         _pin = Random.Shared.Next(100_000, 999_999).ToString();
-        _pinTextBox.Text = _pin;
-        
-        // Save to config
+        _pinInput.InputText = _pin;
+
         var cfg = AgentConfig.Load();
         cfg.Pin = _pin;
         cfg.Save();
-        
-        // Update running admin server
-        if (_admin != null)
-        {
-            _admin.UpdatePin(_pin);
-        }
-        
+
+        _admin?.UpdatePin(_pin);
+
         AppLog.Write($"[Main] PIN已刷新：{_pin}");
-        MessageBox.Show($"新PIN：{_pin}\n重启服务后新连接将使用此PIN", "PIN已刷新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        ShowToast($"已刷新 PIN 码：{_pin}");
     }
-    
+
     private void UpdatePinEnabled()
     {
         bool enabled = _pinEnabledCheckBox.Checked;
-        _pinTextBox.Enabled = enabled;
-        
-        // Save to config
+        _pinInput.Enabled = enabled;
+
         var cfg = AgentConfig.Load();
         cfg.PinEnabled = enabled;
         cfg.Save();
-        
-        // Update running sessions
+
         Session.SetPinEnabled(enabled);
-        
         AppLog.Write($"[Main] PIN {(enabled ? "已启用" : "已禁用")}");
     }
-    
+
     private void UpdateStatus(bool isRunning)
     {
+        _statusBadge.IsRunning = isRunning;
+        _monitorCard.BorderColor = isRunning ? Primary : BorderSubtle;
+        _monitorCard.Invalidate();
+
         if (isRunning)
         {
-            _statusIndicator.BackColor = Color.FromArgb(50, 180, 50); // Green for running
-            _statusLabel.Text = "服务运行中\n点击停止按钮禁用服务";
-            _statusDetailLabel.Text = $"Web端口：{_port} | 管理端口：{_port + 2} | 连接数：{_sessions.Count}";
-            _startButton.Enabled = false;
-            _stopButton.Enabled = true;
-            
-            // Start timer
+            _primaryActionBtn.Text = "停止服务";
+            _primaryActionBtn.FillColor = Danger;
+            _primaryActionBtn.HoverFillColor = DangerHover;
+            _primaryActionBtn.Enabled = true;
+            _webPortInput.Enabled = false;
+
             _statusTimer.Start();
-            
-            // Update tray menu
-            _trayMenu.Items[2].Enabled = false;  // 启动远控
-            _trayMenu.Items[3].Enabled = true;   // 禁用远控
+            _trayMenu.Items[2].Enabled = false;
+            _trayMenu.Items[3].Enabled = true;
         }
         else
         {
-            _statusIndicator.BackColor = Color.FromArgb(220, 50, 50); // Red for stopped
-            _statusLabel.Text = "服务已停止\n点击启动按钮开始服务";
-            _statusDetailLabel.Text = $"端口：{_port} | 管理端口：{_port + 2}";
-            _startButton.Enabled = true;
-            _stopButton.Enabled = false;
-            
-            // Stop timer
+            _primaryActionBtn.Text = "启动服务";
+            _primaryActionBtn.FillColor = Primary;
+            _primaryActionBtn.HoverFillColor = PrimaryHover;
+            _primaryActionBtn.Enabled = true;
+            _webPortInput.Enabled = true;
+
             _statusTimer.Stop();
-            
-            // Update tray menu
-            _trayMenu.Items[2].Enabled = true;   // 启动远控
-            _trayMenu.Items[3].Enabled = false;  // 禁用远控
+            _connValueLabel.Text = "0";
+            _uploadValueLabel.Text = "0 B/s";
+            _cpuValueLabel.Text = "0.0%";
+            _trayMenu.Items[2].Enabled = true;
+            _trayMenu.Items[3].Enabled = false;
         }
+        _primaryActionBtn.Invalidate();
+        UpdateLanAddressDisplay();
     }
-    
+
     private async void StartServices()
     {
+        if (_isStarting || _server != null) return;
+
         try
         {
-            // Parse port
-            if (!ushort.TryParse(_webPortTextBox.Text, out _port))
+            if (!ushort.TryParse(_webPortInput.InputText.Trim(), out _port) || _port == 0)
             {
-                MessageBox.Show("请输入有效的Web端口号", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ShowToast("请输入有效的 Web 端口号 (1-65535)", isError: true);
                 return;
             }
-            
-            // Disable button to prevent double-click
-            _startButton.Enabled = false;
-            _statusLabel.Text = "正在启动服务...";
-            
-            // Update PIN enabled state
+
+            _isStarting = true;
+            _primaryActionBtn.Enabled = false;
+            _primaryActionBtn.Text = "正在启动…";
+            _adminPortInput.InputText = (_port + 2).ToString();
+
             Session.SetPinEnabled(_pinEnabledCheckBox.Checked);
-            
-            // Run service startup in background task
+            bool adaptiveEnabled = _adaptiveCheckBox.Checked;
+
             await Task.Run(() =>
             {
-                // Initialize services
-                _sessions.Clear();
+                lock (_sessions) _sessions.Clear();
                 _server = new WebSocketServer();
                 _admin = new AdminServer(_port, _pin, _relayUrl);
                 _relay = string.IsNullOrEmpty(_relayUrl) ? null : new RelayClient(_relayUrl, _pin);
-                
-                // Route logs
+
                 AppLog.OnLog += _admin.Log;
-                
-                // PIN change handler
+
                 _admin.OnPinChange = newPin =>
                 {
                     _pin = newPin;
@@ -796,11 +798,13 @@ public partial class MainForm : Form
                     var cfg = AgentConfig.Load();
                     cfg.Pin = newPin;
                     cfg.Save();
-                    Invoke(() => _pinTextBox.Text = newPin);
+                    if (!IsDisposed && IsHandleCreated)
+                    {
+                        BeginInvoke(() => _pinInput.InputText = newPin);
+                    }
                     AppLog.Write($"[Agent] PIN updated to {newPin}");
                 };
-                
-                // Relay change handler
+
                 _admin.OnRelayChange = newRelay =>
                 {
                     _relay?.Stop();
@@ -820,53 +824,56 @@ public partial class MainForm : Form
                         AppLog.Write("[Agent] Relay disabled");
                     }
                 };
-                
-                // Session management
-                _server.OnConnect = (conn) =>
+
+                _server.OnConnect = conn =>
                 {
                     var s = new Session(conn, _pin);
-                    // Set adaptive quality based on UI setting
-                    s.SetAdaptiveEnabled(_adaptiveCheckBox.Checked);
-                    lock (_sessions) _sessions[conn] = s;
+                    s.SetAdaptiveEnabled(adaptiveEnabled);
+                    int count;
+                    lock (_sessions)
+                    {
+                        _sessions[conn] = s;
+                        count = _sessions.Count;
+                    }
                     s.Start();
-                    AppLog.Write($"[Agent] {conn.RemoteAddr} connected ({_sessions.Count} active)");
-                    _admin.SetConnCount(_sessions.Count);
+                    AppLog.Write($"[Agent] {conn.RemoteAddr} connected ({count} active)");
+                    _admin?.SetConnCount(count);
                 };
-                
+
                 _server.OnText = (conn, text) =>
                 {
                     Session? s;
                     lock (_sessions) _sessions.TryGetValue(conn, out s);
                     s?.HandleText(text);
                 };
-                
+
                 _server.OnBinary = (conn, data) =>
                 {
                     Session? s;
                     lock (_sessions) _sessions.TryGetValue(conn, out s);
                     s?.HandleBinary(data);
                 };
-                
-                _server.OnDisconnect = (conn) =>
+
+                _server.OnDisconnect = conn =>
                 {
                     Session? s;
+                    int count;
                     lock (_sessions)
                     {
                         _sessions.TryGetValue(conn, out s);
                         _sessions.Remove(conn);
+                        count = _sessions.Count;
                     }
                     s?.Close();
-                    AppLog.Write($"[Agent] {conn.RemoteAddr} disconnected ({_sessions.Count} active)");
-                    _admin.SetConnCount(_sessions.Count);
+                    AppLog.Write($"[Agent] {conn.RemoteAddr} disconnected ({count} active)");
+                    _admin?.SetConnCount(count);
                 };
-                
-                // Start services
+
                 _server.Start(_port);
                 _admin.Start();
                 _relay?.Start();
             });
-            
-            // Log startup info (on UI thread)
+
             var ips = GetLocalIPs();
             AppLog.Write("╔══════════════════════════════════╗");
             AppLog.Write("║      Remoter Windows Agent        ║");
@@ -883,58 +890,61 @@ public partial class MainForm : Form
             if (_relay != null)
                 AppLog.Write($"  Relay: {_relayUrl} (session ID printed on connect)");
             AppLog.Write("Ready. Waiting for connections…");
-            
-            UpdateStatus(true);
-            
-            // Save config
+
             var cfg = AgentConfig.Load();
             cfg.Pin = _pin;
             cfg.Port = _port;
             cfg.Save();
+
+            UpdateStatus(true);
+            ShowToast($"服务已启动，监听端口 {_port}");
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"启动服务失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             AppLog.Write($"[Main] 启动失败：{ex.Message}");
-            _startButton.Enabled = true; // Re-enable on failure
+            UpdateStatus(false);
+            ShowToast($"启动失败：{ex.Message}", isError: true);
+        }
+        finally
+        {
+            _isStarting = false;
         }
     }
-    
+
     private void StopServices()
     {
         try
         {
-            // 先断开所有活跃会话
-            if (_sessions != null)
+            lock (_sessions)
             {
-                lock (_sessions)
+                foreach (var session in _sessions.Values)
                 {
-                    foreach (var session in _sessions.Values)
-                    {
-                        session.Close();
-                    }
-                    _sessions.Clear();
+                    session.Close();
                 }
+                _sessions.Clear();
             }
-            
-            // 停止服务器
+
             _server?.Stop();
             _admin?.Stop();
             _relay?.Stop();
-            
+
             _server = null;
             _admin = null;
             _relay = null;
-            
-            UpdateStatus(false);
+
+            if (!IsDisposed)
+            {
+                UpdateStatus(false);
+                ShowToast("服务已停止");
+            }
             AppLog.Write("[Main] 服务已停止");
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"停止服务失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowToast($"停止服务失败：{ex.Message}", isError: true);
         }
     }
-    
+
     private static List<string> GetLocalIPs()
     {
         var ips = new List<string>();
@@ -942,128 +952,379 @@ public partial class MainForm : Form
         {
             if (ni.OperationalStatus != OperationalStatus.Up) continue;
             foreach (var ua in ni.GetIPProperties().UnicastAddresses)
-                if (ua.Address.AddressFamily == AddressFamily.InterNetwork
-                    && !IPAddress.IsLoopback(ua.Address))
+            {
+                if (ua.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ua.Address))
                     ips.Add(ua.Address.ToString());
+            }
         }
         return ips;
     }
-    
-    private void OnStartButtonClick(object? sender, EventArgs e)
-    {
-        StartServices();
-    }
-    
-    private void OnStopButtonClick(object? sender, EventArgs e)
-    {
-        StopServices();
-    }
-    
-    private void OnRefreshButtonClick(object? sender, EventArgs e)
-    {
-        UpdateStatusDisplay();
-        // 不弹出对话框，只在状态面板显示
-    }
-    
+
     private void OnApplyButtonClick(object? sender, EventArgs e)
     {
-        if (!ushort.TryParse(_webPortTextBox.Text, out var newPort))
+        if (!ushort.TryParse(_webPortInput.InputText.Trim(), out var newPort) || newPort == 0)
         {
-            MessageBox.Show("请输入有效的Web端口号", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowToast("请输入有效的 Web 端口号 (1-65535)", isError: true);
             return;
         }
-        
+
         _port = newPort;
-        _adminPortTextBox.Text = (_port + 2).ToString();
-        
-        // Save config
+        _adminPortInput.InputText = (_port + 2).ToString();
+        UpdateLanAddressDisplay();
+
         var cfg = AgentConfig.Load();
         cfg.Port = _port;
         cfg.Save();
-        
-        MessageBox.Show("设置已保存，重启服务后生效", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+        ShowToast(_server != null ? "设置已保存，重启服务后生效" : "设置已保存");
     }
-    
+
     private void OnCancelButtonClick(object? sender, EventArgs e)
     {
-        if (MessageBox.Show("确定要退出程序吗？", "确认退出", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+        if (MessageBox.Show("确定要退出 Remoter 服务吗？", "确认退出", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
         {
             _isExiting = true;
-            this.Close();
+            Close();
         }
     }
-    
+
     private void ShowMainWindow()
     {
-        this.Show();
-        this.WindowState = FormWindowState.Normal;
-        this.Activate();
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
     }
-    
+
     private void OnTrayIconMouseClick(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Left)
-        {
-            ShowMainWindow();
-        }
+        if (e.Button == MouseButtons.Left) ShowMainWindow();
     }
-    
-    private void OnTrayStartClick(object? sender, EventArgs e)
-    {
-        StartServices();
-    }
-    
-    private void OnTrayStopClick(object? sender, EventArgs e)
-    {
-        StopServices();
-    }
-    
+
+    private void OnTrayStartClick(object? sender, EventArgs e) => StartServices();
+    private void OnTrayStopClick(object? sender, EventArgs e) => StopServices();
+
     private void OnTrayExitClick(object? sender, EventArgs e)
     {
-        if (MessageBox.Show("确定要退出程序吗？", "确认退出", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+        if (MessageBox.Show("确定要退出 Remoter 服务吗？", "确认退出", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
         {
             _isExiting = true;
             _trayIcon.Visible = false;
-            this.Close();
+            Close();
         }
     }
-    
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         if (_isExiting)
         {
-            // 完全退出程序
             _trayIcon.Visible = false;
             StopServices();
             _currentProcess?.Dispose();
             return;
         }
-        
+
         if (e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
-            this.Hide();
+            Hide();
             _trayIcon.Visible = true;
-            _trayIcon.ShowBalloonTip(3000, "Remoter-Win", "程序已最小化到系统托盘", ToolTipIcon.Info);
+            _trayIcon.ShowBalloonTip(3000, "Remoter Server", "程序已最小化到系统托盘", ToolTipIcon.Info);
         }
         else
         {
-            // Actual exit
             _trayIcon.Visible = false;
             StopServices();
             _currentProcess?.Dispose();
         }
     }
-    
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             _trayIcon?.Dispose();
             _statusTimer?.Dispose();
+            _toastTimer?.Dispose();
             _currentProcess?.Dispose();
+            _logoImage?.Dispose();
+            _logoImage = null;
             StopServices();
         }
         base.Dispose(disposing);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    private static void EnableLightTitleBar(nint hwnd)
+    {
+        if (hwnd == nint.Zero) return;
+        int dark = 0;
+        if (DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int)) != 0)
+        {
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref dark, sizeof(int));
+        }
+    }
+
+    private static Image? LoadLogoImage()
+    {
+        try
+        {
+            string pngPath = Path.Combine(AppContext.BaseDirectory, "RemoterLogo.png");
+            if (File.Exists(pngPath))
+            {
+                using var fs = File.OpenRead(pngPath);
+                return Image.FromStream(fs);
+            }
+            string icoPath = Path.Combine(AppContext.BaseDirectory, "Remoter.ico");
+            if (File.Exists(icoPath))
+            {
+                using var ico = new Icon(icoPath, 64, 64);
+                return ico.ToBitmap();
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static GraphicsPath CreateRoundRectPath(RectangleF rect, float radius)
+    {
+        var path = new GraphicsPath();
+        float d = Math.Min(radius * 2f, Math.Min(rect.Width, rect.Height));
+        if (d <= 0.5f)
+        {
+            path.AddRectangle(rect);
+            return path;
+        }
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    // ── Styled Controls (matching ConnectForm) ───────────────────────────
+
+    private sealed class RoundedPanel : Panel
+    {
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public int CornerRadius { get; set; } = 12;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color BorderColor { get; set; } = BorderLight;
+
+        public RoundedPanel()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.Clear(Parent?.BackColor ?? BgOuter);
+            var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using var path = CreateRoundRectPath(rect, CornerRadius);
+            using var fill = new SolidBrush(BackColor);
+            using var pen = new Pen(BorderColor, 1f);
+            e.Graphics.FillPath(fill, path);
+            e.Graphics.DrawPath(pen, path);
+        }
+    }
+
+    private sealed class StatusPillBadge : Control
+    {
+        private bool _isRunning;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public bool IsRunning
+        {
+            get => _isRunning;
+            set
+            {
+                if (_isRunning == value) return;
+                _isRunning = value;
+                Invalidate();
+            }
+        }
+
+        public StatusPillBadge()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.Clear(Parent?.BackColor ?? BgCard);
+
+            var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using var path = CreateRoundRectPath(rect, Height / 2f);
+            using var fill = new SolidBrush(_isRunning ? StatusRunBg : StatusOffBg);
+            using var pen = new Pen(_isRunning ? Color.FromArgb(167, 243, 208) : BorderLight, 1f);
+            e.Graphics.FillPath(fill, path);
+            e.Graphics.DrawPath(pen, path);
+
+            using var dotBrush = new SolidBrush(_isRunning ? StatusRunDot : StatusOffDot);
+            e.Graphics.FillEllipse(dotBrush, 10, (Height - 8) / 2f, 8, 8);
+
+            var textRect = new Rectangle(22, 0, Width - 26, Height);
+            TextRenderer.DrawText(
+                e.Graphics,
+                _isRunning ? "运行中" : "已停止",
+                Font,
+                textRect,
+                _isRunning ? StatusRunFg : TextMuted,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine);
+        }
+    }
+
+    private sealed class RoundedInputBox : Panel
+    {
+        public TextBox InnerTextBox { get; }
+        private bool _focused;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public string InputText
+        {
+            get => InnerTextBox.Text;
+            set => InnerTextBox.Text = value;
+        }
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public string Placeholder
+        {
+            get => InnerTextBox.PlaceholderText;
+            set => InnerTextBox.PlaceholderText = value;
+        }
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public bool ReadOnly
+        {
+            get => InnerTextBox.ReadOnly;
+            set => InnerTextBox.ReadOnly = value;
+        }
+
+        public RoundedInputBox()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            BackColor = BgCard;
+            Cursor = Cursors.IBeam;
+
+            InnerTextBox = new TextBox
+            {
+                BorderStyle = BorderStyle.None,
+                BackColor = BgCard,
+                ForeColor = TextDark,
+                Font = new Font("Segoe UI", 9.8f),
+            };
+            InnerTextBox.GotFocus += (_, _) => { _focused = true; Invalidate(); };
+            InnerTextBox.LostFocus += (_, _) => { _focused = false; Invalidate(); };
+
+            Controls.Add(InnerTextBox);
+            Click += (_, _) => { if (Enabled) InnerTextBox.Focus(); };
+        }
+
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            base.OnEnabledChanged(e);
+            Color bg = Enabled ? BgCard : BgSubtle;
+            BackColor = bg;
+            InnerTextBox.BackColor = bg;
+            InnerTextBox.ForeColor = Enabled ? TextDark : TextMuted;
+            Invalidate();
+        }
+
+        protected override void OnResize(EventArgs eventargs)
+        {
+            base.OnResize(eventargs);
+            const int padX = 10;
+            InnerTextBox.Width = Math.Max(30, Width - padX * 2);
+            InnerTextBox.Location = new Point(padX, Math.Max(4, (Height - InnerTextBox.Height) / 2));
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.Clear(Parent?.BackColor ?? BgSection);
+            var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using var path = CreateRoundRectPath(rect, 7f);
+            using var fill = new SolidBrush(BackColor);
+            using var pen = new Pen(_focused ? Primary : BorderSubtle, _focused ? 1.5f : 1f);
+            e.Graphics.FillPath(fill, path);
+            e.Graphics.DrawPath(pen, path);
+        }
+    }
+
+    private sealed class RoundedButton : Control
+    {
+        private bool _hovered;
+        private bool _pressed;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public int CornerRadius { get; set; } = 8;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color FillColor { get; set; } = Primary;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color HoverFillColor { get; set; } = PrimaryHover;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color TextColor { get; set; } = Color.White;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color BorderColor { get; set; } = Color.Transparent;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public float BorderWidth { get; set; } = 0f;
+
+        public RoundedButton()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { _hovered = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
+        protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.Clear(Parent?.BackColor ?? BgCard);
+
+            var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using var path = CreateRoundRectPath(rect, CornerRadius);
+
+            Color fill = _hovered || _pressed ? HoverFillColor : FillColor;
+            if (!Enabled && fill != Color.Transparent)
+            {
+                fill = Color.FromArgb(140, fill);
+            }
+            if (fill != Color.Transparent)
+            {
+                using var brush = new SolidBrush(fill);
+                e.Graphics.FillPath(brush, path);
+            }
+
+            if (BorderWidth > 0f && BorderColor != Color.Transparent)
+            {
+                Color bc = Enabled ? BorderColor : Color.FromArgb(110, BorderColor);
+                using var pen = new Pen(bc, BorderWidth);
+                e.Graphics.DrawPath(pen, path);
+            }
+
+            Color fg = Enabled ? TextColor : Color.FromArgb(140, TextColor);
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, fg,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
     }
 }

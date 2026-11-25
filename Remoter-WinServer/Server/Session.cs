@@ -94,6 +94,9 @@ sealed class Session
     private int?          _udpLearnedCeilingBps = null;
     private long          _udpLossCapSetAtTicks = 0;
     private double        _udpLastLossRatio = 0;
+    private int           _udpSevereLossStreak = 0;
+    private int           _udpCleanFpsRestoreStreak = 0;
+    private int?          _udpSavedFpsBeforeSevere = null;
     private int           _udpDelayOveruseStreak = 0;
     private int           _udpDelayCleanStreak = 0;
     private long          _udpLastGccAdjustTicks = 0;
@@ -805,7 +808,49 @@ sealed class Session
     private void HandleUdpLossFeedback(double lossRatio, ulong sentPackets)
     {
         _udpLastLossRatio = lossRatio;
-        if (_encoder == null || _manualBitrate) return;
+        if (_encoder == null) return;
+
+        // Extreme-congestion FPS survival mode (6s of >=15% loss -> 30fps; 6s clean -> restore)
+        if (!_manualFps)
+        {
+            if (lossRatio >= 0.15 && sentPackets >= 120)
+            {
+                _udpCleanFpsRestoreStreak = 0;
+                _udpSevereLossStreak++;
+                if (_udpSevereLossStreak >= 3 && _currentFps > 30 && _udpSavedFpsBeforeSevere == null)
+                {
+                    _udpSevereLossStreak = 0;
+                    _udpSavedFpsBeforeSevere = _currentFps;
+                    int prevFps = _currentFps;
+                    _currentFps = 30;
+                    _encoder.SetFps(30);
+                    AppLog.Write($"[Session] udp_severe_fps dir=down fps=30 prevFps={prevFps} loss={lossRatio:F3} sent={sentPackets}");
+                }
+            }
+            else if (lossRatio < 0.02)
+            {
+                _udpSevereLossStreak = 0;
+                if (_udpSavedFpsBeforeSevere is int saved)
+                {
+                    _udpCleanFpsRestoreStreak++;
+                    if (_udpCleanFpsRestoreStreak >= 3)
+                    {
+                        _udpCleanFpsRestoreStreak = 0;
+                        _udpSavedFpsBeforeSevere = null;
+                        _currentFps = saved;
+                        _encoder.SetFps(saved);
+                        AppLog.Write($"[Session] udp_severe_fps dir=up fps={saved} loss={lossRatio:F3} sent={sentPackets}");
+                    }
+                }
+            }
+            else
+            {
+                _udpSevereLossStreak = 0;
+                _udpCleanFpsRestoreStreak = 0;
+            }
+        }
+
+        if (_manualBitrate) return;
 
         bool wan = !_isClientLan;
         int hardCeilingBps = wan ? 8_000_000 : 25_000_000;

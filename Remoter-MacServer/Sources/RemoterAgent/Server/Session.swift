@@ -108,6 +108,7 @@ final class Session {
     private var udpLossCapSetAt: CFAbsoluteTime = 0
     private var udpStableAtCapStreak = 0
     private var udpLastLossRatio: Double = 0
+    private var udpSevereFpsGuard = UdpSevereFpsGuard()
     private var udpDelayOveruseStreak = 0
     private var udpDelayCleanStreak = 0
     private var udpLastGccAdjustAt: CFAbsoluteTime = 0
@@ -1886,6 +1887,52 @@ final class Session {
     ///   and steps bitrate down.
     /// - Below learned ceiling: step up +15% after 3 clean active windows (6s).
     /// - At learned ceiling: hold for 15s cooldown + 5 clean active windows (10s), then probe +15%.
+    /// Extreme-congestion survival guard: only when sustained packet loss >= 15%
+    /// for 3 consecutive 2s windows (6s), temporarily step FPS down to 30fps to cut
+    /// tunnel packet rate in half, then restore original FPS after 3 clean windows (6s).
+    struct UdpSevereFpsGuard {
+        var severeLossStreak: Int = 0
+        var cleanRestoreStreak: Int = 0
+        var savedFps: Int? = nil
+
+        mutating func step(
+            lossRatio: Double,
+            sentPackets: UInt64,
+            currentFps: Int,
+            manualFpsSelected: Bool
+        ) -> Int? {
+            guard !manualFpsSelected else {
+                severeLossStreak = 0
+                cleanRestoreStreak = 0
+                savedFps = nil
+                return nil
+            }
+            if lossRatio >= 0.15 && sentPackets >= 120 {
+                cleanRestoreStreak = 0
+                severeLossStreak += 1
+                if severeLossStreak >= 3 && currentFps > 30 && savedFps == nil {
+                    severeLossStreak = 0
+                    savedFps = currentFps
+                    return 30
+                }
+            } else if lossRatio < 0.02 {
+                severeLossStreak = 0
+                if let target = savedFps {
+                    cleanRestoreStreak += 1
+                    if cleanRestoreStreak >= 3 {
+                        cleanRestoreStreak = 0
+                        savedFps = nil
+                        return target
+                    }
+                }
+            } else {
+                severeLossStreak = 0
+                cleanRestoreStreak = 0
+            }
+            return nil
+        }
+    }
+
     /// Pure UDP bitrate adaptation state machine shared by `handleUdpLossFeedback` and regression tests.
     struct UdpBitrateState {
         var currentBitrate: Int
@@ -1967,7 +2014,26 @@ final class Session {
 
     private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
         udpLastLossRatio = lossRatio
-        guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
+        guard usingUdpVideo else { return }
+
+        // Extreme-congestion FPS survival mode (6s of >=15% loss -> 30fps; 6s clean -> restore)
+        if let nextFps = udpSevereFpsGuard.step(
+            lossRatio: lossRatio,
+            sentPackets: sentPackets,
+            currentFps: currentFps,
+            manualFpsSelected: manualFpsSelected
+        ) {
+            let dir = nextFps < currentFps ? "down" : "up"
+            let prevFps = currentFps
+            applyFps(nextFps, notify: true)
+            ConnectionLogger.shared.logStep(
+                sessionId: id.uuidString,
+                step: "udp_severe_fps",
+                detail: "dir=\(dir) fps=\(nextFps) prevFps=\(prevFps) loss=\(String(format: "%.3f", lossRatio)) sent=\(sentPackets)"
+            )
+        }
+
+        guard (autoBitrateEnabled || !manualBitrateSelected) else { return }
 
         scrollBoostLock.lock()
         let boosting = scrollBoostActive

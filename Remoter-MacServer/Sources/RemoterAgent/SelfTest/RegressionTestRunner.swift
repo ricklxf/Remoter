@@ -26,6 +26,7 @@ enum RegressionTestRunner {
             ("Bitrate/Idle Session Recovers From Floor (No Blurry Scroll)", testIdleSessionRecoversFromFloor),
             ("Bitrate/WAN 2K Congestion Steps Down & Recovers To 8Mbps", testWan2KCongestionAndRecovery),
             ("Bitrate/Mild 3% Loss Absorbed Without Slashing Bitrate", testMildLossDoesNotSlashBitrate),
+            ("Bitrate/Severe >=15% Loss Steps 60->30fps & Restores Cleanly", testSevereLossFpsSurvivalMode),
             ("UDP/Loopback Handshake + AES-GCM Video + NACK Retransmit", testUdpHandshakeVideoAndNackLoopback),
             ("Input/UDP 0x20 Latency (<5ms), 2x Dedup & GCM Auth", testUdpInputLatencyDedupAndAuth),
             ("Shortcut/Default Keybot Ctrl->Cmd Rules (C/V/X/A/Z/S/W/T/F/R)", testDefaultCtrlToCmdShortcuts),
@@ -149,6 +150,28 @@ enum RegressionTestRunner {
         )
         try expect(action == .hold && state.currentBitrate == 6_000_000,
                    "3% loss should be held without slashing bitrate")
+    }
+
+    private static func testSevereLossFpsSurvivalMode() throws {
+        var guardState = Session.UdpSevereFpsGuard()
+        var fps = 60
+
+        // 2 windows of 18% loss should NOT prematurely slash 60fps
+        try expect(guardState.step(lossRatio: 0.18, sentPackets: 200, currentFps: fps, manualFpsSelected: false) == nil,
+                   "1st severe window must not drop FPS yet")
+        try expect(guardState.step(lossRatio: 0.22, sentPackets: 200, currentFps: fps, manualFpsSelected: false) == nil,
+                   "2nd severe window must not drop FPS yet")
+
+        // 3rd consecutive window (6s of >=15% loss) MUST step down to 30fps
+        let downFps = guardState.step(lossRatio: 0.16, sentPackets: 200, currentFps: fps, manualFpsSelected: false)
+        try expect(downFps == 30, "3rd consecutive >=15% loss window must step FPS down to 30, got \(String(describing: downFps))")
+        fps = downFps ?? fps
+
+        // 3 clean windows (<2% loss) MUST restore original 60fps
+        try expect(guardState.step(lossRatio: 0.005, sentPackets: 120, currentFps: fps, manualFpsSelected: false) == nil, "1st clean window")
+        try expect(guardState.step(lossRatio: 0.0, sentPackets: 120, currentFps: fps, manualFpsSelected: false) == nil, "2nd clean window")
+        let upFps = guardState.step(lossRatio: 0.01, sentPackets: 120, currentFps: fps, manualFpsSelected: false)
+        try expect(upFps == 60, "3rd clean window must restore 60fps, got \(String(describing: upFps))")
     }
 
     // MARK: - 3. Live Loopback UDP Video + AES-GCM + NACK Retransmit

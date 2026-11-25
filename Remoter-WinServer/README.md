@@ -149,13 +149,12 @@ ws://<服务器IP>:7788
 
 ```
 Remoter-WinServer/
-├── Admin/              # 管理接口
 ├── Auth/               # 认证相关
 ├── Capture/            # 屏幕捕获
 ├── Config/             # 配置管理
 ├── Crypto/             # 加密相关
 ├── Input/              # 输入控制
-├── Logging/            # 日志系统
+├── Logging/            # 日志系统（统一输出到 %LOCALAPPDATA%\Remoter\logs\）
 ├── Protocol.cs         # 协议定义
 ├── Server/             # WebSocket服务器
 │   ├── WebSocketServer.cs

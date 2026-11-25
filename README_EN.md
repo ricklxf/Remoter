@@ -64,7 +64,6 @@ Remoter-Server/     Relay server      Node.js WebSocket + web client hosting (op
 |---------|------|-------|
 | Mac/Win WebSocket | 7788 | Agent main connection (override with `--port`) |
 | Mac/Win Web client | 7799 | Static file server, auto-starts when `web/` exists |
-| Win admin console | main port + 2 | Default 7790, logs / PIN / status |
 | Relay server | 7789 | WebSocket relay + web client hosting |
 
 ---
@@ -172,12 +171,9 @@ RemoterWin.exe --pin 123456        # fixed PIN
 RemoterWin.exe --port 7789         # custom port
 ```
 
-### Admin Console
+### Logs
 
-Open `http://localhost:{port+2}/` (default `http://localhost:7790/`) to:
-- Stream real-time logs (SSE)
-- Hot-update PIN / port / relay URL (no restart needed)
-- View connection count and uptime
+All logs (`remoter.log`, `connections.log`) are stored in `%LOCALAPPDATA%\Remoter\logs\`; click "打开日志" in the main window or "打开日志文件夹" in the tray menu to open it.
 
 ---
 

@@ -83,7 +83,7 @@ public class Program
         {
             AppLog.Write($"[Global] Application.Run Exception: {ex.Message}");
             AppLog.Write($"[Global] StackTrace: {ex.StackTrace}");
-            MessageBox.Show($"程序发生错误：{ex.Message}\n\n请查看日志文件获取详细信息。", 
+            MessageBox.Show($"程序发生错误：{ex.Message}\n\n请查看日志文件：{AppLog.LogPath}",
                 "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally

@@ -60,7 +60,6 @@ Remoter-Server/     公网中继服务器  Node.js WebSocket + Web 客户端托�
 |------|------|------|
 | Mac/Win WebSocket | 7788 | 被控端主连接（可 `--port` 覆盖） |
 | Mac/Win Web 客户端 | 7799 | 静态文件服务，有 `web/` 时自动开启 |
-| Win 管理控制台 | 主端口 + 2 | 默认 7790，日志 / PIN / 状态 |
 | 中继服务器 | 7789 | WebSocket 中转 + Web 客户端托管 |
 
 ---
@@ -174,12 +173,9 @@ RemoterWin.exe --pin 123456        # 指定 PIN
 RemoterWin.exe --port 7789         # 指定端口
 ```
 
-### 管理控制台
+### 日志目录
 
-浏览器访问 `http://localhost:{主端口+2}/`（默认 `http://localhost:7790/`），功能：
-- 实时日志流（SSE）
-- 热更新 PIN / 端口 / 中继地址（无需重启）
-- 连接数 / 运行时间状态
+所有日志（`remoter.log`、`connections.log`）统一存储于 `%LOCALAPPDATA%\Remoter\logs\`，可点击主界面「打开日志」或托盘菜单「打开日志文件夹」一键打开。
 
 ---
 

@@ -11,11 +11,8 @@ sealed class ConnectionLogger
 
     private ConnectionLogger()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Remoter", "logs");
-        try { Directory.CreateDirectory(dir); } catch { }
-        _path = Path.Combine(dir, "connections.log");
+        try { Directory.CreateDirectory(AppLog.LogDir); } catch { }
+        _path = Path.Combine(AppLog.LogDir, "connections.log");
     }
 
     public void LogAgentStarted(int port, string? relayUrl = null)

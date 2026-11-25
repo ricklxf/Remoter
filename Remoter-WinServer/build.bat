@@ -119,7 +119,7 @@ if exist "%exePath%" (
     if not errorlevel 1 (
         echo       OK: Program started successfully
     ) else (
-        echo       WARN: Build succeeded but process did not stay running - check remoter.log
+        echo       WARN: Build succeeded but process did not stay running - check %LOCALAPPDATA%\Remoter\logs\remoter.log
     )
 ) else (
     echo       WARN: Executable not found at %exePath%, skipping auto-start

@@ -42,7 +42,6 @@ tasklist /FI "IMAGENAME eq RemoterWin.exe" 2>nul | find /I "RemoterWin.exe" >nul
 if %errorLevel% == 0 (
     echo        OK: Program started successfully
     echo.
-    echo        Admin interface: http://localhost:7790
     echo        Web interface: http://localhost:7788
 ) else (
     echo        ERROR: Program failed to start

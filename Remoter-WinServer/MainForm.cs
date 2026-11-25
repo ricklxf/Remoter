@@ -19,7 +19,7 @@ namespace RemoterWin;
 /// Clean single-card control panel for Remoter-WinServer matching the Remoter login UI:
 /// - Bee mascot logo + "Remoter" title + live status pill badge
 /// - Teal-accented live telemetry &amp; LAN address card with one-click copy
-/// - Structured settings card (PIN toggle/refresh, Web/Admin ports, adaptive quality, CPU cap)
+/// - Structured settings card (PIN toggle/refresh, Web port, adaptive quality, CPU cap, open logs)
 /// - Full-width primary Start/Stop button, Save/Exit secondary actions, and system tray support
 /// </summary>
 public partial class MainForm : Form
@@ -58,7 +58,6 @@ public partial class MainForm : Form
 
     // Services
     private WebSocketServer? _server;
-    private AdminServer? _admin;
     private RelayClient? _relay;
     private readonly Dictionary<IWsConn, Session> _sessions = new();
 
@@ -72,6 +71,8 @@ public partial class MainForm : Form
     // Tray
     private NotifyIcon _trayIcon = null!;
     private ContextMenuStrip _trayMenu = null!;
+    private ToolStripMenuItem _trayStartItem = null!;
+    private ToolStripMenuItem _trayStopItem = null!;
 
     // UI Controls
     private RoundedPanel _card = null!;
@@ -87,9 +88,9 @@ public partial class MainForm : Form
     private RoundedInputBox _pinInput = null!;
     private RoundedButton _refreshPinBtn = null!;
     private RoundedInputBox _webPortInput = null!;
-    private RoundedInputBox _adminPortInput = null!;
     private CheckBox _adaptiveCheckBox = null!;
     private RoundedInputBox _maxCpuInput = null!;
+    private RoundedButton _openLogsBtn = null!;
 
     private RoundedButton _primaryActionBtn = null!;
     private RoundedButton _applyButton = null!;
@@ -318,7 +319,7 @@ public partial class MainForm : Form
         _pinInput.InnerTextBox.Font = new Font("Consolas", 11f, FontStyle.Bold);
         _pinInput.InnerTextBox.TextAlign = HorizontalAlignment.Center;
 
-        // Row 2: Web Port & Admin Port (clean 2-column grid)
+        // Row 2: Web Port & Max CPU % (clean 2-column grid)
         int halfColW = (InnerWidth - 28 - 12) / 2;
         var webPortLabel = CreateSmallLabel("Web / 直连端口", 14, 80);
         _webPortInput = new RoundedInputBox
@@ -328,29 +329,22 @@ public partial class MainForm : Form
             InputText = "7788",
             Placeholder = "7788",
         };
-        _webPortInput.InnerTextBox.TextChanged += (_, _) =>
-        {
-            if (ushort.TryParse(_webPortInput.InputText.Trim(), out ushort p))
-            {
-                _adminPortInput.InputText = (p + 2).ToString();
-            }
-        };
 
-        var adminPortLabel = CreateSmallLabel("管理端口 (只读)", 14 + halfColW + 12, 80);
-        _adminPortInput = new RoundedInputBox
+        var maxCpuLabel = CreateSmallLabel("最大 CPU (%)", 14 + halfColW + 12, 80);
+        _maxCpuInput = new RoundedInputBox
         {
             Location = new Point(14 + halfColW + 12, 100),
             Size = new Size(InnerWidth - 28 - halfColW - 12, 34),
-            InputText = "7790",
-            ReadOnly = true,
-            Enabled = false,
+            InputText = "80",
+            Placeholder = "80",
         };
+        _maxCpuInput.InnerTextBox.TextAlign = HorizontalAlignment.Center;
 
-        // Row 3: Adaptive checkbox + Max CPU %
+        // Row 3: Adaptive checkbox + Open Log Folder button
         _adaptiveCheckBox = new CheckBox
         {
             Text = "画面自适应",
-            Location = new Point(14, 150),
+            Location = new Point(14, 149),
             AutoSize = true,
             Checked = true,
             Font = new Font("Microsoft YaHei UI", 9f),
@@ -369,21 +363,26 @@ public partial class MainForm : Form
             }
         };
 
-        var maxCpuLabel = CreateSmallLabel("最大 CPU (%)", 14 + halfColW + 12, 151);
-        _maxCpuInput = new RoundedInputBox
+        _openLogsBtn = new RoundedButton
         {
-            Location = new Point(InnerWidth - 14 - 72, 143),
-            Size = new Size(72, 32),
-            InputText = "80",
-            Placeholder = "80",
+            Text = "打开日志",
+            Location = new Point(InnerWidth - 14 - 96, 143),
+            Size = new Size(96, 32),
+            CornerRadius = 6,
+            Font = new Font("Microsoft YaHei UI", 8.5f),
+            FillColor = BgCard,
+            HoverFillColor = BgSubtle,
+            TextColor = TextDark,
+            BorderColor = BorderSubtle,
+            BorderWidth = 1f,
         };
-        _maxCpuInput.InnerTextBox.TextAlign = HorizontalAlignment.Center;
+        _openLogsBtn.Click += (_, _) => OpenLogFolder();
 
         settingsCard.Controls.AddRange(new Control[]
         {
             _pinEnabledCheckBox, _pinInput, _refreshPinBtn,
-            webPortLabel, _webPortInput, adminPortLabel, _adminPortInput,
-            _adaptiveCheckBox, maxCpuLabel, _maxCpuInput,
+            webPortLabel, _webPortInput, maxCpuLabel, _maxCpuInput,
+            _adaptiveCheckBox, _openLogsBtn,
         });
         _card.Controls.Add(settingsCard);
         y += settingsCard.Height + 14;
@@ -552,6 +551,24 @@ public partial class MainForm : Form
         catch { }
     }
 
+    private void OpenLogFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppLog.LogDir);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{AppLog.LogDir}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            ShowToast($"打开日志目录失败：{ex.Message}", isError: true);
+        }
+    }
+
     private void UpdateLanAddressDisplay()
     {
         var ips = GetLocalIPs();
@@ -646,9 +663,12 @@ public partial class MainForm : Form
     {
         _trayMenu = new ContextMenuStrip();
         _trayMenu.Items.Add("显示主窗口", null, (_, _) => ShowMainWindow());
+        _trayMenu.Items.Add("打开日志文件夹", null, (_, _) => OpenLogFolder());
         _trayMenu.Items.Add("-");
-        _trayMenu.Items.Add("启动服务", null, OnTrayStartClick);
-        _trayMenu.Items.Add("停止服务", null, OnTrayStopClick);
+        _trayStartItem = new ToolStripMenuItem("启动服务", null, OnTrayStartClick);
+        _trayStopItem = new ToolStripMenuItem("停止服务", null, OnTrayStopClick);
+        _trayMenu.Items.Add(_trayStartItem);
+        _trayMenu.Items.Add(_trayStopItem);
         _trayMenu.Items.Add("-");
         _trayMenu.Items.Add("退出", null, OnTrayExitClick);
 
@@ -693,7 +713,6 @@ public partial class MainForm : Form
         _pinEnabledCheckBox.Checked = cfg.PinEnabled;
         _pinInput.Enabled = cfg.PinEnabled;
         _webPortInput.InputText = _port.ToString();
-        _adminPortInput.InputText = (_port + 2).ToString();
         UpdateLanAddressDisplay();
     }
 
@@ -705,8 +724,6 @@ public partial class MainForm : Form
         var cfg = AgentConfig.Load();
         cfg.Pin = _pin;
         cfg.Save();
-
-        _admin?.UpdatePin(_pin);
 
         AppLog.Write($"[Main] PIN已刷新：{_pin}");
         ShowToast($"已刷新 PIN 码：{_pin}");
@@ -740,8 +757,8 @@ public partial class MainForm : Form
             _webPortInput.Enabled = false;
 
             _statusTimer.Start();
-            _trayMenu.Items[2].Enabled = false;
-            _trayMenu.Items[3].Enabled = true;
+            _trayStartItem.Enabled = false;
+            _trayStopItem.Enabled = true;
         }
         else
         {
@@ -755,8 +772,8 @@ public partial class MainForm : Form
             _connValueLabel.Text = "0";
             _uploadValueLabel.Text = "0 B/s";
             _cpuValueLabel.Text = "0.0%";
-            _trayMenu.Items[2].Enabled = true;
-            _trayMenu.Items[3].Enabled = false;
+            _trayStartItem.Enabled = true;
+            _trayStopItem.Enabled = false;
         }
         _primaryActionBtn.Invalidate();
         UpdateLanAddressDisplay();
@@ -777,7 +794,6 @@ public partial class MainForm : Form
             _isStarting = true;
             _primaryActionBtn.Enabled = false;
             _primaryActionBtn.Text = "正在启动…";
-            _adminPortInput.InputText = (_port + 2).ToString();
 
             Session.SetPinEnabled(_pinEnabledCheckBox.Checked);
             bool adaptiveEnabled = _adaptiveCheckBox.Checked;
@@ -786,44 +802,7 @@ public partial class MainForm : Form
             {
                 lock (_sessions) _sessions.Clear();
                 _server = new WebSocketServer();
-                _admin = new AdminServer(_port, _pin, _relayUrl);
                 _relay = string.IsNullOrEmpty(_relayUrl) ? null : new RelayClient(_relayUrl, _pin);
-
-                AppLog.OnLog += _admin.Log;
-
-                _admin.OnPinChange = newPin =>
-                {
-                    _pin = newPin;
-                    _relay?.UpdatePin(newPin);
-                    var cfg = AgentConfig.Load();
-                    cfg.Pin = newPin;
-                    cfg.Save();
-                    if (!IsDisposed && IsHandleCreated)
-                    {
-                        BeginInvoke(() => _pinInput.InputText = newPin);
-                    }
-                    AppLog.Write($"[Agent] PIN updated to {newPin}");
-                };
-
-                _admin.OnRelayChange = newRelay =>
-                {
-                    _relay?.Stop();
-                    _relay = null;
-                    _relayUrl = newRelay;
-                    var cfg = AgentConfig.Load();
-                    cfg.RelayUrl = newRelay;
-                    cfg.Save();
-                    if (!string.IsNullOrEmpty(newRelay))
-                    {
-                        _relay = new RelayClient(newRelay, _pin);
-                        _relay.Start();
-                        AppLog.Write($"[Agent] Relay URL updated to {newRelay}");
-                    }
-                    else
-                    {
-                        AppLog.Write("[Agent] Relay disabled");
-                    }
-                };
 
                 _server.OnConnect = conn =>
                 {
@@ -837,7 +816,6 @@ public partial class MainForm : Form
                     }
                     s.Start();
                     AppLog.Write($"[Agent] {conn.RemoteAddr} connected ({count} active)");
-                    _admin?.SetConnCount(count);
                 };
 
                 _server.OnText = (conn, text) =>
@@ -866,11 +844,9 @@ public partial class MainForm : Form
                     }
                     s?.Close();
                     AppLog.Write($"[Agent] {conn.RemoteAddr} disconnected ({count} active)");
-                    _admin?.SetConnCount(count);
                 };
 
                 _server.Start(_port);
-                _admin.Start();
                 _relay?.Start();
             });
 
@@ -882,7 +858,7 @@ public partial class MainForm : Form
             AppLog.Write($"  Port: {_port}");
             foreach (var ip in ips)
                 AppLog.Write($"  LAN : ws://{ip}:{_port}");
-            AppLog.Write($"  Admin: http://localhost:{_port + 2}/");
+            AppLog.Write($"  Logs: {AppLog.LogDir}");
             var webDir = Path.Combine(AppContext.BaseDirectory, "web");
             if (Directory.Exists(webDir))
                 foreach (var ip in ips)
@@ -925,11 +901,9 @@ public partial class MainForm : Form
             }
 
             _server?.Stop();
-            _admin?.Stop();
             _relay?.Stop();
 
             _server = null;
-            _admin = null;
             _relay = null;
 
             if (!IsDisposed)
@@ -969,7 +943,6 @@ public partial class MainForm : Form
         }
 
         _port = newPort;
-        _adminPortInput.InputText = (_port + 2).ToString();
         UpdateLanAddressDisplay();
 
         var cfg = AgentConfig.Load();

@@ -79,7 +79,7 @@ npm install
 ### Q: 构建后 web 目录还是无法访问?
 A: 检查:
 1. `web` 目录是否在 `Remoter-WinServer` 根目录
-2. 程序是否正常启动（查看 remoter.log）
+2. 程序是否正常启动（查看 `%LOCALAPPDATA%\Remoter\logs\remoter.log`）
 3. 防火墙是否阻止端口 7788
 
 ### Q: 端口 7788 被占用?

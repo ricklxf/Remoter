@@ -27,6 +27,10 @@ enum RegressionTestRunner {
             ("Bitrate/WAN 2K Congestion Steps Down & Recovers To 8Mbps", testWan2KCongestionAndRecovery),
             ("Bitrate/Mild 3% Loss Absorbed Without Slashing Bitrate", testMildLossDoesNotSlashBitrate),
             ("Bitrate/Severe >=15% Loss Steps 60->30fps & Restores Cleanly", testSevereLossFpsSurvivalMode),
+            ("AntiFreeze/VideoToolbox Burst Headroom Prevents Low-Bitrate Frame Drops", testVideoToolboxNoLowBitrateFrameDrop),
+            ("AntiFreeze/UU Sustained-Overuse Suppresses Delta FEC & Caps NACKs", testUuSustainedOveruseFecAndNackLimit),
+            ("AntiFreeze/Low-Bitrate Keyframe Drain & Heavy-Loss Throttle", testLowBitrateKeyframeDrainAndThrottle),
+            ("AntiFreeze/Input Stays <5ms During Active Low-Bitrate Video Pacing", testInputLatencyDuringActiveVideoPacing),
             ("UDP/Loopback Handshake + AES-GCM Video + NACK Retransmit", testUdpHandshakeVideoAndNackLoopback),
             ("Input/UDP 0x20 Latency (<5ms), 2x Dedup & GCM Auth", testUdpInputLatencyDedupAndAuth),
             ("Shortcut/Default Keybot Ctrl->Cmd Rules (C/V/X/A/Z/S/W/T/F/R)", testDefaultCtrlToCmdShortcuts),
@@ -182,6 +186,143 @@ enum RegressionTestRunner {
         // Catastrophic >=20% loss MUST drop to 30fps on the VERY FIRST window
         let instantDown = guardState.step(lossRatio: 0.35, sentPackets: 120, currentFps: fps, manualFpsSelected: false)
         try expect(instantDown == 30, "Catastrophic >=20% loss must drop to 30fps immediately, got \(String(describing: instantDown))")
+    }
+
+    // MARK: - 2B. Anti-Freeze Invariants ("Blurry MUST NEVER Freeze")
+
+    private static func testVideoToolboxNoLowBitrateFrameDrop() throws {
+        // When bitrate adapts down (blurry mode), DataRateLimits burst budget MUST stay >= 500 KB/s
+        // so VideoToolbox never silently drops 30-45% of frames after a 2K keyframe.
+        for bps in [600_000, 1_200_000, 1_500_000, 2_000_000] {
+            let burstBytes = VideoEncoder.computeBurstByteLimit(bitrateBps: bps)
+            try expect(burstBytes >= 500_000,
+                       "At \(bps) bps, VideoToolbox burstByteLimit=\(burstBytes) < 500KB will drop frames after keyframes!")
+        }
+        // At high bitrate (8 Mbps), burst headroom scales proportionally (2x = 2 MB/s)
+        let highBurst = VideoEncoder.computeBurstByteLimit(bitrateBps: 8_000_000)
+        try expect(highBurst >= 2_000_000, "At 8 Mbps, expected >= 2MB/s burst headroom, got \(highBurst)")
+    }
+
+    private static func testUuSustainedOveruseFecAndNackLimit() throws {
+        // 1st heavy window (transient 18% loss): deltaG=3, keyG=2 (+50% keyframe protection)
+        let transient = UdpVideoServer.computeFecPolicy(
+            lossRatio: 0.18, sustainedOveruseWindows: 1,
+            allowFecSuppression: false, hasEverSeenNack: true, cleanWindows: 0
+        )
+        try expect(transient.deltaFec == 3 && transient.keyFec == 2 && !transient.suppressedByOveruse,
+                   "Transient heavy loss should protect keyframes (keyG=2), got \(transient)")
+
+        // 2nd+ consecutive >=15% window (UU sustained_overuse): MUST suppress delta FEC (deltaG=0)
+        // so +33% parity stops amplifying tunnel congestion while keeping keyframe FEC (keyG=3).
+        let overuse = UdpVideoServer.computeFecPolicy(
+            lossRatio: 0.25, sustainedOveruseWindows: 2,
+            allowFecSuppression: false, hasEverSeenNack: true, cleanWindows: 0
+        )
+        try expect(overuse.deltaFec == 0 && overuse.keyFec == 3 && overuse.suppressedByOveruse,
+                   "Sustained overuse must suppress delta FEC (deltaG=0) to prevent congestion amplification, got \(overuse)")
+
+        // Once link clears (<5% loss, sustainedOveruseWindows reset to 0), normal light FEC restores
+        let recovered = UdpVideoServer.computeFecPolicy(
+            lossRatio: 0.01, sustainedOveruseWindows: 0,
+            allowFecSuppression: false, hasEverSeenNack: true, cleanWindows: 1
+        )
+        try expect(recovered.deltaFec == 8 && recovered.keyFec == 4 && !recovered.suppressedByOveruse,
+                   "Safe headroom should restore normal light FEC, got \(recovered)")
+
+        // UU RetransmissionRateLimit: NACK budget never starves live video (capped at max(24, sent/3))
+        try expect(UdpVideoServer.computeWindowNackBudget(recentSentPackets: 60) == 24,
+                   "Low-rate NACK budget floor expected 24")
+        try expect(UdpVideoServer.computeWindowNackBudget(recentSentPackets: 300) == 100,
+                   "Active NACK budget expected 100 (33% of 300)")
+    }
+
+    private static func testLowBitrateKeyframeDrainAndThrottle() throws {
+        // At blurry floor (1.2M / 1.5M), a 60-packet (~74KB) keyframe MUST drain in < 160ms
+        // (well inside client's 350ms keyframe timeout) so blurry mode NEVER causes keyframe timeout freezes!
+        for floorBps in [1_200_000, 1_500_000] {
+            let (paceRateBps, maxPerTick) = UdpVideoServer.computePacingParameters(
+                pacingBitrateBps: floorBps,
+                pendingPackets: 60,
+                allowFecSuppression: false
+            )
+            let drainMs = (60.0 * 1236.0 * 8.0 / paceRateBps) * 1000.0
+            try expect(drainMs < 160.0, "Low-bitrate (\(floorBps)) 60-pkt keyframe drainMs=\(drainMs) risks 350ms client timeout!")
+            try expect(paceRateBps <= 4_000_000.0 && maxPerTick <= 4,
+                       "Low-bitrate WAN pacer should stay gentle (<=4Mbps, <=4 pkts/ms), got \(paceRateBps)/\(maxPerTick)")
+        }
+
+        // Heavy-loss keyframe throttle MUST be >= 1.5s to prevent 6-keyframes-in-5s storm
+        try expect(Session.computeKeyframeCooldown(usingUdpVideo: true, lossRatio: 0.25) >= 1.5,
+                   "Heavy-loss keyframe cooldown must be >= 1.5s")
+        try expect(Session.computeKeyframeCooldown(usingUdpVideo: true, lossRatio: 0.0) <= 0.4,
+                   "Clean-link keyframe cooldown should remain fast (<= 0.4s)")
+    }
+
+    private static func testInputLatencyDuringActiveVideoPacing() throws {
+        // Even while a large 96KB keyframe is actively being paced at 1.5 Mbps (blurry mode),
+        // encrypted UDP 0x20 input MUST bypass the pacer and arrive in < 5ms!
+        let server = UdpVideoServer.shared
+        try expect(server.start(preferredPort: 0), "Failed to bind UDP port")
+        let port = server.listeningPort
+
+        let token = Data((0..<16).map { UInt8($0 + 70) })
+        let aesKey = Data((0..<32).map { UInt8($0 + 80) })
+        let symKey = SymmetricKey(data: aesKey)
+        let activatedSem = DispatchSemaphore(value: 0)
+        let inputSem = DispatchSemaphore(value: 0)
+        var receivedAt: CFAbsoluteTime = 0
+
+        server.registerSession(
+            token: token, aesKey: aesKey, allowFecSuppression: false,
+            onActivated: { active in if active { activatedSem.signal() } },
+            onInputMessage: { _ in
+                receivedAt = CFAbsoluteTimeGetCurrent()
+                inputSem.signal()
+            }
+        )
+        defer { server.unregisterSession(token: token) }
+        server.updatePacingBitrate(token: token, bitrateBps: 1_500_000)
+
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        try expect(fd >= 0, "Failed to open UDP socket")
+        defer { close(fd) }
+
+        var dest = sockaddr_in()
+        dest.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        dest.sin_family = sa_family_t(AF_INET)
+        dest.sin_port = port.bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &dest.sin_addr)
+
+        func sendBytes(_ bytes: [UInt8]) {
+            _ = withUnsafePointer(to: &dest) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    sendto(fd, bytes, bytes.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+
+        var hello = [UInt8](repeating: 0, count: 21)
+        hello[0] = UdpVideoServer.magic0; hello[1] = UdpVideoServer.magic1
+        hello[2] = UdpVideoServer.version; hello[3] = UdpVideoServer.packetHello
+        token.copyBytes(to: &hello[4], count: 16); hello[20] = 0x01
+        sendBytes(hello)
+        try expect(activatedSem.wait(timeout: .now() + 2.0) == .success, "UDP session did not activate")
+
+        // Enqueue a large 96KB keyframe into the 1.5 Mbps WAN pacer (occupies pacer for ~150ms)
+        let bigKeyframe = Data(repeating: 0xAB, count: 96 * 1024)
+        try expect(server.sendVideoFrame(token: token, frameId: 99, ptsMs: 1000, data: bigKeyframe, isKeyframe: true, isHEVC: true),
+                   "Failed to enqueue keyframe into pacer")
+
+        // Immediately send encrypted UDP 0x20 input while pacer is actively draining video
+        let pkt = try buildEncryptedInputPacket(
+            token: token, seq: 1, json: "{\"type\":\"mousemove\",\"x\":0.5,\"y\":0.5}", key: symKey
+        )
+
+        let sentAt = CFAbsoluteTimeGetCurrent()
+        sendBytes(pkt)
+        try expect(inputSem.wait(timeout: .now() + 0.5) == .success, "Input packet stalled during active video pacing!")
+        let latencyMs = (receivedAt - sentAt) * 1000.0
+        try expect(latencyMs < 5.0, "Input latency under low-bitrate video pacing too high: \(latencyMs)ms")
     }
 
     // MARK: - 3. Live Loopback UDP Video + AES-GCM + NACK Retransmit

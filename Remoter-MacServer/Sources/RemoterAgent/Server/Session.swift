@@ -937,21 +937,7 @@ final class Session {
             // goes out per second regardless of which path asked for it.
             keyframeRequests += 1
             let now = Date()
-            // On UDP, give NACK/FEC breathing room instead of blasting keyframes every 200ms:
-            // 0.4s when clean, 0.8s under moderate loss (>=3%), 1.5s under heavy loss (>=15%)
-            // so a 20-40% WAN burst does not trigger a 6-keyframes-in-5s self-inflicted freeze loop.
-            let cooldown: TimeInterval
-            if usingUdpVideo {
-                if udpLastLossRatio >= 0.15 {
-                    cooldown = 1.5
-                } else if udpLastLossRatio >= 0.03 {
-                    cooldown = 0.8
-                } else {
-                    cooldown = 0.4
-                }
-            } else {
-                cooldown = 1.0
-            }
+            let cooldown = Self.computeKeyframeCooldown(usingUdpVideo: usingUdpVideo, lossRatio: udpLastLossRatio)
             guard now.timeIntervalSince(lastForcedKeyframeAt) > cooldown else { break }
             lastForcedKeyframeAt = now
             keyframesForced += 1
@@ -1899,6 +1885,16 @@ final class Session {
     ///   and steps bitrate down.
     /// - Below learned ceiling: step up +15% after 3 clean active windows (6s).
     /// - At learned ceiling: hold for 15s cooldown + 5 clean active windows (10s), then probe +15%.
+    /// Pure keyframe throttle shared by `requestKeyframe` and regression self-tests:
+    /// 0.4s when clean, 0.8s under moderate loss (>=3%), 1.5s under heavy loss (>=15%)
+    /// so a 20-40% WAN burst never triggers a self-inflicted keyframe storm.
+    static func computeKeyframeCooldown(usingUdpVideo: Bool, lossRatio: Double) -> TimeInterval {
+        guard usingUdpVideo else { return 1.0 }
+        if lossRatio >= 0.15 { return 1.5 }
+        if lossRatio >= 0.03 { return 0.8 }
+        return 0.4
+    }
+
     /// Extreme-congestion survival guard: never let the user freeze under severe WAN loss.
     /// - Instant trigger: >= 20% loss in a single 2s window -> immediately drop to 30fps.
     /// - Sustained trigger: >= 10% loss for 2 consecutive 2s windows (4s) -> drop to 30fps.

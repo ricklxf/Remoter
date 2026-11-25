@@ -91,8 +91,12 @@ final class UdpVideoServer {
 
         // 2s sliding-window adaptive FEC & loss feedback
         var windowSentDataPackets: UInt64 = 0
+        var lastWindowSentDataPackets: UInt64 = 0
         var windowNackPackets: UInt64 = 0
+        var windowRetransmittedPackets: UInt64 = 0
         var cleanWindows: Int = 0
+        var sustainedOveruseWindows: Int = 0
+        var fecSuppressedByOveruse: Bool = false
         var allowFecSuppression: Bool = true
         var hasEverSeenNack: Bool = false
         var fecLevel: FecLevel = .light
@@ -1087,8 +1091,19 @@ final class UdpVideoServer {
                 }
             }
             if !toRetransmit.isEmpty {
-                session.nackRetransmits += UInt64(toRetransmit.count)
-                totalRetransmits = session.nackRetransmits
+                let recentSent = max(session.windowSentDataPackets, session.lastWindowSentDataPackets)
+                let budget = Self.computeWindowNackBudget(recentSentPackets: recentSent)
+                let remaining = budget > session.windowRetransmittedPackets
+                    ? Int(budget - session.windowRetransmittedPackets)
+                    : 0
+                if toRetransmit.count > remaining {
+                    toRetransmit = Array(toRetransmit.prefix(remaining))
+                }
+                if !toRetransmit.isEmpty {
+                    session.windowRetransmittedPackets += UInt64(toRetransmit.count)
+                    session.nackRetransmits += UInt64(toRetransmit.count)
+                    totalRetransmits = session.nackRetransmits
+                }
             }
         }
         lock.unlock()
@@ -1317,6 +1332,36 @@ final class UdpVideoServer {
         }
     }
 
+    /// UU `WebRTC-RetransmissionRateLimit` equivalent: cap NACK retransmissions per 2s
+    /// window so stale retransmits never exceed ~33% of live data traffic and starve live frames.
+    static func computeWindowNackBudget(recentSentPackets: UInt64) -> UInt64 {
+        max(24, recentSentPackets / 3)
+    }
+
+    /// UU `fec_suppression_change reason=sustained_overuse` equivalent:
+    /// - Transient / moderate loss: protect frames with adaptive XOR FEC.
+    /// - Sustained severe congestion (>=15% loss for 2+ consecutive windows): suppress delta FEC
+    ///   (deltaG=0) so +33% parity stops amplifying tunnel congestion, while keeping keyframe FEC (keyG=3).
+    static func computeFecPolicy(
+        lossRatio: Double,
+        sustainedOveruseWindows: Int,
+        allowFecSuppression: Bool,
+        hasEverSeenNack: Bool,
+        cleanWindows: Int
+    ) -> (levelName: String, deltaFec: UInt8, keyFec: UInt8, suppressedByOveruse: Bool) {
+        if sustainedOveruseWindows >= 2 {
+            return ("overuse_suppressed", 0, 3, true)
+        } else if lossRatio >= 0.08 {
+            return ("heavy", 3, lossRatio >= 0.15 ? 2 : 3, false)
+        } else if lossRatio >= 0.03 {
+            return ("moderate", 4, 3, false)
+        } else if allowFecSuppression && !hasEverSeenNack && cleanWindows >= 3 {
+            return ("suppressed", 0, 8, false)
+        } else {
+            return ("light", 8, 4, false)
+        }
+    }
+
     private func runMaintenanceTick() {
         let now = Date()
         var deactivated: [(Bool) -> Void] = []
@@ -1342,8 +1387,10 @@ final class UdpVideoServer {
 
             let sent = session.windowSentDataPackets
             let nacks = session.windowNackPackets
+            session.lastWindowSentDataPackets = sent
             session.windowSentDataPackets = 0
             session.windowNackPackets = 0
+            session.windowRetransmittedPackets = 0
 
             guard sent > 0 else { continue }
             let lossRatio = min(1.0, Double(nacks) / Double(max(1, sent)))
@@ -1353,32 +1400,32 @@ final class UdpVideoServer {
                 session.cleanWindows = 0
             }
 
-            let newLevel: FecLevel
-            let newDeltaFec: UInt8
-            let newKeyFec: UInt8
-            if lossRatio >= 0.08 {
-                // Keep delta FEC capped at +33% (group=3) to avoid bandwidth amplification,
-                // but protect keyframes with +50% (group=2) when loss >= 15% so recovery
-                // keyframes actually survive burst loss and unfreeze the client immediately.
-                newLevel = .heavy
-                newDeltaFec = 3
-                newKeyFec = lossRatio >= 0.15 ? 2 : 3
-            } else if lossRatio >= 0.03 {
-                newLevel = .moderate
-                newDeltaFec = 4
-                newKeyFec = 3
-            } else if session.allowFecSuppression && !session.hasEverSeenNack && session.cleanWindows >= 3 {
-                newLevel = .suppressed
-                newDeltaFec = 0
-                newKeyFec = 8
-            } else {
-                newLevel = .light
-                newDeltaFec = 8
-                newKeyFec = 4
+            if lossRatio >= 0.15 && sent >= 80 {
+                session.sustainedOveruseWindows += 1
+            } else if lossRatio < 0.05 {
+                session.sustainedOveruseWindows = 0
             }
 
-            if newLevel != session.fecLevel {
+            let policy = Self.computeFecPolicy(
+                lossRatio: lossRatio,
+                sustainedOveruseWindows: session.sustainedOveruseWindows,
+                allowFecSuppression: session.allowFecSuppression,
+                hasEverSeenNack: session.hasEverSeenNack,
+                cleanWindows: session.cleanWindows
+            )
+            let newLevel: FecLevel
+            switch policy.levelName {
+            case "overuse_suppressed", "suppressed": newLevel = .suppressed
+            case "heavy": newLevel = .heavy
+            case "moderate": newLevel = .moderate
+            default: newLevel = .light
+            }
+            let newDeltaFec = policy.deltaFec
+            let newKeyFec = policy.keyFec
+
+            if newLevel != session.fecLevel || policy.suppressedByOveruse != session.fecSuppressedByOveruse || newDeltaFec != session.deltaFecGroupSize || newKeyFec != session.keyFecGroupSize {
                 session.fecLevel = newLevel
+                session.fecSuppressedByOveruse = policy.suppressedByOveruse
                 session.deltaFecGroupSize = newDeltaFec
                 session.keyFecGroupSize = newKeyFec
                 fecTransitions.append((newLevel, lossRatio, newDeltaFec, newKeyFec))

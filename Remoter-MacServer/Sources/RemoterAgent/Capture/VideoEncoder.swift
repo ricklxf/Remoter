@@ -86,12 +86,17 @@ final class VideoEncoder {
         applyBitrateProperties(session, bitrateBps: bitrateBps)
     }
 
+    /// Pure burst-budget calculation shared with regression self-tests.
+    /// Guarantees >= 500 KB/s burst headroom (UU `WebRTC-FrameDropper/Disabled` equivalent)
+    /// so VideoToolbox never silently drops frames after a keyframe when bitrate adapts down.
+    static func computeBurstByteLimit(bitrateBps: Int) -> Int64 {
+        Int64(max(Double(bitrateBps) * 2.0 / 8.0, 500_000.0))
+    }
+
     private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
-        // Keep >= 500 KB/s burst headroom so VideoToolbox never silently drops
-        // frames after a 2K keyframe when AverageBitRate adapts down to 1.2-2 Mbps.
-        let burstByteLimit = Int64(max(Double(bitrateBps) * 2.0 / 8.0, 500_000.0))
+        let burstByteLimit = Self.computeBurstByteLimit(bitrateBps: bitrateBps)
         let dataRateLimits: [Any] = [burstByteLimit, 1.0]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         appliedBitrateBps = bitrateBps

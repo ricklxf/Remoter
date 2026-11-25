@@ -1228,12 +1228,11 @@ final class UdpVideoServer {
     ) -> (paceRateBps: Double, maxPacketsPerTick: Int) {
         let estQueuedBytes = Double(pendingPackets) * 1236.0
         if !allowFecSuppression {
-            // WAN / tunnel mode: cap burst pacing to 10-16 Mbps (max 6 pkts/ms) so a
-            // 180-packet 2K keyframe drains smoothly over ~90-120ms (well within the
-            // client's 350ms keyframe timeout) instead of blasting 127 Mbps in 14ms
-            // and overflowing WireGuard/router UDP buffers!
-            let targetBps = max(Double(pacingBitrateBps) * 2.5, 10_000_000.0)
-            return (min(targetBps, 16_000_000.0), 6)
+            // WAN / tunnel mode: pace proportionally to target bitrate (1.5x, floor 4 Mbps,
+            // ceiling 12 Mbps, max 4 pkts/ms) so scroll/keyframe bursts don't overflow a
+            // 3-5 Mbps WAN/VPN router queue while still draining a 40KB keyframe in ~80ms.
+            let targetBps = max(Double(pacingBitrateBps) * 1.5, 4_000_000.0)
+            return (min(targetBps, 12_000_000.0), 4)
         } else {
             // LAN mode: drain large frames within 14ms for sub-frame latency
             let drainTargetBps = (estQueuedBytes / 0.014) * 8.0

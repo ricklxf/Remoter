@@ -2014,17 +2014,18 @@ final class Session {
                 return .down(nextBps)
             } else if lossRatio < cleanLossThreshold {
                 guard !scrollBoostActive else { return .hold }
-                let minRampPackets: UInt64 = (currentBitrate < 4_000_000) ? 10 : 60
-                guard sentPackets >= minRampPackets else { return .hold }
                 let effectiveCeiling = max(floorBps, min(hardCeilingBps, learnedCeilingBps ?? hardCeilingBps))
 
                 if currentBitrate < effectiveCeiling {
+                    // Below the already-proven ceiling, allow quick recovery even while idle
+                    let minRampPackets: UInt64 = (currentBitrate < 2_500_000) ? 10 : 60
+                    guard sentPackets >= minRampPackets else { return .hold }
                     stableAtCapStreak = 0
                     cleanStreak += 1
-                    let requiredClean = (currentBitrate < 3_000_000) ? 1 : 2
+                    let requiredClean = (currentBitrate < 2_500_000) ? 1 : 2
                     if cleanStreak >= requiredClean {
                         cleanStreak = 0
-                        let stepFactor: Double = (currentBitrate < 3_000_000) ? 1.45 : 1.25
+                        let stepFactor: Double = (currentBitrate < 2_500_000) ? 1.40 : 1.20
                         let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * stepFactor).rounded())))
                         if nextBps != currentBitrate {
                             currentBitrate = nextBps
@@ -2033,25 +2034,43 @@ final class Session {
                     }
                 } else if let cap = learnedCeilingBps {
                     cleanStreak = 0
-                    let probeCooldown: Double = (currentBitrate < 3_000_000) ? 2.0 : 6.0
-                    guard now - lossCapSetAt >= probeCooldown else { return .hold }
-                    stableAtCapStreak += 1
-                    let requiredStable = (currentBitrate < 3_000_000) ? 1 : 2
-                    if stableAtCapStreak >= requiredStable {
-                        stableAtCapStreak = 0
-                        let probeFactor: Double
-                        if cap < 3_000_000 {
-                            probeFactor = 1.50
-                        } else if cap < 6_000_000 {
-                            probeFactor = 1.30
-                        } else {
-                            probeFactor = 1.20
+                    // App-limited probing guard (BBR/GCC principle):
+                    // - Below 2.5 Mbps (safe WAN baseline), allow fast recovery even while idle
+                    //   so the user never stays stuck blurry after a burst.
+                    // - At/above 2.5 Mbps, NEVER blindly raise learnedCeilingBps while idle
+                    //   (sent=13..220 pkts/2s), or the next scroll will blast 4-7 Mbps into a
+                    //   3 Mbps tunnel and immediately cause 30-100% loss & freeze!
+                    let safeBaselineBps = clientNotOnLan ? 2_500_000 : 5_000_000
+                    if cap < safeBaselineBps {
+                        guard sentPackets >= 10 else { return .hold }
+                        guard now - lossCapSetAt >= 2.0 else { return .hold }
+                        stableAtCapStreak += 1
+                        if stableAtCapStreak >= 1 {
+                            stableAtCapStreak = 0
+                            let probedCap = min(safeBaselineBps, Int((Double(cap) * 1.40).rounded()))
+                            learnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
+                            if probedCap > currentBitrate {
+                                currentBitrate = probedCap
+                                return .probeUp(probedCap)
+                            }
                         }
-                        let probedCap = min(hardCeilingBps, Int((Double(cap) * probeFactor).rounded()))
-                        learnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
-                        if probedCap > currentBitrate {
-                            currentBitrate = probedCap
-                            return .probeUp(probedCap)
+                    } else {
+                        // Above safe baseline: require real active wire load (>=320 pkts/2s)
+                        // and genuinely clean link (<1% loss) before probing higher.
+                        guard lossRatio < 0.01, sentPackets >= 320 else {
+                            stableAtCapStreak = 0
+                            return .hold
+                        }
+                        guard now - lossCapSetAt >= 10.0 else { return .hold }
+                        stableAtCapStreak += 1
+                        if stableAtCapStreak >= 3 {
+                            stableAtCapStreak = 0
+                            let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.15).rounded()))
+                            learnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
+                            if probedCap > currentBitrate {
+                                currentBitrate = probedCap
+                                return .probeUp(probedCap)
+                            }
                         }
                     }
                 }

@@ -70,9 +70,16 @@ enum RegressionTestRunner {
             pendingPackets: 180,
             allowFecSuppression: false
         )
-        try expect(paceRateBps <= 16_000_000.0, "WAN pacer exceeded 16 Mbps: \(paceRateBps)")
-        try expect(paceRateBps >= 10_000_000.0, "WAN pacer below 10 Mbps: \(paceRateBps)")
-        try expect(maxPerTick <= 6, "WAN pacer maxPacketsPerTick > 6: \(maxPerTick)")
+        try expect(paceRateBps <= 12_000_000.0, "WAN pacer exceeded 12 Mbps: \(paceRateBps)")
+        try expect(paceRateBps >= 8_000_000.0, "WAN pacer below 8 Mbps at 6M target: \(paceRateBps)")
+        try expect(maxPerTick <= 4, "WAN pacer maxPacketsPerTick > 4: \(maxPerTick)")
+
+        let (lowPaceBps, _) = UdpVideoServer.computePacingParameters(
+            pacingBitrateBps: 2_000_000,
+            pendingPackets: 40,
+            allowFecSuppression: false
+        )
+        try expect(lowPaceBps == 4_000_000.0, "Low-bitrate WAN pacer should cap at 4 Mbps, got \(lowPaceBps)")
 
         let drainTimeMs = (180.0 * 1236.0 * 8.0 / paceRateBps) * 1000.0
         try expect(drainTimeMs < 250.0, "180-packet keyframe drainTimeMs=\(drainTimeMs) too close to 350ms timeout")
@@ -107,7 +114,8 @@ enum RegressionTestRunner {
         }
         try expect(state.currentBitrate >= 1_200_000, "1080p WAN floor dropped below 1.2 Mbps: \(state.currentBitrate)")
 
-        // Simulate 16s of mild-noise idle (1.2% loss, 12 pkts/2s): must rapidly recover >= 4 Mbps
+        // Simulate 16s of idle (12 pkts/2s): must rapidly recover to 2.5 Mbps safe baseline,
+        // and MUST NOT hallucinate higher ceilings (e.g. 5-8 Mbps) while idle!
         for _ in 0..<8 {
             t += 2.0
             _ = state.step(
@@ -115,8 +123,8 @@ enum RegressionTestRunner {
                 clientNotOnLan: true, screenWidth: 1920, scrollBoostActive: false
             )
         }
-        try expect(state.currentBitrate >= 4_000_000,
-                   "Idle session stayed stuck at \(state.currentBitrate) bps instead of rapidly recovering >= 4 Mbps")
+        try expect(state.currentBitrate == 2_500_000,
+                   "Idle session expected safe 2.5 Mbps baseline without app-limited overshoot, got \(state.currentBitrate)")
     }
 
     private static func testWan2KCongestionAndRecovery() throws {
@@ -131,11 +139,11 @@ enum RegressionTestRunner {
         }
         try expect(state.currentBitrate == 1_500_000, "2K WAN floor expected 1.5 Mbps, got \(state.currentBitrate)")
 
-        // Fast recovery: 1.5M -> 8M within 14 clean 2s windows (28s max)
-        for _ in 0..<14 {
+        // Active clean traffic (>=320 pkts/2s) must climb smoothly back to 8 Mbps
+        for _ in 0..<40 {
             t += 2.0
             _ = state.step(
-                lossRatio: 0.0, sentPackets: 120, now: t,
+                lossRatio: 0.0, sentPackets: 400, now: t,
                 clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: false
             )
         }

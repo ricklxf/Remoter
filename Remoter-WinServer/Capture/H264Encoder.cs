@@ -305,9 +305,11 @@ sealed class H264Encoder : IDisposable
         {
             try
             {
+                // MFVideoFormat_ARGB32 (D3DFMT_A8R8G8B8 = 0x15)
+                var mfVideoFormatArgb32 = new Guid(0x00000015, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
                 using var argbInputType = MediaFactory.MFCreateMediaType();
                 argbInputType.Set(MF_MT_MAJOR_TYPE, MfMediaTypeVideo);
-                argbInputType.Set(MF_MT_SUBTYPE, VideoFormatGuids.ARGB32);
+                argbInputType.Set(MF_MT_SUBTYPE, mfVideoFormatArgb32);
                 argbInputType.Set(MF_MT_FRAME_SIZE, PackLong(width, height));
                 argbInputType.Set(MF_MT_FRAME_RATE, PackLong(fps, 1));
                 argbInputType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);

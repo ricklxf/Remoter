@@ -112,33 +112,45 @@ sealed class AudioEncoder : IDisposable
 
         while (true)
         {
-            var outputData = new MFTOutputDataBuffer[1];
             using var outBuffer = MediaFactory.MFCreateMemoryBuffer(4096);
             using var outSample = MediaFactory.MFCreateSample();
             outSample.AddBuffer(outBuffer);
-            outputData[0].Sample = outSample;
+            var outputData = new OutputDataBuffer
+            {
+                StreamID = 0,
+                Sample = outSample,
+                Status = 0,
+                Events = null
+            };
 
-            var hr = _transform.ProcessOutput(0, outputData, out _);
+            var hr = _transform.ProcessOutput(ProcessOutputFlags.None, 1, ref outputData, out _);
             if (hr.Failure) break;
 
-            using var resSample = outputData[0].Sample;
+            var resSample = outputData.Sample;
             if (resSample == null) break;
-
-            using var resBuffer = resSample.ConvertToContiguousBuffer();
-            resBuffer.Lock(out nint pSrc, out _, out int aacLen);
-            if (aacLen > 0)
+            bool disposeRes = !ReferenceEquals(resSample, outSample);
+            try
             {
-                var adtsHeader = CreateAdtsHeader(aacLen, 48000, 2);
-                var fullPacket = new byte[adtsHeader.Length + aacLen];
-                Buffer.BlockCopy(adtsHeader, 0, fullPacket, 0, adtsHeader.Length);
-                Marshal.Copy(pSrc, fullPacket, adtsHeader.Length, aacLen);
+                using var resBuffer = resSample.ConvertToContiguousBuffer();
+                resBuffer.Lock(out nint pSrc, out _, out int aacLen);
+                if (aacLen > 0)
+                {
+                    var adtsHeader = CreateAdtsHeader(aacLen, 48000, 2);
+                    var fullPacket = new byte[adtsHeader.Length + aacLen];
+                    Buffer.BlockCopy(adtsHeader, 0, fullPacket, 0, adtsHeader.Length);
+                    Marshal.Copy(pSrc, fullPacket, adtsHeader.Length, aacLen);
 
-                resBuffer.Unlock();
-                OnEncodedFrame?.Invoke(fullPacket);
+                    resBuffer.Unlock();
+                    OnEncodedFrame?.Invoke(fullPacket);
+                }
+                else
+                {
+                    resBuffer.Unlock();
+                }
             }
-            else
+            finally
             {
-                resBuffer.Unlock();
+                if (disposeRes) resSample.Dispose();
             }
         }
     }

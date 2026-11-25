@@ -507,9 +507,9 @@ sealed class Session
 
             case ClientMsg.NetHint nh:
                 _isClientLan = nh.Lan;
-                if (_udpSessionToken is { } tok)
+                if (_udpSessionToken is { } udpTok)
                 {
-                    UdpVideoServer.Shared.SetFecSuppressionAllowed(tok, nh.Lan);
+                    UdpVideoServer.Shared.SetFecSuppressionAllowed(udpTok, nh.Lan);
                 }
                 AppLog.Write($"[Session] net_hint lan={nh.Lan} (UDP FEC suppression {(nh.Lan ? "allowed" : "disabled for WAN")})");
                 break;
@@ -1134,16 +1134,18 @@ sealed class Session
             var pts = (uint)(DateTime.UtcNow - _connectTime).TotalMilliseconds;
             try
             {
+                var capturer = _capturer;
+                if (capturer == null) break;
                 if (_encoder != null)
                 {
                     if (_encoder.IsGpuZeroCopy)
                     {
-                        var gpuTex = _capturer.CaptureGpuTexture(timeoutMs: 1);
+                        var gpuTex = capturer.CaptureGpuTexture(timeoutMs: 1);
                         if (gpuTex != null)
                         {
                             payload = _encoder.EncodeGpuTexture(gpuTex, pts, out keyframe);
                         }
-                        else if (_capturer.ShouldEmitStaticGpuRefinement(out var staticTex) && staticTex != null)
+                        else if (capturer.ShouldEmitStaticGpuRefinement(out var staticTex) && staticTex != null)
                         {
                             payload = _encoder.EncodeGpuRefinementFrame(staticTex, pts, out keyframe);
                         }
@@ -1154,12 +1156,12 @@ sealed class Session
                     }
                     else
                     {
-                        var bgra = _capturer.CaptureBgra(timeoutMs: 1);
+                        var bgra = capturer.CaptureBgra(timeoutMs: 1);
                         if (bgra != null)
                         {
                             payload = _encoder.Encode(bgra, pts, out keyframe);
                         }
-                        else if (_capturer.ShouldEmitStaticRefinement(out var staticBgra) && staticBgra != null)
+                        else if (capturer.ShouldEmitStaticRefinement(out var staticBgra) && staticBgra != null)
                         {
                             payload = _encoder.EncodeRefinementFrame(staticBgra, pts, out keyframe);
                         }
@@ -1171,7 +1173,7 @@ sealed class Session
                 }
                 else
                 {
-                    payload = _capturer.CaptureJpeg(timeoutMs: 1);
+                    payload = capturer.CaptureJpeg(timeoutMs: 1);
                 }
                 consecutiveErrors = 0;
             }

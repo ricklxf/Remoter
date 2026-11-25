@@ -145,6 +145,7 @@ static class RegressionTestRunner
 
             using var gcm = new AesGcm(aesKey, tagSizeInBytes: 16);
             var frags = new Dictionary<byte, byte[]>();
+            Span<byte> nonce = stackalloc byte[12];
             for (int i = 0; i < 10 && frags.Count < 3; i++)
             {
                 byte[] pkt = client.Receive(ref anyEp);
@@ -154,7 +155,6 @@ static class RegressionTestRunner
                 Expect((pkt[18] & 0x01) != 0, "Video packet was not AES-GCM encrypted");
                 Expect((pkt[19] & 0x01) != 0, "Interleaved FEC flag not set on header[19]");
 
-                Span<byte> nonce = stackalloc byte[12];
                 nonce[0] = Magic0; nonce[1] = Magic1; nonce[2] = pkt[3]; nonce[3] = fragIdx;
                 pkt.AsSpan(4, 8).CopyTo(nonce.Slice(4, 8));
 

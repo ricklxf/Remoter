@@ -87,20 +87,34 @@ public sealed class ClipboardSync : IDisposable
         void Apply()
         {
             if (_disposed) return;
-            // Drop remote echo of content we ourselves sent, or duplicate remote injection
-            if (_hasSentTextHash && _lastSentTextHash == hash) return;
-            if (_hasInjectedTextHash && _lastInjectedTextHash == hash) return;
+            // Skip only if the local clipboard already holds this exact text (prevents echo
+            // without dropping legitimate re-copies after the user copied something else locally).
+            try
+            {
+                if (Clipboard.ContainsText(TextDataFormat.UnicodeText) &&
+                    string.Equals(Clipboard.GetText(TextDataFormat.UnicodeText), text, StringComparison.Ordinal))
+                {
+                    _lastInjectedTextHash = hash;
+                    _hasInjectedTextHash = true;
+                    return;
+                }
+            }
+            catch
+            {
+                // Proceed to write with retries below
+            }
 
             try
             {
                 _lastInjectedTextHash = hash;
                 _hasInjectedTextHash = true;
-                Clipboard.SetText(text, TextDataFormat.UnicodeText);
+                _hasSentTextHash = false;
+                Clipboard.SetDataObject(text, true, 5, 25);
                 _lastSequenceNumber = GetClipboardSequenceNumber();
             }
             catch
             {
-                // Clipboard may be locked transiently by another process
+                // Clipboard remained locked after retries
             }
         }
 
@@ -141,7 +155,6 @@ public sealed class ClipboardSync : IDisposable
         {
             if (_disposed) return;
             if (_hasSentImageHash && _lastSentImageHash == hash) return;
-            if (_hasInjectedImageHash && _lastInjectedImageHash == hash) return;
 
             try
             {
@@ -149,7 +162,8 @@ public sealed class ClipboardSync : IDisposable
                 using var img = Image.FromStream(ms);
                 _lastInjectedImageHash = hash;
                 _hasInjectedImageHash = true;
-                Clipboard.SetImage(img);
+                _hasSentImageHash = false;
+                Clipboard.SetDataObject(img, true, 5, 25);
                 _lastSequenceNumber = GetClipboardSequenceNumber();
             }
             catch
@@ -288,6 +302,7 @@ public sealed class ClipboardSync : IDisposable
                     {
                         _lastSentTextHash = hash;
                         _hasSentTextHash = true;
+                        _hasInjectedTextHash = false;
                         LocalTextChanged?.Invoke(text);
                     }
                 }
@@ -310,6 +325,7 @@ public sealed class ClipboardSync : IDisposable
                         {
                             _lastSentImageHash = hash;
                             _hasSentImageHash = true;
+                            _hasInjectedImageHash = false;
                             LocalImageChanged?.Invoke(Convert.ToBase64String(bytes));
                         }
                     }

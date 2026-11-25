@@ -88,11 +88,15 @@ public final class ClipboardSync {
             guard let self, self.isEnabled else { return }
 
             if let text = data.text, !text.isEmpty {
-                let hash = ProtocolHelpers.fnv1a64(text)
-                guard hash != self.lastSentTextHash else { return }
-                self.lastInjectedTextHash = hash
-
                 let pb = NSPasteboard.general
+                let hash = ProtocolHelpers.fnv1a64(text)
+                if pb.string(forType: .string) == text {
+                    self.lastInjectedTextHash = hash
+                    return
+                }
+                self.lastInjectedTextHash = hash
+                self.lastSentTextHash = 0
+
                 pb.clearContents()
                 pb.setString(text, forType: .string)
                 self.lastChangeCount = pb.changeCount
@@ -112,6 +116,7 @@ public final class ClipboardSync {
                 let hash = ProtocolHelpers.fnv1a64(pngData)
                 guard hash != self.lastSentImageHash else { return }
                 self.lastInjectedImageHash = hash
+                self.lastSentImageHash = 0
 
                 let pb = NSPasteboard.general
                 pb.clearContents()

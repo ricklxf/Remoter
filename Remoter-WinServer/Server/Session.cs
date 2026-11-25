@@ -695,6 +695,10 @@ sealed class Session
                     UdpVideoServer.Shared.UpdatePacingBitrate(token, _targetBitrateBps);
                     _encoder?.ForceKeyframe();
                 }
+                else
+                {
+                    ScheduleUdpReoffer(8000);
+                }
                 AppLog.Write($"[Session] Direct UDP video {(active ? "activated" : "deactivated (falling back to WS)")}");
             },
             onLossFeedback: HandleUdpLossFeedback,
@@ -703,15 +707,35 @@ sealed class Session
 
         udp.SetFecSuppressionAllowed(token, _isClientLan);
 
+        SendCurrentUdpOffer();
+    }
+
+    private void SendCurrentUdpOffer()
+    {
+        var udp = UdpVideoServer.Shared;
+        var token = _udpSessionToken;
+        if (udp.ListeningPort <= 0 || token == null) return;
         string tokenHex = Convert.ToHexString(token).ToLowerInvariant();
         Send(new
         {
             type = "udp_offer",
             port = udp.ListeningPort,
             session_token = tokenHex,
-            encrypted = keyBytes != null
+            encrypted = _crypto.RawKeyBytes != null
         });
-        AppLog.Write($"[Session] Sent udp_offer port={udp.ListeningPort} encrypted={keyBytes != null}");
+        AppLog.Write($"[Session] Sent udp_offer port={udp.ListeningPort} encrypted={_crypto.RawKeyBytes != null}");
+    }
+
+    private void ScheduleUdpReoffer(int delayMs)
+    {
+        var ct = _cts?.Token ?? CancellationToken.None;
+        _ = Task.Delay(delayMs, ct).ContinueWith(t =>
+        {
+            if (t.IsCanceled || !_authed || _usingUdpVideo || _udpSessionToken == null) return;
+            AppLog.Write($"[Session] udp_reoffer_sent delay={delayMs}ms");
+            SendCurrentUdpOffer();
+            ScheduleUdpReoffer(20_000);
+        }, TaskScheduler.Default);
     }
 
     private void UnregisterUdpSession()

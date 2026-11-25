@@ -49,7 +49,7 @@ sealed class UdpVideoServer : IDisposable
     private const int MaxFragmentPayload = 1200;
     private const int MaxFragmentsPerFrame = 255;
     private const int NackRingSize = 1024;
-    private const int KeepaliveTimeoutMs = 6000;
+    private const int KeepaliveTimeoutMs = 12000;
     private const int MaintenanceIntervalMs = 2000;
     private const int FastPathMaxPackets = 4;
 
@@ -708,14 +708,21 @@ sealed class UdpVideoServer : IDisposable
 
         if (pktType == PacketKeepalive)
         {
+            Action<bool>? reactivateCb = null;
             lock (_lock)
             {
                 if (_sessions.TryGetValue(tokenKey, out var state))
                 {
                     state.Peer = remote;
                     state.LastKeepaliveTick = Environment.TickCount64;
+                    if (!state.Active)
+                    {
+                        state.Active = true;
+                        reactivateCb = state.OnActivated;
+                    }
                 }
             }
+            reactivateCb?.Invoke(true);
             return;
         }
 

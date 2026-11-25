@@ -1432,6 +1432,33 @@ final class Session {
         }
     }
 
+    private func sendCurrentUdpOffer() {
+        let udpPort = UdpVideoServer.shared.listeningPort
+        guard udpPort > 0, !isClosed else { return }
+        var udpOffer: [String: Any] = [
+            "type": "udp_offer",
+            "port": Int(udpPort),
+            "session_token": udpSessionTokenHex,
+            "encrypted": (crypto.rawKeyData != nil)
+        ]
+        if let pub = UdpVideoServer.shared.publicEndpoint {
+            udpOffer["publicIp"] = pub.ip
+            udpOffer["publicPort"] = Int(pub.port)
+        }
+        sendJson(udpOffer)
+    }
+
+    /// Automatically re-offers UDP after a transient network blip causes `ws_fallback`,
+    /// so sessions never get permanently trapped on WebSocket TCP!
+    private func scheduleUdpReoffer(delaySeconds: TimeInterval) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
+            guard let self, !self.isClosed, self.authenticated, !self.usingUdpVideo, !self.usingRtpVideo else { return }
+            ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "udp_reoffer_sent", detail: "delay=\(Int(delaySeconds))s")
+            self.sendCurrentUdpOffer()
+            self.scheduleUdpReoffer(delaySeconds: 20.0)
+        }
+    }
+
     private func beginCapture() async {
         Self.registerAndReapStaleSessions(newSession: self)
         let c   = ScreenCapturer()
@@ -1498,6 +1525,7 @@ final class Session {
                             self.udpLearnedCeilingBps = nil
                             self.udpStableAtCapStreak = 0
                             self.udpLastLossRatio = 0
+                            self.scheduleUdpReoffer(delaySeconds: 8.0)
                         }
                         ConnectionLogger.shared.logStep(
                             sessionId: self.id.uuidString,
@@ -1541,17 +1569,7 @@ final class Session {
                 )
                 UdpVideoServer.shared.refreshPublicEndpointAsync()
                 UdpVideoServer.shared.updatePacingBitrate(token: udpSessionToken, bitrateBps: currentBitrate)
-                var udpOffer: [String: Any] = [
-                    "type": "udp_offer",
-                    "port": Int(udpPort),
-                    "session_token": udpSessionTokenHex,
-                    "encrypted": (cryptoKey != nil)
-                ]
-                if let pub = UdpVideoServer.shared.publicEndpoint {
-                    udpOffer["publicIp"] = pub.ip
-                    udpOffer["publicPort"] = Int(pub.port)
-                }
-                sendJson(udpOffer)
+                sendCurrentUdpOffer()
             }
 
             c.onFrame = { [weak self] pixelBuffer, _, _ in

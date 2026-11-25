@@ -75,6 +75,8 @@ enum RegressionTestRunner {
 
         let drainTimeMs = (180.0 * 1236.0 * 8.0 / paceRateBps) * 1000.0
         try expect(drainTimeMs < 250.0, "180-packet keyframe drainTimeMs=\(drainTimeMs) too close to 350ms timeout")
+        try expect(UdpVideoServer.keepaliveTimeoutSeconds >= 12.0,
+                   "UDP keepaliveTimeoutSeconds must be >= 12s to survive brief WAN blips without ws_fallback")
     }
 
     private static func testLanPacerDrainsLargeFrames() throws {

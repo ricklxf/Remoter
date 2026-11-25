@@ -55,7 +55,7 @@ final class UdpVideoServer {
     static let headerSize: Int = 20
     static let gcmTagSize: Int = 16
     static let ringBufferCapacity: Int = 1024
-    static let keepaliveTimeoutSeconds: TimeInterval = 6.0
+    static let keepaliveTimeoutSeconds: TimeInterval = 12.0
     static let maxPacingQueuePackets: Int = 512
     static let immediateBurstPackets: Int = 8
 

@@ -1,13 +1,14 @@
 @echo off
+setlocal EnableExtensions
 chcp 65001 > nul
-::build_start
+:build_start
 REM Remoter-WinServer Build Script
 REM Usage: Compile Remoter-WinServer project with UI
 echo ===== Remoter-WinServer Build Script =====
 echo.
 
 REM AppVersion.cs is synced at commit time (pre-commit hook, alongside
-REM package.json) — not rewritten here, so a build between commits doesn't
+REM package.json) - not rewritten here, so a build between commits doesn't
 REM touch a tracked file and fight with `git pull`.
 
 REM Kill running process before build
@@ -30,7 +31,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-for /f "tokens=*" %%i in ('dotnet --version') do set DOTNET_VERSION=%%i
+for /f "tokens=*" %%i in ('dotnet --version') do set "DOTNET_VERSION=%%i"
 echo       OK: .NET SDK %DOTNET_VERSION% found
 echo.
 
@@ -56,7 +57,7 @@ if errorlevel 1 (
 echo       OK: Build successful
 echo.
 
-REM Build the web client from source first — Remoter-Server/public is
+REM Build the web client from source first - Remoter-Server/public is
 REM gitignored (never committed), so a bare `git pull` never updates it;
 REM without rebuilding here, this step below would silently copy whatever
 REM stale bundle happened to be sitting there from some earlier manual build.
@@ -67,14 +68,12 @@ if exist "%clientDir%\node_modules" (
     call npm run build:web
     popd
 ) else (
-    echo       WARN: %clientDir%\node_modules not found, skipping ^(run npm install first^)
+    echo       WARN: Remoter-Client\node_modules not found, skipping ^(run npm install first^)
 )
 echo.
 
-REM Copy web directory to output — pulls from Remoter-Server/public, the
+REM Copy web directory to output - pulls from Remoter-Server/public, the
 REM single source of truth produced by `npm run build:web` in Remoter-Client.
-REM (Used to vendor a stale hand-copied snapshot in Remoter-WinServer\web — that
-REM drifted out of sync with every client-side fix; removed.)
 echo [6/7] Copying web directory...
 set "outputDir=%~dp0bin\Release\net8.0-windows"
 set "webSource=%~dp0..\Remoter-Server\public"
@@ -109,18 +108,18 @@ if errorlevel 1 (
 )
 echo.
 
-::build_complete
+:build_complete
 REM Start the freshly built exe (old instance was already killed in step [1/7])
 echo Starting new build...
 set "exePath=%outputDir%\RemoterWin.exe"
 if exist "%exePath%" (
     start "" "%exePath%"
-    timeout /t 2 >nul
-    tasklist /FI "IMAGENAME eq RemoterWin.exe" 2>nul | find /I "RemoterWin.exe" >nul
-    if %errorLevel% == 0 (
+    timeout /t 2 > nul
+    tasklist /FI "IMAGENAME eq RemoterWin.exe" 2>nul | find /I "RemoterWin.exe" > nul
+    if not errorlevel 1 (
         echo       OK: Program started successfully
     ) else (
-        echo       WARN: Build succeeded but process did not stay running — check remoter.log
+        echo       WARN: Build succeeded but process did not stay running - check remoter.log
     )
 ) else (
     echo       WARN: Executable not found at %exePath%, skipping auto-start

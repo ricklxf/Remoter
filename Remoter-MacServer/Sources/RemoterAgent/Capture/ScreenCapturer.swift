@@ -162,12 +162,20 @@ final class ScreenCapturer: NSObject, @unchecked Sendable {
             throw RemoterError.captureUnavailable
         }
 
-        physWidth  = Int(CGDisplayPixelsWide(display.displayID))
-        physHeight = Int(CGDisplayPixelsHigh(display.displayID))
+        let displayMode = CGDisplayCopyDisplayMode(display.displayID)
+        if let mode = displayMode, mode.pixelWidth > 0, mode.pixelHeight > 0 {
+            // CGDisplayPixelsWide/High return logical points (1920x1080) on HiDPI/Retina displays!
+            // CGDisplayMode.pixelWidth/pixelHeight return the true Retina backing pixels (3840x2160).
+            physWidth  = mode.pixelWidth
+            physHeight = mode.pixelHeight
+        } else {
+            physWidth  = Int(CGDisplayPixelsWide(display.displayID))
+            physHeight = Int(CGDisplayPixelsHigh(display.displayID))
+        }
         let bounds = CGDisplayBounds(display.displayID)
         pointWidth  = bounds.width > 0 ? bounds.width : Double(physWidth)
         pointHeight = bounds.height > 0 ? bounds.height : Double(physHeight)
-        if let rate = CGDisplayCopyDisplayMode(display.displayID)?.refreshRate, rate >= 1 {
+        if let rate = displayMode?.refreshRate, rate >= 1 {
             maxRefreshRate = Int(rate.rounded())
         } else {
             maxRefreshRate = 60

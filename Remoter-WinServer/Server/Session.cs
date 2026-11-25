@@ -25,6 +25,8 @@ sealed class Session
     private bool              _manualCodecSelected = false;
     private bool              _useJpeg = false;
     private bool              _lowLatencyZeroBuffer = false;
+    private bool              _chroma444 = false;
+    private bool              _hdr10 = false;
 
     private static readonly int[] AutoFpsTiers     = [30, 60, 90, 120];
     private static readonly int[] AutoBitrateTiers = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000];
@@ -37,6 +39,9 @@ sealed class Session
     private AudioCapturer?    _audioCapturer;
     private AudioEncoder?     _audioEncoder;
     private bool              _audioEnabled = false;
+    private uint              _audioSeq = 0;
+    private MicPlayer?        _micPlayer;
+    private bool              _micEnabled = false;
     private bool              _privacyEnabled = false;
 
     private bool   _authed    = false;
@@ -223,6 +228,17 @@ sealed class Session
             var fid    = Encoding.UTF8.GetString(data, 1, 16).TrimEnd('\0');
             var offset = (long)((data[17] << 24) | (data[18] << 16) | (data[19] << 8) | data[20]);
             _fileRecv?.Receive(fid, offset, data[21..]);
+            return;
+        }
+
+        // Mic audio: 0x04 | 48kHz mono 16-bit LE PCM
+        if (_authed && data[0] == FrameType.MicAudio && data.Length > 1)
+        {
+            _bytesRecv += data.Length;
+            if (_micEnabled)
+            {
+                _micPlayer?.EnqueuePcm(data.AsSpan(1));
+            }
         }
     }
 
@@ -233,6 +249,10 @@ sealed class Session
         UnregisterUdpSession();
         StopClipboardMonitor(flush: false);
         StopAudioStream();
+        _micEnabled = false;
+        try { _micPlayer?.Stop(); } catch { }
+        try { _micPlayer?.Dispose(); } catch { }
+        _micPlayer = null;
         if (_privacyEnabled)
         {
             _privacyEnabled = false;
@@ -577,14 +597,62 @@ sealed class Session
                 AppLog.Write($"[Session] resolution tier '{r.Tier}' (scale={r.Scale}) ignored — Windows agent captures native resolution only");
                 break;
 
-            case ClientMsg.ChromaSet:
-                // Windows Media Foundation path currently encodes NV12 4:2:0
-                Send(new { type = "chroma_active", mode = "420" });
+            case ClientMsg.ChromaSet ch:
+                bool want444 = string.Equals(ch.Mode, "444", StringComparison.OrdinalIgnoreCase);
+                if (want444 != _chroma444)
+                {
+                    _chroma444 = want444;
+                    _rebuildEncoder = true;
+                }
+                else
+                {
+                    Send(new { type = "chroma_active", mode = (_encoder?.Chroma444 == true) ? "444" : "420" });
+                }
                 break;
 
-            case ClientMsg.HdrSet:
-                // Windows DXGI capture path is currently SDR
-                Send(new { type = "hdr_active", enabled = false });
+            case ClientMsg.HdrSet h:
+                if (h.Enabled != _hdr10)
+                {
+                    _hdr10 = h.Enabled;
+                    _rebuildEncoder = true;
+                }
+                else
+                {
+                    Send(new { type = "hdr_active", enabled = _encoder?.Hdr10 == true });
+                }
+                break;
+
+            case ClientMsg.SetMicEnabled m:
+                if (m.Enabled)
+                {
+                    _micPlayer ??= new MicPlayer();
+                    if (_micPlayer.Start())
+                    {
+                        _micEnabled = true;
+                        Send(new { type = "mic_status", available = true, enabled = true, device = _micPlayer.ActiveDeviceName, reason = (string?)null });
+                        AppLog.Write($"[Session] Mic passthrough enabled -> {_micPlayer.ActiveDeviceName}");
+                    }
+                    else
+                    {
+                        _micEnabled = false;
+                        Send(new { type = "mic_status", available = false, enabled = false, device = (string?)null, reason = "no_virtual_audio_device" });
+                        AppLog.Write("[Session] Mic passthrough unavailable (no virtual audio device found)");
+                    }
+                }
+                else
+                {
+                    _micEnabled = false;
+                    _micPlayer?.Stop();
+                    Send(new { type = "mic_status", available = true, enabled = false, device = (string?)null, reason = (string?)null });
+                }
+                break;
+
+            case ClientMsg.UdpPunch p:
+                if (_udpSessionToken is { } punchTok && !string.IsNullOrWhiteSpace(p.Ip) && p.Port > 0)
+                {
+                    UdpVideoServer.Shared.SendHolePunch(punchTok, p.Ip, p.Port);
+                    AppLog.Write($"[Session] udp_punch -> {p.Ip}:{p.Port}");
+                }
                 break;
 
             case ClientMsg.LowLatencySet ll:
@@ -677,6 +745,7 @@ sealed class Session
                 try
                 {
                     var enc = new H264Encoder();
+                    enc.SetChromaAndHdr(_chroma444, _hdr10);
                     enc.Initialize(c.Width, c.Height, _currentFps, _targetBitrateBps, _preferredCodec, d3d11Device: c.D3D11Device);
                     _encoder = enc;
                     codec = enc.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264";
@@ -760,14 +829,35 @@ sealed class Session
         var token = _udpSessionToken;
         if (udp.ListeningPort <= 0 || token == null) return;
         string tokenHex = Convert.ToHexString(token).ToLowerInvariant();
-        Send(new
+        var pub = udp.PublicEndpoint;
+        if (pub == null)
         {
-            type = "udp_offer",
-            port = udp.ListeningPort,
-            session_token = tokenHex,
-            encrypted = _crypto.RawKeyBytes != null
-        });
-        AppLog.Write($"[Session] Sent udp_offer port={udp.ListeningPort} encrypted={_crypto.RawKeyBytes != null}");
+            _ = udp.RefreshPublicEndpointAsync();
+        }
+        if (pub is { } ep)
+        {
+            Send(new
+            {
+                type = "udp_offer",
+                port = udp.ListeningPort,
+                session_token = tokenHex,
+                encrypted = _crypto.RawKeyBytes != null,
+                publicIp = ep.Ip,
+                publicPort = ep.Port
+            });
+            AppLog.Write($"[Session] Sent udp_offer port={udp.ListeningPort} encrypted={_crypto.RawKeyBytes != null} public={ep.Ip}:{ep.Port}");
+        }
+        else
+        {
+            Send(new
+            {
+                type = "udp_offer",
+                port = udp.ListeningPort,
+                session_token = tokenHex,
+                encrypted = _crypto.RawKeyBytes != null
+            });
+            AppLog.Write($"[Session] Sent udp_offer port={udp.ListeningPort} encrypted={_crypto.RawKeyBytes != null}");
+        }
     }
 
     private void ScheduleUdpReoffer(int delayMs)
@@ -1134,11 +1224,14 @@ sealed class Session
                         {
                             _encoder?.Dispose();
                             var enc = new H264Encoder();
+                            enc.SetChromaAndHdr(_chroma444, _hdr10);
                             enc.Initialize(_capturer.Width, _capturer.Height, _currentFps, _targetBitrateBps, _preferredCodec, d3d11Device: _capturer.D3D11Device);
                             _encoder = enc;
                             var activeCodec = enc.ActiveCodec == WinVideoCodec.H265 ? "h265" : "h264";
-                            AppLog.Write($"[Session] encoder rebuilt: codec={activeCodec} hw={enc.IsHardware} gpuZeroCopy={enc.IsGpuZeroCopy} bitrate={_targetBitrateBps}");
+                            AppLog.Write($"[Session] encoder rebuilt: codec={activeCodec} hw={enc.IsHardware} gpuZeroCopy={enc.IsGpuZeroCopy} bitrate={_targetBitrateBps} chroma444={enc.Chroma444} hdr10={enc.Hdr10}");
                             Send(new { type = "codec_changed", codec = activeCodec });
+                            Send(new { type = "chroma_active", mode = enc.Chroma444 ? "444" : "420" });
+                            Send(new { type = "hdr_active", enabled = enc.Hdr10 });
                         }
                         catch (Exception ex)
                         {
@@ -2220,6 +2313,14 @@ sealed class Session
             _audioEncoder.OnEncodedFrame = adtsPacket =>
             {
                 if (!_audioEnabled) return;
+                uint seq = _audioSeq++;
+                uint ptsMs = (uint)(Environment.TickCount64 & 0xFFFFFFFF);
+                if (_usingUdpVideo && _udpSessionToken is { } udpTok &&
+                    UdpVideoServer.Shared.SendAudioFrame(udpTok, seq, ptsMs, adtsPacket))
+                {
+                    _bytesSent += adtsPacket.Length;
+                    return;
+                }
                 var pkt = new byte[1 + adtsPacket.Length];
                 pkt[0] = FrameType.AudioFrame;
                 Buffer.BlockCopy(adtsPacket, 0, pkt, 1, adtsPacket.Length);

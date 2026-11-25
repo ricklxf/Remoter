@@ -36,6 +36,7 @@ sealed class UdpVideoServer : IDisposable
     private const byte PacketFecParity = 0x11;
     private const byte PacketNack      = 0x12;
     private const byte PacketFeedback  = 0x13;
+    public  const byte PacketAudio     = 0x14;
     private const byte PacketInput     = 0x20;
 
     private const byte HeaderFlagEncrypted = 0x01;
@@ -210,7 +211,18 @@ sealed class UdpVideoServer : IDisposable
     private CancellationTokenSource? _cts;
     private bool _running;
 
+    // STUN public endpoint cache (60s TTL) for WAN P2P UDP hole punching
+    private const long StunCacheTtlMs = 60_000;
+    private (string Ip, int Port)? _publicEndpoint;
+    private long _publicEndpointTick;
+    private byte[]? _pendingStunTxId;
+    private TaskCompletionSource<(string Ip, int Port)?>? _pendingStunTcs;
+
     public int ListeningPort { get; private set; }
+    public (string Ip, int Port)? PublicEndpoint
+    {
+        get { lock (_lock) return _publicEndpoint; }
+    }
 
     private UdpVideoServer() { }
 
@@ -251,6 +263,7 @@ sealed class UdpVideoServer : IDisposable
             var ct = _cts.Token;
             _ = Task.Run(() => ReceiveLoopAsync(udp, ct), ct);
             _ = Task.Run(() => MaintenanceLoopAsync(ct), ct);
+            _ = Task.Run(() => RefreshPublicEndpointAsync(force: true), ct);
 
             AppLog.Write($"[UdpVideoServer] Listening on UDP port {ListeningPort}");
         }
@@ -511,6 +524,166 @@ sealed class UdpVideoServer : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Strictly video-first UDP audio packet (0x14).
+    /// Drops silently when video pacing queue is backed up (&gt;4) or FEC is Heavy,
+    /// never stores in NACK ring, never emits FEC, never enters video pacing queue,
+    /// and never increments WindowSentPackets.
+    /// </summary>
+    public bool SendAudioFrame(byte[] token, uint seq, uint ptsMs, byte[] data)
+    {
+        if (token == null || token.Length != TokenLength) return false;
+        if (data == null || data.Length == 0 || data.Length > MaxFragmentPayload) return false;
+
+        string key = Convert.ToHexString(token);
+        UdpClient? udp;
+        IPEndPoint? peer;
+        byte[] wirePacket;
+
+        lock (_lock)
+        {
+            udp = _udp;
+            if (udp == null || !_sessions.TryGetValue(key, out var state) || !state.Active || state.Peer == null)
+            {
+                return false;
+            }
+            // Strictly video-first: silently drop audio under video congestion
+            if (Volatile.Read(ref state.QueuedPacedFrames) > 4 || state.FecLevel == FecLevel.Heavy)
+            {
+                return true;
+            }
+            peer = state.Peer;
+            try
+            {
+                wirePacket = BuildVideoPacket(
+                    pktType: PacketAudio,
+                    frameId: seq,
+                    ptsMs: ptsMs,
+                    flags: 0,
+                    fragIndex: 0,
+                    fragCount: 1,
+                    fecGroupSize: 0,
+                    fecFlags: 0,
+                    plaintext: data,
+                    aesGcm: state.AesGcm);
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+        }
+
+        try { udp.Send(wirePacket, wirePacket.Length, peer); } catch { }
+        return true;
+    }
+
+    /// <summary>
+    /// Probes public STUN servers directly through this UDP socket so the returned
+    /// NAT mapping matches our exact listening port (60s TTL cache).
+    /// </summary>
+    public async Task<(string Ip, int Port)?> RefreshPublicEndpointAsync(bool force = false)
+    {
+        UdpClient? udp;
+        CancellationToken ct;
+        lock (_lock)
+        {
+            if (!force && _publicEndpoint != null && (Environment.TickCount64 - _publicEndpointTick) < StunCacheTtlMs)
+            {
+                return _publicEndpoint;
+            }
+            udp = _udp;
+            ct = _cts?.Token ?? CancellationToken.None;
+        }
+        if (udp == null || ct.IsCancellationRequested) return null;
+
+        foreach (var (host, port) in StunClient.DefaultServers)
+        {
+            if (ct.IsCancellationRequested) return null;
+            try
+            {
+                var addrs = await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
+                IPAddress? ipv4 = null;
+                foreach (var a in addrs)
+                {
+                    if (a.AddressFamily == AddressFamily.InterNetwork) { ipv4 = a; break; }
+                }
+                if (ipv4 == null) continue;
+
+                byte[] txId = StunClient.CreateTransactionId();
+                byte[] req = StunClient.BuildBindingRequest(txId);
+                var tcs = new TaskCompletionSource<(string Ip, int Port)?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                lock (_lock)
+                {
+                    _pendingStunTxId = txId;
+                    _pendingStunTcs = tcs;
+                }
+
+                try { udp.Send(req, req.Length, new IPEndPoint(ipv4, port)); }
+                catch { continue; }
+
+                var completed = await Task.WhenAny(tcs.Task, Task.Delay(1200, ct)).ConfigureAwait(false);
+                if (completed == tcs.Task)
+                {
+                    var ep = await tcs.Task.ConfigureAwait(false);
+                    if (ep != null)
+                    {
+                        AppLog.Write($"[UdpVideoServer] STUN public endpoint: {ep.Value.Ip}:{ep.Value.Port} (via {host})");
+                        return ep;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { return null; }
+            catch { }
+        }
+
+        lock (_lock)
+        {
+            _pendingStunTxId = null;
+            _pendingStunTcs = null;
+            return _publicEndpoint;
+        }
+    }
+
+    /// <summary>
+    /// Sends 3 HELLO_ACK datagrams 50ms apart to the client's STUN-discovered public
+    /// endpoint to punch a bidirectional NAT hole.
+    /// </summary>
+    public void SendHolePunch(byte[] token, string ip, int port)
+    {
+        if (token == null || token.Length != TokenLength) return;
+        if (port <= 0 || port > 65535 || !IPAddress.TryParse(ip, out var addr)) return;
+
+        UdpClient? udp;
+        CancellationToken ct;
+        lock (_lock)
+        {
+            udp = _udp;
+            ct = _cts?.Token ?? CancellationToken.None;
+        }
+        if (udp == null) return;
+
+        byte[] ack = new byte[ControlPacketSize + 1];
+        ack[0] = Magic0; ack[1] = Magic1; ack[2] = ProtocolVersion; ack[3] = PacketHelloAck;
+        Buffer.BlockCopy(token, 0, ack, 4, TokenLength);
+        ack[20] = 0x01;
+
+        var ep = new IPEndPoint(addr, port);
+        _ = Task.Run(async () =>
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                if (ct.IsCancellationRequested) break;
+                try { udp.Send(ack, ack.Length, ep); } catch { }
+                if (i < 2)
+                {
+                    try { await Task.Delay(50, ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
+                }
+            }
+        }, ct);
+    }
+
     private static int SelectFecGroupSize(FecLevel level, bool isKeyframe) => level switch
     {
         FecLevel.Suppressed => 0,
@@ -666,6 +839,31 @@ sealed class UdpVideoServer : IDisposable
 
     private void HandleInboundDatagram(UdpClient udp, byte[] buf, IPEndPoint remote)
     {
+        // Intercept RFC 5389 STUN Binding Success responses before RU protocol magic check
+        if (StunClient.IsStunSuccessResponse(buf))
+        {
+            TaskCompletionSource<(string Ip, int Port)?>? stunTcs = null;
+            (string Ip, int Port)? parsedEp = null;
+            lock (_lock)
+            {
+                if (_pendingStunTxId != null &&
+                    StunClient.TryParseBindingResponse(buf, _pendingStunTxId, out string ip, out int port))
+                {
+                    parsedEp = (ip, port);
+                    _publicEndpoint = parsedEp;
+                    _publicEndpointTick = Environment.TickCount64;
+                    stunTcs = _pendingStunTcs;
+                    _pendingStunTxId = null;
+                    _pendingStunTcs = null;
+                }
+            }
+            if (parsedEp != null)
+            {
+                stunTcs?.TrySetResult(parsedEp);
+            }
+            return;
+        }
+
         if (buf.Length < ControlPacketSize) return;
         if (buf[0] != Magic0 || buf[1] != Magic1 || buf[2] != ProtocolVersion) return;
 

@@ -64,6 +64,15 @@ public class Program
 
         try
         {
+            LanDiscoveryAdvertiser.Shared.Start(wsPort: 7788, udpPort: UdpVideoServer.Shared.ListeningPort > 0 ? UdpVideoServer.Shared.ListeningPort : 7789);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Global] LanDiscoveryAdvertiser start failed (non-fatal): {ex.Message}");
+        }
+
+        try
+        {
             Application.Run(new MainForm());
         }
         catch (Exception ex)
@@ -75,6 +84,7 @@ public class Program
         }
         finally
         {
+            LanDiscoveryAdvertiser.Shared.Stop();
             UdpVideoServer.Shared.Stop();
         }
         return 0;

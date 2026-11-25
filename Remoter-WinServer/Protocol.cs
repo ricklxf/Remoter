@@ -42,6 +42,8 @@ public abstract record ClientMsg
     public record RequestFile(string Path, long Offset = 0) : ClientMsg;
     public record SetMuted(bool Muted) : ClientMsg;
     public record SetAudio(bool Enabled) : ClientMsg;
+    public record SetMicEnabled(bool Enabled) : ClientMsg;
+    public record UdpPunch(string Ip, int Port) : ClientMsg;
     public record SetPrivacyScreen(bool Enabled) : ClientMsg;
     public record CtrlAltDel : ClientMsg;
     public record SetInputEnabled(bool Enabled) : ClientMsg;
@@ -100,6 +102,8 @@ public abstract record ClientMsg
             "request_file"      => new RequestFile(e.Str("path"), e.Long("offset")),
             "set_muted"         => new SetMuted(e.Bool("muted")),
             "set_audio"         => new SetAudio(e.Bool("enabled")),
+            "set_mic_enabled"   => new SetMicEnabled(e.Bool("enabled")),
+            "udp_punch"         => new UdpPunch(e.Str("ip"), e.Int("port")),
             "set_privacy_screen"=> new SetPrivacyScreen(e.Bool("enabled")),
             "ctrl_alt_del"      => new CtrlAltDel(),
             "set_input_enabled"       => new SetInputEnabled(e.Bool("enabled")),
@@ -152,6 +156,7 @@ static class FrameType
     public const byte VideoFrame = 0x01;
     public const byte FileChunk  = 0x02;
     public const byte AudioFrame = 0x03;
+    public const byte MicAudio   = 0x04;
     public const byte Encrypted  = 0xE0;
 }
 

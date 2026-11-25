@@ -65,7 +65,7 @@ interface Props {
 // (server steps it based on its own feedback signal: fps on decode-overload,
 // bitrate on network backpressure) plus its own manual tiers.
 const FPS_TIERS = [30, 60, 90, 120]
-const BITRATE_TIERS = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000]
+const BITRATE_TIERS = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000, 30_000_000, 40_000_000]
 
 function formatBitrate(bps: number): string {
   const mbps = bps / 1_000_000

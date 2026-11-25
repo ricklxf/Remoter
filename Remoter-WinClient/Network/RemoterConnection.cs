@@ -116,6 +116,7 @@ public sealed class RemoterConnection : IDisposable
     public StreamInfo? CurrentStreamInfo => _streamInfo;
     public bool IsConnected => _state == ConnectionState.Streaming || _state == ConnectionState.Authenticating;
     public bool IsEncrypted => _e2e.IsReady;
+    public bool IsDirectLan { get; private set; }
     public int RttMs => Volatile.Read(ref _rttMs);
     public int EncodeMs => Volatile.Read(ref _encodeMs);
     public FileTransferClient FileTransfer => _fileTransfer;
@@ -1158,7 +1159,11 @@ public sealed class RemoterConnection : IDisposable
     private void SendNetHint()
     {
         var p = _params;
-        if (p == null || p.Mode != ConnectMode.Direct) return;
+        if (p == null || p.Mode != ConnectMode.Direct)
+        {
+            IsDirectLan = false;
+            return;
+        }
 
         try
         {
@@ -1166,13 +1171,19 @@ public sealed class RemoterConnection : IDisposable
             if (!IPAddress.TryParse(uri.Host, out var targetIp) ||
                 targetIp.AddressFamily != AddressFamily.InterNetwork)
             {
+                IsDirectLan = uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                    || uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase);
                 return;
             }
 
             bool isLan = IsSameIpv4Subnet(targetIp);
+            IsDirectLan = isLan;
             EnqueueControlJson(ClientMessages.NetHint(isLan));
         }
-        catch { /* omit hint if network enumeration fails */ }
+        catch
+        {
+            IsDirectLan = false;
+        }
     }
 
     private static bool IsSameIpv4Subnet(IPAddress targetIp)
@@ -1185,6 +1196,8 @@ public sealed class RemoterConnection : IDisposable
         foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
         {
             if (nic.OperationalStatus != OperationalStatus.Up)
+                continue;
+            if (nic.NetworkInterfaceType == NetworkInterfaceType.Tunnel)
                 continue;
 
             IPInterfaceProperties props;

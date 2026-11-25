@@ -28,9 +28,9 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     if (saved === 'auto' || saved === 'smooth' || saved === 'hd' || saved === 'original') return saved
     return 'auto'
   })
-  const [fps, setFps]         = useState(30)
+  const [fps, setFps]         = useState(60)
   const [fpsAuto, setFpsAuto] = useState(true)
-  const [bitrate, setBitrate] = useState(2_000_000)
+  const [bitrate, setBitrate] = useState(15_000_000)
   const [bitrateAuto, setBitrateAuto] = useState(true)
   const [resolution, setResolution] = useState<ResolutionTier>('native')
   const [scaleMode, setScaleMode] = useState<ScaleMode>(() => {
@@ -118,27 +118,41 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     prevTransfersLen.current = transfers.length
   }, [transfers.length])
 
+  const isTrueLan = !conn.isRelay && conn.isLan && (stats.rttMs <= 0 || stats.rttMs < 6)
+
   // Default is "自动" for both — tell the server to actually enable auto
   // stepping (not just apply the floor tier once and leave it fixed).
   // Without this, the server only knows to adapt after the user opens the
   // menu and picks it manually. fps and bitrate are independent, so both
   // get enabled separately.
   useEffect(() => {
+    const lan = !conn.isRelay && conn.isLan && (stats.rttMs <= 0 || stats.rttMs < 6)
     if (qualityPreset === 'smooth') {
-      setFps(30); setFpsAuto(false); setBitrate(4_000_000); setBitrateAuto(false)
-      conn.sendFps(30, false)
-      conn.sendBitrate(4_000_000, false)
-    } else if (qualityPreset === 'hd') {
-      setFps(60); setFpsAuto(false); setBitrate(8_000_000); setBitrateAuto(false)
+      const br = lan ? 10_000_000 : 6_000_000
+      setFps(60); setFpsAuto(false); setBitrate(br); setBitrateAuto(false)
+      setChromaMode('420')
       conn.sendFps(60, false)
-      conn.sendBitrate(8_000_000, false)
+      conn.sendBitrate(br, false)
+      conn.sendChroma('420')
+    } else if (qualityPreset === 'hd') {
+      const br = lan ? 25_000_000 : 15_000_000
+      setFps(60); setFpsAuto(false); setBitrate(br); setBitrateAuto(false)
+      setChromaMode('420')
+      conn.sendFps(60, false)
+      conn.sendBitrate(br, false)
+      conn.sendChroma('420')
     } else if (qualityPreset === 'original') {
-      setFps(120); setFpsAuto(false); setBitrate(25_000_000); setBitrateAuto(false)
-      conn.sendFps(120, false)
-      conn.sendBitrate(25_000_000, false)
+      const br = lan ? 40_000_000 : 30_000_000
+      setFps(60); setFpsAuto(false); setBitrate(br); setBitrateAuto(false)
+      setChromaMode('444')
+      conn.sendFps(60, false)
+      conn.sendBitrate(br, false)
+      conn.sendChroma('444')
     } else {
-      conn.sendFps(fps, true)
-      conn.sendBitrate(bitrate, true)
+      const br = lan ? 15_000_000 : 6_000_000
+      setFps(60); setFpsAuto(true); setBitrate(br); setBitrateAuto(true)
+      conn.sendFps(60, true)
+      conn.sendBitrate(br, true)
     }
     if (lowLatency) {
       conn.sendLowLatency(true)
@@ -152,29 +166,39 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     setQualityPreset(preset)
     localStorage.setItem('remoter_quality_preset', preset)
     if (preset === 'auto') {
-      setFpsAuto(true)
-      setBitrateAuto(true)
+      const br = isTrueLan ? 15_000_000 : 6_000_000
+      setFps(60); setFpsAuto(true)
+      setBitrate(br); setBitrateAuto(true)
       handleSharpnessChange('low')
-      conn.sendFps(fps, true)
-      conn.sendBitrate(bitrate, true)
+      conn.sendFps(60, true)
+      conn.sendBitrate(br, true)
     } else if (preset === 'smooth') {
-      setFps(30); setFpsAuto(false)
-      setBitrate(4_000_000); setBitrateAuto(false)
-      handleSharpnessChange('off')
-      conn.sendFps(30, false)
-      conn.sendBitrate(4_000_000, false)
-    } else if (preset === 'hd') {
+      const br = isTrueLan ? 10_000_000 : 6_000_000
       setFps(60); setFpsAuto(false)
-      setBitrate(8_000_000); setBitrateAuto(false)
+      setBitrate(br); setBitrateAuto(false)
+      setChromaMode('420')
       handleSharpnessChange('low')
       conn.sendFps(60, false)
-      conn.sendBitrate(8_000_000, false)
-    } else if (preset === 'original') {
-      setFps(120); setFpsAuto(false)
-      setBitrate(25_000_000); setBitrateAuto(false)
+      conn.sendBitrate(br, false)
+      conn.sendChroma('420')
+    } else if (preset === 'hd') {
+      const br = isTrueLan ? 25_000_000 : 15_000_000
+      setFps(60); setFpsAuto(false)
+      setBitrate(br); setBitrateAuto(false)
+      setChromaMode('420')
       handleSharpnessChange('medium')
-      conn.sendFps(120, false)
-      conn.sendBitrate(25_000_000, false)
+      conn.sendFps(60, false)
+      conn.sendBitrate(br, false)
+      conn.sendChroma('420')
+    } else if (preset === 'original') {
+      const br = isTrueLan ? 40_000_000 : 30_000_000
+      setFps(60); setFpsAuto(false)
+      setBitrate(br); setBitrateAuto(false)
+      setChromaMode('444')
+      handleSharpnessChange('medium')
+      conn.sendFps(60, false)
+      conn.sendBitrate(br, false)
+      conn.sendChroma('444')
     }
   }
 

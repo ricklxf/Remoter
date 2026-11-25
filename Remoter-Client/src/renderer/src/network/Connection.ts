@@ -69,7 +69,23 @@ export class Connection {
   // pick up the already-arrived stream instead of waiting for a new one.
   private lastMediaStream: MediaStream | null = null
   private params: ConnectParams | null = null
+  private _isLan: boolean | null = null
   get isRelay(): boolean { return this.params?.mode === 'relay' }
+  get isLan(): boolean {
+    if (this.params?.mode !== 'direct' || !this.params.directUrl) return false
+    if (this._isLan !== null) return this._isLan
+    try {
+      const h = new URL(this.params.directUrl).hostname.toLowerCase()
+      if (h === 'localhost' || h === '::1' || h.endsWith('.local')) return true
+      const p = h.split('.').map(Number)
+      if (p.length === 4 && p.every(n => Number.isInteger(n) && n >= 0 && n <= 255)) {
+        if (p[0] === 127 || p[0] === 10) return true
+        if (p[0] === 192 && p[1] === 168) return true
+        if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true
+      }
+    } catch { /* ignore */ }
+    return false
+  }
   private statsTimer: ReturnType<typeof setInterval> | null = null
   private readonly e2e = new E2ECrypto()
   private serverOs = ''
@@ -182,6 +198,7 @@ export class Connection {
     this.lastMediaStream = null
 
     this.params = params
+    this._isLan = null
     this.e2e.reset()
     this.serverOs = ''
     this.queueGen++                       // invalidate any stale queue items from prior connection
@@ -722,6 +739,7 @@ export class Connection {
         const a = toInt(i.address), m = toInt(i.netmask)
         return a !== null && m !== null && m !== 0 && ((a & m) >>> 0) === ((target & m) >>> 0)
       })
+      this._isLan = lan
       this.sendJson({ type: 'net_hint', lan })
     } catch { /* no hint = agent falls back to its own RTT/loss judgment */ }
   }

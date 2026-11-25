@@ -615,6 +615,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                     height: Int(size.height),
                     isRelay: self.connectParams.mode == .relay
                 )
+                self.toolbarPanel?.updateState(isTrueLan: self.connection.isTrueLan)
             }
         }
 
@@ -659,32 +660,42 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func applyQualityPreset(_ preset: QualityPreset, sendToServer: Bool, showToastMessage: Bool) {
+        let isTrueLan = connection.isTrueLan
         settings.qualityPreset = preset
         UserDefaults.standard.set(preset.rawValue, forKey: Self.qualityPresetDefaultsKey)
 
+        var shouldSendChroma = false
         switch preset {
         case .auto:
+            settings.fps = 60
             settings.autoFps = true
+            settings.bitrateBps = isTrueLan ? 15_000_000 : 6_000_000
             settings.autoBitrate = true
             settings.sharpness = .low
         case .smooth:
-            settings.fps = 30
+            settings.fps = 60
             settings.autoFps = false
-            settings.bitrateBps = 4_000_000
+            settings.bitrateBps = isTrueLan ? 10_000_000 : 6_000_000
             settings.autoBitrate = false
-            settings.sharpness = .off
+            settings.chromaMode = .yuv420
+            settings.sharpness = .low
+            shouldSendChroma = true
         case .hd:
             settings.fps = 60
             settings.autoFps = false
-            settings.bitrateBps = 8_000_000
+            settings.bitrateBps = isTrueLan ? 25_000_000 : 15_000_000
             settings.autoBitrate = false
-            settings.sharpness = .low
-        case .original:
-            settings.fps = 120
-            settings.autoFps = false
-            settings.bitrateBps = 25_000_000
-            settings.autoBitrate = false
+            settings.chromaMode = .yuv420
             settings.sharpness = .medium
+            shouldSendChroma = true
+        case .original:
+            settings.fps = 60
+            settings.autoFps = false
+            settings.bitrateBps = isTrueLan ? 40_000_000 : 30_000_000
+            settings.autoBitrate = false
+            settings.chromaMode = .yuv444
+            settings.sharpness = .medium
+            shouldSendChroma = true
         }
 
         DeviceStore.shared.saveSettings(settings)
@@ -693,14 +704,19 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         if sendToServer {
             connection.sendFps(settings.fps, auto: settings.autoFps)
             connection.sendBitrate(settings.bitrateBps, auto: settings.autoBitrate)
+            if shouldSendChroma {
+                connection.sendChroma(settings.chromaMode)
+            }
         }
         toolbarPanel?.updateState(
             qualityPreset: preset,
             sharpness: settings.sharpness,
+            chromaMode: settings.chromaMode,
             fps: settings.fps,
             fpsAuto: settings.autoFps,
             bitrateBps: settings.bitrateBps,
-            bitrateAuto: settings.autoBitrate
+            bitrateAuto: settings.autoBitrate,
+            isTrueLan: isTrueLan
         )
         if showToastMessage {
             showToast("画质预设: \(preset.displayName)")

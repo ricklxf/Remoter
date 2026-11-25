@@ -715,37 +715,48 @@ public sealed class DesktopForm : Form
 
     private void ApplyQualityPreset(QualityPreset preset, bool persist = true)
     {
+        bool isTrueLan = _conn.IsDirectLan && (_conn.RttMs <= 0 || _conn.RttMs < 6);
         _settings.QualityPreset = preset;
+        bool sendChroma = false;
+
         switch (preset)
         {
             case QualityPreset.Auto:
+                _settings.Fps = 60;
                 _settings.AutoFps = true;
+                _settings.BitrateBps = isTrueLan ? 15_000_000 : 6_000_000;
                 _settings.AutoBitrate = true;
                 _settings.Sharpness = SharpnessLevel.Low;
                 break;
 
             case QualityPreset.Smooth:
-                _settings.Fps = 30;
+                _settings.Fps = 60;
                 _settings.AutoFps = false;
-                _settings.BitrateBps = 4_000_000;
+                _settings.BitrateBps = isTrueLan ? 10_000_000 : 6_000_000;
                 _settings.AutoBitrate = false;
-                _settings.Sharpness = SharpnessLevel.Off;
+                _settings.ChromaMode = ChromaMode.Yuv420;
+                _settings.Sharpness = SharpnessLevel.Low;
+                sendChroma = true;
                 break;
 
             case QualityPreset.Hd:
                 _settings.Fps = 60;
                 _settings.AutoFps = false;
-                _settings.BitrateBps = 8_000_000;
+                _settings.BitrateBps = isTrueLan ? 25_000_000 : 15_000_000;
                 _settings.AutoBitrate = false;
-                _settings.Sharpness = SharpnessLevel.Low;
+                _settings.ChromaMode = ChromaMode.Yuv420;
+                _settings.Sharpness = SharpnessLevel.Medium;
+                sendChroma = true;
                 break;
 
             case QualityPreset.Original:
-                _settings.Fps = 120;
+                _settings.Fps = 60;
                 _settings.AutoFps = false;
-                _settings.BitrateBps = 25_000_000;
+                _settings.BitrateBps = isTrueLan ? 40_000_000 : 30_000_000;
                 _settings.AutoBitrate = false;
+                _settings.ChromaMode = ChromaMode.Yuv444;
                 _settings.Sharpness = SharpnessLevel.Medium;
+                sendChroma = true;
                 break;
         }
 
@@ -761,10 +772,15 @@ public sealed class DesktopForm : Form
             fpsAuto: _settings.AutoFps,
             bitrate: _settings.BitrateBps,
             bitrateAuto: _settings.AutoBitrate,
+            chromaMode: _settings.ChromaMode,
             sharpness: _settings.Sharpness);
 
         _conn.SendFps(_settings.Fps, _settings.AutoFps);
         _conn.SendBitrate(_settings.BitrateBps, _settings.AutoBitrate);
+        if (sendChroma)
+        {
+            _conn.SendChroma(_settings.ChromaMode);
+        }
     }
 
     private void WireToolbarEvents()

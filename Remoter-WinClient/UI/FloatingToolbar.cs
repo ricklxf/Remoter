@@ -59,7 +59,7 @@ public sealed class FloatingToolbar : Form
     private string _scaleMode = "fit";
     private int _fps = 60;
     private bool _fpsAuto = true;
-    private int _bitrate = 8_000_000;
+    private int _bitrate = 15_000_000;
     private bool _bitrateAuto = true;
     private string _codec = "h264";
     private bool _audioOn;
@@ -449,9 +449,9 @@ public sealed class FloatingToolbar : Form
             ? $"自动 ({_fps}fps · {FormatBitrate(_bitrate)})"
             : "自动";
         AddRootCheckItem(_qualityMenu, autoLabel, _qualityPreset == QualityPreset.Auto, () => QualityPresetChanged?.Invoke(QualityPreset.Auto));
-        AddRootCheckItem(_qualityMenu, "流畅 (30fps · 4Mbps)", _qualityPreset == QualityPreset.Smooth, () => QualityPresetChanged?.Invoke(QualityPreset.Smooth));
-        AddRootCheckItem(_qualityMenu, "高清 (60fps · 8Mbps)", _qualityPreset == QualityPreset.Hd, () => QualityPresetChanged?.Invoke(QualityPreset.Hd));
-        AddRootCheckItem(_qualityMenu, "原画 (120fps · 25Mbps)", _qualityPreset == QualityPreset.Original, () => QualityPresetChanged?.Invoke(QualityPreset.Original));
+        AddRootCheckItem(_qualityMenu, "流畅 (60fps)", _qualityPreset == QualityPreset.Smooth, () => QualityPresetChanged?.Invoke(QualityPreset.Smooth));
+        AddRootCheckItem(_qualityMenu, "高清 (60fps)", _qualityPreset == QualityPreset.Hd, () => QualityPresetChanged?.Invoke(QualityPreset.Hd));
+        AddRootCheckItem(_qualityMenu, "原画 (60fps · 真彩4:4:4)", _qualityPreset == QualityPreset.Original, () => QualityPresetChanged?.Invoke(QualityPreset.Original));
 
         _qualityMenu.Items.Add(new ToolStripSeparator());
 
@@ -515,7 +515,7 @@ public sealed class FloatingToolbar : Form
         // Manual Bitrate
         var brMenu = new ToolStripMenuItem($"手动码率 ({(_bitrateAuto ? "自动" : FormatBitrate(_bitrate))})");
         AddCheckItem(brMenu, $"自动 ({FormatBitrate(_bitrate)})", _bitrateAuto, () => BitrateChanged?.Invoke(_bitrate, true));
-        foreach (int b in new[] { 2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000 })
+        foreach (int b in new[] { 2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000, 30_000_000, 40_000_000 })
         {
             int val = b;
             AddCheckItem(brMenu, $"{val / 1_000_000} Mbps", !_bitrateAuto && _bitrate == val, () => BitrateChanged?.Invoke(val, false));

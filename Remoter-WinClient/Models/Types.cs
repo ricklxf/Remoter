@@ -213,7 +213,7 @@ public sealed class ClientSettings
 
     public int Fps { get; set; } = 60;
     public bool AutoFps { get; set; } = true;
-    public int BitrateBps { get; set; } = 8_000_000;
+    public int BitrateBps { get; set; } = 15_000_000;
     public bool AutoBitrate { get; set; } = true;
     public bool AudioEnabled { get; set; } = true;
     public bool ClipboardSyncEnabled { get; set; } = true;

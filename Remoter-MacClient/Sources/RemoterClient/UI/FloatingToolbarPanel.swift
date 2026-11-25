@@ -56,8 +56,9 @@ public final class FloatingToolbarPanel: NSPanel {
     private var scaleMode: ScaleMode = .fit
     private var fps: Int = 60
     private var fpsAuto: Bool = true
-    private var bitrateBps: Int = 8_000_000
+    private var bitrateBps: Int = 15_000_000
     private var bitrateAuto: Bool = true
+    private var isTrueLan: Bool = true
     private var codec: VideoCodec = .h264
     private var audioOn: Bool = true
     private var volume: Float = 1.0
@@ -366,7 +367,8 @@ public final class FloatingToolbarPanel: NSPanel {
         isFullscreen: Bool? = nil,
         statsHudVisible: Bool? = nil,
         virtualDisplayOn: Bool? = nil,
-        matchLocalHiDPI: Bool? = nil
+        matchLocalHiDPI: Bool? = nil,
+        isTrueLan: Bool? = nil
     ) {
         var needsMenuRebuild = false
         if let qualityPreset { self.qualityPreset = qualityPreset; needsMenuRebuild = true }
@@ -385,6 +387,7 @@ public final class FloatingToolbarPanel: NSPanel {
         if let statsHudVisible { self.statsHudVisible = statsHudVisible; needsMenuRebuild = true }
         if let virtualDisplayOn { self.virtualDisplayOn = virtualDisplayOn; needsMenuRebuild = true }
         if let matchLocalHiDPI { self.matchLocalHiDPI = matchLocalHiDPI; needsMenuRebuild = true }
+        if let isTrueLan, self.isTrueLan != isTrueLan { self.isTrueLan = isTrueLan; needsMenuRebuild = true }
 
         if let audioOn {
             self.audioOn = audioOn
@@ -474,9 +477,9 @@ public final class FloatingToolbarPanel: NSPanel {
 
         let presetItems: [(QualityPreset, String)] = [
             (.auto,     "自动"),
-            (.smooth,   "流畅 (30fps · 4Mbps)"),
-            (.hd,       "高清 (60fps · 8Mbps)"),
-            (.original, "原画 (120fps · 25Mbps)")
+            (.smooth,   isTrueLan ? "流畅 (60fps · 10Mbps)" : "流畅 (60fps · 6Mbps)"),
+            (.hd,       isTrueLan ? "高清 (60fps · 25Mbps)" : "高清 (60fps · 15Mbps)"),
+            (.original, isTrueLan ? "原画 (60fps · 40Mbps · 4:4:4)" : "原画 (60fps · 30Mbps · 4:4:4)")
         ]
         for (preset, title) in presetItems {
             let item = NSMenuItem(title: title, action: #selector(selectQualityPreset(_:)), keyEquivalent: "")
@@ -574,7 +577,7 @@ public final class FloatingToolbarPanel: NSPanel {
         autoBrItem.target = self
         autoBrItem.state = bitrateAuto ? .on : .off
         brSub.addItem(autoBrItem)
-        for val in [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000] {
+        for val in [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000, 30_000_000, 40_000_000] {
             let item = NSMenuItem(title: "\(val / 1_000_000) Mbps", action: #selector(selectFixedBitrate(_:)), keyEquivalent: "")
             item.target = self
             item.tag = val

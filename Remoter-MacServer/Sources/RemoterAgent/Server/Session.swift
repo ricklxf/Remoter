@@ -199,7 +199,7 @@ final class Session {
     // Top tier raised to 25M for pristine LAN bitrate — WebRTCAgent's lanFloorBps
     // (RTT-gated minimum) now sits at 12M, so the ceiling gives room for 25M
     // pristine stream quality.
-    private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000]
+    private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000, 40_000_000]
     private static let lanStartupBitrateIndex: Int = autoBitrateTiers.firstIndex(of: 15_000_000) ?? max(0, autoBitrateTiers.count - 2)
     // Independent — the client can put either on auto while pinning the
     // other to a manual value, matching the fact they're genuinely two
@@ -741,7 +741,7 @@ final class Session {
                     applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
                 }
             } else {
-                applyBitrate(bitrate)
+                applyBitrate(max(500_000, min(50_000_000, bitrate)))
             }
 
         case .resolutionSet(let tier, let customW, let customH, let scale):
@@ -1800,7 +1800,7 @@ final class Session {
         let dt = Date().timeIntervalSince(sentTick)
         if dt >= 5 {
             let transportLabel = usingRtpVideo ? "rtp" : (usingUdpVideo ? "udp" : (usingWebRTCVideo ? "webrtc" : "ws"))
-            let capKbps = (udpLearnedCeilingBps ?? (clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000))) / 1000
+            let capKbps = (udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 40_000_000))) / 1000
             let lossPct = String(format: "%.1f%%", udpLastLossRatio * 100.0)
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(transportLabel) br=\(currentBitrate/1000)k cap=\(capKbps)k loss=\(lossPct) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
@@ -1910,7 +1910,7 @@ final class Session {
         scrollBoostLock.unlock()
 
         if starting {
-            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 8_000_000 : 37_500_000)
+            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : 50_000_000)
             let boosted = min(Int(Double(currentBitrate) * 1.5), cap)
             if boosted > currentBitrate {
                 encoder?.setBitrate(boosted)
@@ -2027,7 +2027,7 @@ final class Session {
             screenWidth: Int,
             scrollBoostActive: Bool
         ) -> StepAction {
-            let hardCeilingBps = clientNotOnLan ? 8_000_000 : 25_000_000
+            let hardCeilingBps = clientNotOnLan ? 12_000_000 : 40_000_000
             // Keep WAN floor readable (1.5M 2K / 1.2M 1080p) so text stays legible and
             // VideoToolbox never starves, while still cutting WAN traffic 4-5x under congestion.
             let floorBps = clientNotOnLan
@@ -2144,7 +2144,7 @@ final class Session {
             applyFps(fps, notify: false)
         }
         if let br = restoreBr, !manualBitrateSelected, br > currentBitrate {
-            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 8_000_000 : 25_000_000)
+            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : 40_000_000)
             applyBitrate(min(br, cap), notify: false)
         }
         notifyQualityActive()
@@ -2222,7 +2222,7 @@ final class Session {
         udpCleanBitrateStreak = state.cleanStreak
         udpStableAtCapStreak = state.stableAtCapStreak
 
-        let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 40_000_000)
         switch action {
         case .down(let nextBps):
             cancelScrollBoost()
@@ -2275,7 +2275,7 @@ final class Session {
     ) {
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
 
-        let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
+        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 40_000_000)
         let floorBps = clientNotOnLan
             ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)

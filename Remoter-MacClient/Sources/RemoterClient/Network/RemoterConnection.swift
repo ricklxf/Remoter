@@ -1326,6 +1326,26 @@ public final class RemoterConnection: @unchecked Sendable {
         }
     }
 
+    /// True LAN = direct mode (not Relay) AND local non-VPN/utun subnet match AND (RTT unknown or < 6ms).
+    /// WireGuard/VPN tunnels (utun/wg/ipsec/ppp or RTT >= 6ms) return false so presets use safe WAN/WG tiers.
+    public var isTrueLan: Bool {
+        stateLock.lock()
+        let params = _params
+        let rtt = _rttMs
+        stateLock.unlock()
+
+        guard let params, params.mode == .direct,
+              let url = try? params.buildWebSocketURL(),
+              let host = url.host,
+              let targetIP = Self.parseIPv4HostOrder(host) else {
+            return false
+        }
+        guard Self.isSameIPv4Subnet(targetHostOrder: targetIP) else {
+            return false
+        }
+        return rtt <= 0 || rtt < 6
+    }
+
     // MARK: - LAN Subnet Detection (net_hint via getifaddrs)
 
     private func sendNetHint() {
@@ -1364,7 +1384,17 @@ public final class RemoterConnection: @unchecked Sendable {
         while let current = ptr {
             let flags = Int32(current.pointee.ifa_flags)
             let isUp = (flags & IFF_UP) != 0
+            let isPointToPoint = (flags & IFF_POINTOPOINT) != 0
+            let ifName = current.pointee.ifa_name.map { String(cString: $0).lowercased() } ?? ""
+            let isTunnelInterface = isPointToPoint
+                || ifName.hasPrefix("utun")
+                || ifName.hasPrefix("ipsec")
+                || ifName.hasPrefix("ppp")
+                || ifName.hasPrefix("wg")
+                || ifName.hasPrefix("tun")
+                || ifName.hasPrefix("tap")
             if isUp,
+               !isTunnelInterface,
                let addrPtr = current.pointee.ifa_addr,
                addrPtr.pointee.sa_family == UInt8(AF_INET),
                let maskPtr = current.pointee.ifa_netmask {

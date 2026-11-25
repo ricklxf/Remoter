@@ -440,7 +440,7 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         preferredCodec: VideoCodec = .h264,
         fps: Int = 60,
         autoFps: Bool = true,
-        bitrateBps: Int = 8_000_000,
+        bitrateBps: Int = 15_000_000,
         autoBitrate: Bool = true,
         audioEnabled: Bool = true,
         audioVolume: Float = 1.0,
@@ -485,7 +485,7 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         self.preferredCodec = try c.decodeIfPresent(VideoCodec.self, forKey: .preferredCodec) ?? .h264
         self.fps = try c.decodeIfPresent(Int.self, forKey: .fps) ?? 60
         self.autoFps = try c.decodeIfPresent(Bool.self, forKey: .autoFps) ?? true
-        self.bitrateBps = try c.decodeIfPresent(Int.self, forKey: .bitrateBps) ?? 8_000_000
+        self.bitrateBps = try c.decodeIfPresent(Int.self, forKey: .bitrateBps) ?? 15_000_000
         self.autoBitrate = try c.decodeIfPresent(Bool.self, forKey: .autoBitrate) ?? true
         self.audioEnabled = try c.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? true
         self.audioVolume = try c.decodeIfPresent(Float.self, forKey: .audioVolume) ?? 1.0

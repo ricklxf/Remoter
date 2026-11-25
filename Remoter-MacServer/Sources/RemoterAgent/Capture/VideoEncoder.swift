@@ -87,10 +87,11 @@ final class VideoEncoder {
     }
 
     /// Pure burst-budget calculation shared with regression self-tests.
-    /// Guarantees >= 500 KB/s burst headroom (UU `WebRTC-FrameDropper/Disabled` equivalent)
-    /// so VideoToolbox never silently drops frames after a keyframe when bitrate adapts down.
+    /// Guarantees >= 260 KB/s (~2.08 Mbps) burst headroom so VideoToolbox never silently drops
+    /// frames after a keyframe at 1.2-1.5 Mbps, while capping scroll bursts at 1.35x target
+    /// so a 2.0-2.5 Mbps WAN stream never spikes to 3.6-4.0 Mbps and triggers bufferbloat.
     static func computeBurstByteLimit(bitrateBps: Int) -> Int64 {
-        Int64(max(Double(bitrateBps) * 2.0 / 8.0, 500_000.0))
+        Int64(max(Double(bitrateBps) * 1.35 / 8.0, 260_000.0))
     }
 
     private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int) {

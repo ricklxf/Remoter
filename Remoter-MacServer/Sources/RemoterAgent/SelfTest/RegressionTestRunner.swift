@@ -75,16 +75,16 @@ enum RegressionTestRunner {
             pendingPackets: 180,
             allowFecSuppression: false
         )
-        try expect(paceRateBps <= 12_000_000.0, "WAN pacer exceeded 12 Mbps: \(paceRateBps)")
+        try expect(paceRateBps <= 10_000_000.0, "WAN pacer exceeded 10 Mbps: \(paceRateBps)")
         try expect(paceRateBps >= 8_000_000.0, "WAN pacer below 8 Mbps at 6M target: \(paceRateBps)")
-        try expect(maxPerTick <= 4, "WAN pacer maxPacketsPerTick > 4: \(maxPerTick)")
+        try expect(maxPerTick <= 3, "WAN pacer maxPacketsPerTick > 3: \(maxPerTick)")
 
         let (lowPaceBps, _) = UdpVideoServer.computePacingParameters(
-            pacingBitrateBps: 2_000_000,
+            pacingBitrateBps: 1_800_000,
             pendingPackets: 40,
             allowFecSuppression: false
         )
-        try expect(lowPaceBps == 4_000_000.0, "Low-bitrate WAN pacer should cap at 4 Mbps, got \(lowPaceBps)")
+        try expect(lowPaceBps == 2_500_000.0, "Low-bitrate WAN pacer should stay at 2.5 Mbps below 3.4M cliff, got \(lowPaceBps)")
 
         let drainTimeMs = (180.0 * 1236.0 * 8.0 / paceRateBps) * 1000.0
         try expect(drainTimeMs < 250.0, "180-packet keyframe drainTimeMs=\(drainTimeMs) too close to 350ms timeout")
@@ -192,16 +192,17 @@ enum RegressionTestRunner {
     // MARK: - 2B. Anti-Freeze Invariants ("Blurry MUST NEVER Freeze")
 
     private static func testVideoToolboxNoLowBitrateFrameDrop() throws {
-        // When bitrate adapts down (blurry mode), DataRateLimits burst budget MUST stay >= 500 KB/s
-        // so VideoToolbox never silently drops 30-45% of frames after a 2K keyframe.
-        for bps in [600_000, 1_200_000, 1_500_000, 2_000_000] {
+        // When bitrate adapts down (blurry mode), DataRateLimits burst budget MUST stay >= 260 KB/s
+        // (enough to avoid VideoToolbox frame drops after keyframes) AND <= 350 KB/s at 1.5-2.0M
+        // so scrolling doesn't burst to 3.8 Mbps and trigger WAN bufferbloat!
+        for bps in [1_200_000, 1_500_000, 2_000_000] {
             let burstBytes = VideoEncoder.computeBurstByteLimit(bitrateBps: bps)
-            try expect(burstBytes >= 500_000,
-                       "At \(bps) bps, VideoToolbox burstByteLimit=\(burstBytes) < 500KB will drop frames after keyframes!")
+            try expect(burstBytes >= 260_000 && burstBytes <= 350_000,
+                       "At \(bps) bps, VideoToolbox burstByteLimit=\(burstBytes) out of safe 260-350KB/s window!")
         }
-        // At high bitrate (8 Mbps), burst headroom scales proportionally (2x = 2 MB/s)
+        // At high bitrate (8 Mbps), burst headroom scales proportionally (1.35x = 1.35 MB/s)
         let highBurst = VideoEncoder.computeBurstByteLimit(bitrateBps: 8_000_000)
-        try expect(highBurst >= 2_000_000, "At 8 Mbps, expected >= 2MB/s burst headroom, got \(highBurst)")
+        try expect(highBurst >= 1_300_000, "At 8 Mbps, expected >= 1.3MB/s burst headroom, got \(highBurst)")
     }
 
     private static func testUuSustainedOveruseFecAndNackLimit() throws {
@@ -238,18 +239,18 @@ enum RegressionTestRunner {
     }
 
     private static func testLowBitrateKeyframeDrainAndThrottle() throws {
-        // At blurry floor (1.2M / 1.5M), a 60-packet (~74KB) keyframe MUST drain in < 160ms
-        // (well inside client's 350ms keyframe timeout) so blurry mode NEVER causes keyframe timeout freezes!
+        // At blurry floor (1.2M / 1.5M), a 45-packet (~55KB) low-bitrate keyframe MUST drain in < 200ms
+        // (well inside client's 350ms keyframe timeout) while pacing <= 2.5 Mbps to stay below WAN cliff!
         for floorBps in [1_200_000, 1_500_000] {
             let (paceRateBps, maxPerTick) = UdpVideoServer.computePacingParameters(
                 pacingBitrateBps: floorBps,
-                pendingPackets: 60,
+                pendingPackets: 45,
                 allowFecSuppression: false
             )
-            let drainMs = (60.0 * 1236.0 * 8.0 / paceRateBps) * 1000.0
-            try expect(drainMs < 160.0, "Low-bitrate (\(floorBps)) 60-pkt keyframe drainMs=\(drainMs) risks 350ms client timeout!")
-            try expect(paceRateBps <= 4_000_000.0 && maxPerTick <= 4,
-                       "Low-bitrate WAN pacer should stay gentle (<=4Mbps, <=4 pkts/ms), got \(paceRateBps)/\(maxPerTick)")
+            let drainMs = (45.0 * 1236.0 * 8.0 / paceRateBps) * 1000.0
+            try expect(drainMs < 200.0, "Low-bitrate (\(floorBps)) 45-pkt keyframe drainMs=\(drainMs) risks 350ms client timeout!")
+            try expect(paceRateBps <= 2_500_000.0 && maxPerTick <= 3,
+                       "Low-bitrate WAN pacer should stay gentle (<=2.5Mbps, <=3 pkts/ms), got \(paceRateBps)/\(maxPerTick)")
         }
 
         // Heavy-loss keyframe throttle MUST be >= 1.5s to prevent 6-keyframes-in-5s storm

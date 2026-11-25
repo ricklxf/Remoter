@@ -1243,11 +1243,11 @@ final class UdpVideoServer {
     ) -> (paceRateBps: Double, maxPacketsPerTick: Int) {
         let estQueuedBytes = Double(pendingPackets) * 1236.0
         if !allowFecSuppression {
-            // WAN / tunnel mode: pace proportionally to target bitrate (1.5x, floor 4 Mbps,
-            // ceiling 12 Mbps, max 4 pkts/ms) so scroll/keyframe bursts don't overflow a
-            // 3-5 Mbps WAN/VPN router queue while still draining a 40KB keyframe in ~80ms.
-            let targetBps = max(Double(pacingBitrateBps) * 1.5, 4_000_000.0)
-            return (min(targetBps, 12_000_000.0), 4)
+            // WAN / tunnel mode: pace tightly at 1.35x target bitrate (floor 2.5 Mbps,
+            // ceiling 10 Mbps, max 3 pkts/ms) so scroll bursts stay below a 3.4 Mbps
+            // WAN/VPN cliff while a 40KB keyframe still drains in ~128ms (< 350ms timeout).
+            let targetBps = max(Double(pacingBitrateBps) * 1.35, 2_500_000.0)
+            return (min(targetBps, 10_000_000.0), 3)
         } else {
             // LAN mode: drain large frames within 14ms for sub-frame latency
             let drainTargetBps = (estQueuedBytes / 0.014) * 8.0

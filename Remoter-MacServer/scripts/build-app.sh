@@ -162,15 +162,22 @@ echo "✅ TLS 证书已嵌入（PEM 格式，BoringSSL 直接加载）"
 echo ""
 
 # ── 代码签名 ─────────────────────────────────────────────────────────────
-# designated requirement 只包含 bundle ID，不绑定证书 hash。
-# 这样 TCC 的辅助功能授权在每次 rebuild 后仍然有效（只需授权一次）。
-DR='=designated => identifier "com.remoter.agent"'
-# 只找代码签名身份（code signing），避免把 TLS 证书误认为签名证书
-if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Remoter"'; then
+# 优先使用本地持久化代码签名证书 "Remoter"（让 codesign 生成绑定该证书哈希的
+# 标准 designated requirement）：macOS 15+/27 的屏幕/系统音频录制 TCC 会稳定
+# 信任同一证书签出的每次 rebuild，彻底告别每次重装弹音频权限框。
+# 若无证书或 SSH 会话下钥匙串被锁导致签名失败，自动回退到 ad-hoc 签名。
+SIGNED_WITH_CERT=0
+if security find-identity -p codesigning 2>/dev/null | grep -q '"Remoter"'; then
     echo "▶ Signing with \"Remoter\" identity…"
-    codesign --force --deep --sign "Remoter" --requirements "$DR" "$APP_DIR"
-    echo "✅ Signed (designated req: bundle ID only)"
-else
+    if codesign --force --deep --sign "Remoter" "$APP_DIR" 2>/dev/null; then
+        echo "✅ Signed with \"Remoter\" certificate"
+        SIGNED_WITH_CERT=1
+    else
+        echo "⚠️  \"Remoter\" 证书签名失败（可能是 SSH 下登录钥匙串已锁定），回退到 ad-hoc…"
+    fi
+fi
+if [ "$SIGNED_WITH_CERT" -eq 0 ]; then
+    DR='=designated => identifier "com.remoter.agent"'
     echo "▶ Signing ad-hoc (designated req: bundle ID only)…"
     codesign --force --deep --sign - --requirements "$DR" "$APP_DIR"
     echo "✅ Signed ad-hoc"

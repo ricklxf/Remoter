@@ -193,7 +193,13 @@ def build_telegram_html(
     return "\n".join(lines)
 
 
-def send_telegram_message(token: str, chat_id: str, html_text: str) -> Dict[str, Any]:
+def send_telegram_message(
+    token: str,
+    chat_id: str,
+    html_text: str,
+    retries: int = 5,
+    delay: float = 3.0,
+) -> Dict[str, Any]:
     api_url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -202,21 +208,30 @@ def send_telegram_message(token: str, chat_id: str, html_text: str) -> Dict[str,
         "disable_web_page_preview": True,
     }
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        api_url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body)
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Telegram API HTTP {exc.code}: {err_body}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Telegram API network error: {exc.reason}") from exc
+    last_err = ""
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(
+            api_url,
+            data=data,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            last_err = f"Telegram API HTTP {exc.code}: {err_body}"
+            # Do not retry 4xx client errors (except 429)
+            if 400 <= exc.code < 500 and exc.code != 429:
+                raise RuntimeError(last_err) from None
+        except Exception as exc:
+            # Never leak bot token from exception URLs
+            last_err = f"Telegram API error ({type(exc).__name__}): {exc}".replace(token, "<REDACTED>")
+        if attempt < retries:
+            time.sleep(delay)
+    raise RuntimeError(f"Telegram API failed after {retries} attempts: {last_err}")
 
 
 def queue_pending_notification(record: Dict[str, Any]) -> None:

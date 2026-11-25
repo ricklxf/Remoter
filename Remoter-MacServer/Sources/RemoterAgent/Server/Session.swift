@@ -1887,9 +1887,10 @@ final class Session {
     ///   and steps bitrate down.
     /// - Below learned ceiling: step up +15% after 3 clean active windows (6s).
     /// - At learned ceiling: hold for 15s cooldown + 5 clean active windows (10s), then probe +15%.
-    /// Extreme-congestion survival guard: only when sustained packet loss >= 15%
-    /// for 3 consecutive 2s windows (6s), temporarily step FPS down to 30fps to cut
-    /// tunnel packet rate in half, then restore original FPS after 3 clean windows (6s).
+    /// Extreme-congestion survival guard: never let the user freeze under severe WAN loss.
+    /// - Instant trigger: >= 20% loss in a single 2s window -> immediately drop to 30fps.
+    /// - Sustained trigger: >= 10% loss for 2 consecutive 2s windows (4s) -> drop to 30fps.
+    /// - Fast restore: < 2.5% loss for 2 consecutive 2s windows (4s) -> restore original FPS.
     struct UdpSevereFpsGuard {
         var severeLossStreak: Int = 0
         var cleanRestoreStreak: Int = 0
@@ -1907,19 +1908,26 @@ final class Session {
                 savedFps = nil
                 return nil
             }
-            if lossRatio >= 0.15 && sentPackets >= 120 {
+            if lossRatio >= 0.20 && sentPackets >= 80 {
+                cleanRestoreStreak = 0
+                severeLossStreak = 0
+                if currentFps > 30 && savedFps == nil {
+                    savedFps = currentFps
+                    return 30
+                }
+            } else if lossRatio >= 0.10 && sentPackets >= 100 {
                 cleanRestoreStreak = 0
                 severeLossStreak += 1
-                if severeLossStreak >= 3 && currentFps > 30 && savedFps == nil {
+                if severeLossStreak >= 2 && currentFps > 30 && savedFps == nil {
                     severeLossStreak = 0
                     savedFps = currentFps
                     return 30
                 }
-            } else if lossRatio < 0.02 {
+            } else if lossRatio < 0.025 {
                 severeLossStreak = 0
                 if let target = savedFps {
                     cleanRestoreStreak += 1
-                    if cleanRestoreStreak >= 3 {
+                    if cleanRestoreStreak >= 2 {
                         cleanRestoreStreak = 0
                         savedFps = nil
                         return target
@@ -1934,6 +1942,9 @@ final class Session {
     }
 
     /// Pure UDP bitrate adaptation state machine shared by `handleUdpLossFeedback` and regression tests.
+    /// Weak-network anti-freeze design: allow bitrate to drop as low as 800k (2K) / 600k (1080p)
+    /// with severity-proportional backoff so the stream stays fluid instead of stalling, then
+    /// rapidly ramp back up once loss clears (< 1.5%).
     struct UdpBitrateState {
         var currentBitrate: Int
         var learnedCeilingBps: Int? = nil
@@ -1958,21 +1969,33 @@ final class Session {
         ) -> StepAction {
             let hardCeilingBps = clientNotOnLan ? 8_000_000 : 25_000_000
             let floorBps = clientNotOnLan
-                ? ((screenWidth >= 2560) ? 2_500_000 : 2_000_000)
+                ? ((screenWidth >= 2560) ? 800_000 : 600_000)
                 : ((screenWidth >= 2560) ? 5_000_000 : 4_000_000)
-            let minLossPackets: UInt64 = clientNotOnLan ? 120 : 400
+            let minLossPackets: UInt64 = clientNotOnLan ? 80 : 400
             let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
 
             if lossRatio >= lossThreshold && sentPackets >= minLossPackets {
                 cleanStreak = 0
                 stableAtCapStreak = 0
-                let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.75).rounded())))
-                let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.80).rounded())))
+                let dropFactor: Double
+                let capFactor: Double
+                if lossRatio >= 0.25 {
+                    dropFactor = 0.45
+                    capFactor = 0.55
+                } else if lossRatio >= 0.12 {
+                    dropFactor = 0.60
+                    capFactor = 0.68
+                } else {
+                    dropFactor = 0.75
+                    capFactor = 0.80
+                }
+                let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * dropFactor).rounded())))
+                let learnedCap = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * capFactor).rounded())))
                 learnedCeilingBps = max(floorBps, min(learnedCeilingBps ?? hardCeilingBps, learnedCap))
                 lossCapSetAt = now
                 currentBitrate = nextBps
                 return .down(nextBps)
-            } else if lossRatio < 0.01 {
+            } else if lossRatio < 0.015 {
                 guard !scrollBoostActive else { return .hold }
                 let minRampPackets: UInt64 = (currentBitrate < 4_000_000) ? 10 : 60
                 guard sentPackets >= minRampPackets else { return .hold }
@@ -1981,9 +2004,10 @@ final class Session {
                 if currentBitrate < effectiveCeiling {
                     stableAtCapStreak = 0
                     cleanStreak += 1
-                    if cleanStreak >= 3 {
+                    if cleanStreak >= 2 {
                         cleanStreak = 0
-                        let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * 1.20).rounded())))
+                        let stepFactor: Double = (currentBitrate < 3_000_000) ? 1.45 : 1.25
+                        let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * stepFactor).rounded())))
                         if nextBps != currentBitrate {
                             currentBitrate = nextBps
                             return .up(nextBps)
@@ -1991,11 +2015,20 @@ final class Session {
                     }
                 } else if let cap = learnedCeilingBps {
                     cleanStreak = 0
-                    guard now - lossCapSetAt >= 12.0 else { return .hold }
+                    let probeCooldown: Double = (currentBitrate < 3_000_000) ? 4.0 : 6.0
+                    guard now - lossCapSetAt >= probeCooldown else { return .hold }
                     stableAtCapStreak += 1
-                    if stableAtCapStreak >= 3 {
+                    if stableAtCapStreak >= 2 {
                         stableAtCapStreak = 0
-                        let probedCap = min(hardCeilingBps, Int((Double(cap) * 1.25).rounded()))
+                        let probeFactor: Double
+                        if cap < 3_000_000 {
+                            probeFactor = 1.50
+                        } else if cap < 6_000_000 {
+                            probeFactor = 1.30
+                        } else {
+                            probeFactor = 1.20
+                        }
+                        let probedCap = min(hardCeilingBps, Int((Double(cap) * probeFactor).rounded()))
                         learnedCeilingBps = probedCap >= hardCeilingBps ? nil : probedCap
                         if probedCap > currentBitrate {
                             currentBitrate = probedCap
@@ -2114,7 +2147,7 @@ final class Session {
 
         let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
         let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 2_500_000 : 2_000_000)
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 800_000 : 600_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 

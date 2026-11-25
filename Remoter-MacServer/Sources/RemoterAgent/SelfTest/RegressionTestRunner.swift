@@ -105,18 +105,18 @@ enum RegressionTestRunner {
                 throw Failure(message: "Expected .down on 10% loss, got \(action)")
             }
         }
-        try expect(state.currentBitrate >= 2_000_000, "1080p WAN floor dropped below 2 Mbps: \(state.currentBitrate)")
+        try expect(state.currentBitrate >= 600_000, "1080p WAN anti-freeze floor dropped below 600 kbps: \(state.currentBitrate)")
 
-        // Simulate 60s of clean idle (6fps = 12 pkts / 2s)
-        for _ in 0..<30 {
+        // Simulate 24s of clean idle (6fps = 12 pkts / 2s): must rapidly recover >= 4 Mbps
+        for _ in 0..<12 {
             t += 2.0
             _ = state.step(
                 lossRatio: 0.0, sentPackets: 12, now: t,
                 clientNotOnLan: true, screenWidth: 1920, scrollBoostActive: false
             )
         }
-        try expect(state.currentBitrate >= 3_500_000,
-                   "Idle session stayed stuck at \(state.currentBitrate) bps instead of recovering >= 3.5 Mbps")
+        try expect(state.currentBitrate >= 4_000_000,
+                   "Idle session stayed stuck at \(state.currentBitrate) bps instead of rapidly recovering >= 4 Mbps")
     }
 
     private static func testWan2KCongestionAndRecovery() throws {
@@ -129,16 +129,17 @@ enum RegressionTestRunner {
                 clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: true
             )
         }
-        try expect(state.currentBitrate == 2_500_000, "2K WAN floor expected 2.5 Mbps, got \(state.currentBitrate)")
+        try expect(state.currentBitrate == 800_000, "2K WAN anti-freeze floor expected 800 kbps, got \(state.currentBitrate)")
 
-        for _ in 0..<60 {
+        // Fast recovery: 800k -> 8M within 20 clean 2s windows (40s max)
+        for _ in 0..<20 {
             t += 2.0
             _ = state.step(
                 lossRatio: 0.0, sentPackets: 120, now: t,
                 clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: false
             )
         }
-        try expect(state.currentBitrate == 8_000_000, "WAN session failed to recover to 8 Mbps: \(state.currentBitrate)")
+        try expect(state.currentBitrate == 8_000_000, "WAN session failed rapid recovery to 8 Mbps within 40s: \(state.currentBitrate)")
         try expect(state.learnedCeilingBps == nil, "Learned ceiling should clear at hard ceiling")
     }
 
@@ -156,22 +157,23 @@ enum RegressionTestRunner {
         var guardState = Session.UdpSevereFpsGuard()
         var fps = 60
 
-        // 2 windows of 18% loss should NOT prematurely slash 60fps
-        try expect(guardState.step(lossRatio: 0.18, sentPackets: 200, currentFps: fps, manualFpsSelected: false) == nil,
-                   "1st severe window must not drop FPS yet")
-        try expect(guardState.step(lossRatio: 0.22, sentPackets: 200, currentFps: fps, manualFpsSelected: false) == nil,
-                   "2nd severe window must not drop FPS yet")
-
-        // 3rd consecutive window (6s of >=15% loss) MUST step down to 30fps
-        let downFps = guardState.step(lossRatio: 0.16, sentPackets: 200, currentFps: fps, manualFpsSelected: false)
-        try expect(downFps == 30, "3rd consecutive >=15% loss window must step FPS down to 30, got \(String(describing: downFps))")
+        // 1st window of 12% loss should NOT prematurely slash 60fps
+        try expect(guardState.step(lossRatio: 0.12, sentPackets: 200, currentFps: fps, manualFpsSelected: false) == nil,
+                   "1st 12% window must not drop FPS yet")
+        // 2nd consecutive >=10% window (4s) MUST step down to 30fps
+        let downFps = guardState.step(lossRatio: 0.14, sentPackets: 200, currentFps: fps, manualFpsSelected: false)
+        try expect(downFps == 30, "2nd consecutive >=10% loss window must step FPS down to 30, got \(String(describing: downFps))")
         fps = downFps ?? fps
 
-        // 3 clean windows (<2% loss) MUST restore original 60fps
+        // 2 clean windows (<2.5% loss, 4s) MUST rapidly restore original 60fps
         try expect(guardState.step(lossRatio: 0.005, sentPackets: 120, currentFps: fps, manualFpsSelected: false) == nil, "1st clean window")
-        try expect(guardState.step(lossRatio: 0.0, sentPackets: 120, currentFps: fps, manualFpsSelected: false) == nil, "2nd clean window")
         let upFps = guardState.step(lossRatio: 0.01, sentPackets: 120, currentFps: fps, manualFpsSelected: false)
-        try expect(upFps == 60, "3rd clean window must restore 60fps, got \(String(describing: upFps))")
+        try expect(upFps == 60, "2nd clean window must restore 60fps, got \(String(describing: upFps))")
+        fps = upFps ?? fps
+
+        // Catastrophic >=20% loss MUST drop to 30fps on the VERY FIRST window
+        let instantDown = guardState.step(lossRatio: 0.35, sentPackets: 120, currentFps: fps, manualFpsSelected: false)
+        try expect(instantDown == 30, "Catastrophic >=20% loss must drop to 30fps immediately, got \(String(describing: instantDown))")
     }
 
     // MARK: - 3. Live Loopback UDP Video + AES-GCM + NACK Retransmit

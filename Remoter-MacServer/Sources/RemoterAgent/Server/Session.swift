@@ -265,6 +265,14 @@ final class Session {
     // Also reaps half-open zombie TCP sessions after 15s of zero inbound client traffic.
     private var keepaliveTimer: DispatchSourceTimer?
     private var lastClientActivityAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
+    // WAN background-window bandwidth saver: if no mouse/keyboard/scroll input arrives for >= 12s
+    // on a WAN UDP session, step down to 20fps / 1.5Mbps so an inactive background Mac never
+    // steals 2.5-5 Mbps from the active Mac sharing the same WAN tunnel; restores instantly (<1ms)
+    // on the first user input event.
+    private var lastUserInputAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
+    private var wanBgSaverActive = false
+    private var wanBgSavedFps: Int? = nil
+    private var wanBgSavedBitrate: Int? = nil
 
     // Low-priority reverse sync: this agent's own clipboard → controller.
     // Deliberately much slower than the controller→agent path (which is
@@ -519,6 +527,7 @@ final class Session {
         // ── 输入事件 ───────────────────────────────────────────
         case .mouseMove(let x, let y, let dragging):
             guard inputEnabled else { break }
+            noteUserInputActivity()
             if !loggedFirstInput {
                 loggedFirstInput = true
                 ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "first_input",
@@ -528,14 +537,17 @@ final class Session {
 
         case .mouseButton(let btn, let down, let x, let y):
             guard inputEnabled else { break }
+            noteUserInputActivity()
             input?.mouseButton(button: btn, down: down, x: x, y: y)
 
         case .mouseDoubleClick(let btn, let x, let y):
             guard inputEnabled else { break }
+            noteUserInputActivity()
             input?.mouseDoubleClick(button: btn, x: x, y: y)
 
         case .mouseScroll(let dx, let dy, let px, let py, let isPrecise):
             guard inputEnabled else { break }
+            noteUserInputActivity()
             pendingScrollSince = Date()
             recordScrollForDiag(py: py ?? dy * 100, isPrecise: isPrecise)
             input?.mouseScroll(dx: dx, dy: dy, px: px, py: py, isPrecise: isPrecise)
@@ -554,6 +566,7 @@ final class Session {
 
         case .key(let code, let down, let mods):
             guard inputEnabled else { break }
+            noteUserInputActivity()
             // Scoped to modifier combos only (not every keystroke) — this is
             // for diagnosing reports like "Ctrl+C sent from the client does
             // nothing on the target": confirms whether the key actually made
@@ -2080,9 +2093,52 @@ final class Session {
         }
     }
 
+    private func noteUserInputActivity() {
+        lastUserInputAt = CFAbsoluteTimeGetCurrent()
+        guard wanBgSaverActive else { return }
+        wanBgSaverActive = false
+        let restoreFps = wanBgSavedFps
+        let restoreBr = wanBgSavedBitrate
+        wanBgSavedFps = nil
+        wanBgSavedBitrate = nil
+        if let fps = restoreFps, !manualFpsSelected, fps != currentFps {
+            applyFps(fps, notify: false)
+        }
+        if let br = restoreBr, !manualBitrateSelected, br > currentBitrate {
+            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 8_000_000 : 25_000_000)
+            applyBitrate(min(br, cap), notify: false)
+        }
+        notifyQualityActive()
+        ConnectionLogger.shared.logStep(
+            sessionId: id.uuidString,
+            step: "wan_bg_saver",
+            detail: "active=false fps=\(currentFps) br=\(currentBitrate/1000)k"
+        )
+    }
+
     private func handleUdpLossFeedback(_ lossRatio: Double, sentPackets: UInt64) {
         udpLastLossRatio = lossRatio
         guard usingUdpVideo else { return }
+
+        // WAN background-window bandwidth saver: if this Mac has had zero user input for >= 12s,
+        // cap it to 20fps / 1.5Mbps so it stops hogging the shared WAN tunnel from the active Mac.
+        let now = CFAbsoluteTimeGetCurrent()
+        if clientNotOnLan && !manualFpsSelected && !manualBitrateSelected {
+            if !wanBgSaverActive && (now - lastUserInputAt) >= 12.0 {
+                wanBgSaverActive = true
+                wanBgSavedFps = udpSevereFpsGuard.savedFps ?? currentFps
+                wanBgSavedBitrate = currentBitrate
+                if currentFps > 20 { applyFps(20, notify: false) }
+                if currentBitrate > 1_500_000 { applyBitrate(1_500_000, notify: false) }
+                notifyQualityActive()
+                ConnectionLogger.shared.logStep(
+                    sessionId: id.uuidString,
+                    step: "wan_bg_saver",
+                    detail: "active=true fps=\(currentFps) br=\(currentBitrate/1000)k"
+                )
+            }
+        }
+        if wanBgSaverActive { return }
 
         // Extreme-congestion FPS survival mode (6s of >=15% loss -> 30fps; 6s clean -> restore)
         if let nextFps = udpSevereFpsGuard.step(
@@ -2193,13 +2249,22 @@ final class Session {
             if udpDelayOveruseStreak >= 2 && (now - udpLastGccAdjustAt) >= 1.2 {
                 udpDelayOveruseStreak = 0
                 udpLastGccAdjustAt = now
-                let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * 0.90).rounded())))
+                let dropFactor = delayGradientMs >= 25.0 ? 0.85 : 0.90
+                let nextBps = max(floorBps, min(hardCeilingBps, Int((Double(currentBitrate) * dropFactor).rounded())))
+                if delayGradientMs >= 25.0 {
+                    // Sync severe bufferbloat (+25ms queue buildup) with learnedCeilingBps so
+                    // handleUdpLossFeedback does not immediately undo GCC's cut 2 seconds later!
+                    udpLearnedCeilingBps = max(floorBps, min(udpLearnedCeilingBps ?? hardCeilingBps, nextBps))
+                    udpLossCapSetAt = now
+                    udpCleanBitrateStreak = 0
+                    udpStableAtCapStreak = 0
+                }
                 if nextBps != currentBitrate {
                     applyBitrate(nextBps, notify: true)
                     ConnectionLogger.shared.logStep(
                         sessionId: id.uuidString,
                         step: "udp_gcc_delay",
-                        detail: "dir=down gradMs=\(String(format: "%.1f", delayGradientMs)) jitterMs=\(String(format: "%.1f", jitterMs)) recvKbps=\(recvBps/1000) bitrate=\(nextBps)"
+                        detail: "dir=down gradMs=\(String(format: "%.1f", delayGradientMs)) jitterMs=\(String(format: "%.1f", jitterMs)) recvKbps=\(recvBps/1000) bitrate=\(nextBps) cap=\(udpLearnedCeilingBps ?? hardCeilingBps)"
                     )
                 }
             }

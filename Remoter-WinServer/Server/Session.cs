@@ -992,11 +992,19 @@ sealed class Session
                 _udpDelayOveruseStreak = 0;
                 _udpLastGccAdjustTicks = nowTicks;
                 CancelScrollBoost();
-                int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * 0.90), floorBps, hardCeilingBps);
+                double dropFactor = delayGradientMs >= 25.0 ? 0.85 : 0.90;
+                int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * dropFactor), floorBps, hardCeilingBps);
+                if (delayGradientMs >= 25.0)
+                {
+                    _udpLearnedCeilingBps = Math.Max(floorBps, Math.Min(_udpLearnedCeilingBps ?? hardCeilingBps, nextBps));
+                    _udpLossCapSetAtTicks = nowTicks;
+                    _udpCleanBitrateStreak = 0;
+                    _udpStableAtCapStreak = 0;
+                }
                 if (nextBps != _targetBitrateBps)
                 {
                     ApplyUdpBitrate(nextBps);
-                    AppLog.Write($"[Session] udp_gcc_delay dir=down gradMs={delayGradientMs:F1} jitterMs={jitterMs:F1} recvKbps={recvBps / 1000} br={nextBps / 1000}k");
+                    AppLog.Write($"[Session] udp_gcc_delay dir=down gradMs={delayGradientMs:F1} jitterMs={jitterMs:F1} recvKbps={recvBps / 1000} br={nextBps / 1000}k cap={(_udpLearnedCeilingBps ?? hardCeilingBps) / 1000}k");
                 }
             }
         }

@@ -1464,8 +1464,16 @@ public sealed class RemoterConnection : IDisposable
     public void SendSetDisplay(uint displayId) =>
         EnqueueControlJson(ClientMessages.SetDisplay(displayId));
 
-    public void SendRequestKeyframe() =>
+    private long _lastKeyframeReqTicks;
+
+    public void SendRequestKeyframe()
+    {
+        long now = Environment.TickCount64;
+        long prev = Volatile.Read(ref _lastKeyframeReqTicks);
+        if (now - prev < 300) return;
+        if (Interlocked.CompareExchange(ref _lastKeyframeReqTicks, now, prev) != prev) return;
         EnqueueControlJson(ClientMessages.RequestKeyframe());
+    }
 
     public void SendCtrlAltDel() =>
         EnqueueControlJson(ClientMessages.CtrlAltDel());

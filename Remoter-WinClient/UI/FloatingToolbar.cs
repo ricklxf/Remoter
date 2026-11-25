@@ -175,6 +175,7 @@ public sealed class FloatingToolbar : Form
         _pointerLockBtn = CreateBarButton("游戏鼠标", 74);
         _powerBtn       = CreateBarButton("电源 ▾", 68);
         _imeCalibrateBtn = CreateBarButton("输入法位置", 82);
+        _imeCalibrateBtn.Visible = false; // Remote-native IME passthrough: no local IME anchor calibration needed
         _fullscreenBtn  = CreateBarButton("全屏", 52);
         _disconnectBtn  = CreateBarButton("断开", 52, danger: true);
         _collapseBtn    = CreateBarButton("▲", 28);
@@ -203,7 +204,6 @@ public sealed class FloatingToolbar : Form
         _barPanel.Controls.Add(_pointerLockBtn);
         _barPanel.Controls.Add(_powerBtn);
         _barPanel.Controls.Add(CreateSeparator());
-        _barPanel.Controls.Add(_imeCalibrateBtn);
         _barPanel.Controls.Add(_fullscreenBtn);
         _barPanel.Controls.Add(_disconnectBtn);
         _barPanel.Controls.Add(_collapseBtn);

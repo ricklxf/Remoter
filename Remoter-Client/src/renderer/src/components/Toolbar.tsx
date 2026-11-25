@@ -124,7 +124,7 @@ export function Toolbar({
   inputLocked, onToggleInputLock,
   displays, activeDisplay, onDisplayChange,
   transferCount, onToggleTransfers, showTransfers,
-  imeCalibrating, onToggleImeCalibration,
+  imeCalibrating: _imeCalibrating, onToggleImeCalibration: _onToggleImeCalibration,
   showStatsHud, onToggleStatsHud,
   onMouseEnter, onMouseLeave,
 }: Props) {
@@ -222,8 +222,6 @@ export function Toolbar({
       <ToolBtn icon={THEME_ICON[theme]} title={`主题: ${THEME_LABEL[theme]}`}
         onClick={cycleTheme} />
       <ToolBtn icon="⛶" title="全屏" onClick={onToggleFullscreen} />
-      <ToolBtn icon="🎯" title={imeCalibrating ? '完成校准' : '校准输入法位置'}
-        onClick={onToggleImeCalibration} active={imeCalibrating} />
 
       <div style={s.sep} />
 

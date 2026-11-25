@@ -920,16 +920,17 @@ sealed class Session
             else if (_udpLearnedCeilingBps is int cap)
             {
                 _udpCleanBitrateStreak = 0;
-                int safeBaselineBps = wan ? 2_500_000 : 5_000_000;
-                if (cap < safeBaselineBps)
+                int blurryFloorRecoveryBps = wan ? 1_800_000 : 5_000_000;
+                int activeProbeThresholdBps = wan ? 2_500_000 : 5_000_000;
+                if (cap < blurryFloorRecoveryBps)
                 {
                     if (sentPackets < 10UL) return;
-                    if (nowTicks - _udpLossCapSetAtTicks < 2_000) return;
+                    if (nowTicks - _udpLossCapSetAtTicks < 4_000) return;
                     _udpStableAtCapStreak++;
-                    if (_udpStableAtCapStreak >= 1)
+                    if (_udpStableAtCapStreak >= 2)
                     {
                         _udpStableAtCapStreak = 0;
-                        int probedCap = Math.Min(safeBaselineBps, (int)Math.Round(cap * 1.40));
+                        int probedCap = Math.Min(blurryFloorRecoveryBps, (int)Math.Round(cap * 1.25));
                         _udpLearnedCeilingBps = probedCap >= hardCeilingBps ? null : probedCap;
                         if (probedCap > _targetBitrateBps)
                         {
@@ -940,17 +941,18 @@ sealed class Session
                 }
                 else
                 {
-                    if (lossRatio >= 0.01 || sentPackets < 320UL)
+                    ulong minProbePackets = cap >= activeProbeThresholdBps ? 320UL : 60UL;
+                    if (lossRatio >= 0.01 || sentPackets < minProbePackets)
                     {
                         _udpStableAtCapStreak = 0;
                         return;
                     }
-                    if (nowTicks - _udpLossCapSetAtTicks < 10_000) return;
+                    if (nowTicks - _udpLossCapSetAtTicks < 12_000) return;
                     _udpStableAtCapStreak++;
                     if (_udpStableAtCapStreak >= 3)
                     {
                         _udpStableAtCapStreak = 0;
-                        int probedCap = Math.Min(hardCeilingBps, (int)Math.Round(cap * 1.15));
+                        int probedCap = Math.Min(hardCeilingBps, (int)Math.Round(cap * 1.12));
                         _udpLearnedCeilingBps = probedCap >= hardCeilingBps ? null : probedCap;
                         if (probedCap > _targetBitrateBps)
                         {

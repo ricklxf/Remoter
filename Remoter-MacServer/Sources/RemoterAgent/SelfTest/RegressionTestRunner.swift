@@ -30,6 +30,7 @@ enum RegressionTestRunner {
             ("AntiFreeze/VideoToolbox Burst Headroom Prevents Low-Bitrate Frame Drops", testVideoToolboxNoLowBitrateFrameDrop),
             ("AntiFreeze/UU Sustained-Overuse Suppresses Delta FEC & Caps NACKs", testUuSustainedOveruseFecAndNackLimit),
             ("AntiFreeze/Low-Bitrate Keyframe Drain & Heavy-Loss Throttle", testLowBitrateKeyframeDrainAndThrottle),
+            ("AntiFreeze/No 4s Sawtooth Oscillation After Loss At 2.5Mbps", testNoSawtoothOscillationAfterLoss),
             ("AntiFreeze/Input Stays <5ms During Active Low-Bitrate Video Pacing", testInputLatencyDuringActiveVideoPacing),
             ("UDP/Loopback Handshake + AES-GCM Video + NACK Retransmit", testUdpHandshakeVideoAndNackLoopback),
             ("Input/UDP 0x20 Latency (<5ms), 2x Dedup & GCM Auth", testUdpInputLatencyDedupAndAuth),
@@ -118,17 +119,17 @@ enum RegressionTestRunner {
         }
         try expect(state.currentBitrate >= 1_200_000, "1080p WAN floor dropped below 1.2 Mbps: \(state.currentBitrate)")
 
-        // Simulate 16s of idle (12 pkts/2s): must rapidly recover to 2.5 Mbps safe baseline,
+        // Simulate 20s of idle (12 pkts/2s): must rapidly recover to >= 1.8 Mbps (not blurry),
         // and MUST NOT hallucinate higher ceilings (e.g. 5-8 Mbps) while idle!
-        for _ in 0..<8 {
+        for _ in 0..<10 {
             t += 2.0
             _ = state.step(
                 lossRatio: 0.012, sentPackets: 12, now: t,
                 clientNotOnLan: true, screenWidth: 1920, scrollBoostActive: false
             )
         }
-        try expect(state.currentBitrate == 2_500_000,
-                   "Idle session expected safe 2.5 Mbps baseline without app-limited overshoot, got \(state.currentBitrate)")
+        try expect(state.currentBitrate >= 1_800_000 && state.currentBitrate <= 2_500_000,
+                   "Idle session expected safe 1.8-2.5 Mbps baseline without overshoot, got \(state.currentBitrate)")
     }
 
     private static func testWan2KCongestionAndRecovery() throws {
@@ -144,7 +145,7 @@ enum RegressionTestRunner {
         try expect(state.currentBitrate == 1_500_000, "2K WAN floor expected 1.5 Mbps, got \(state.currentBitrate)")
 
         // Active clean traffic (>=320 pkts/2s) must climb smoothly back to 8 Mbps
-        for _ in 0..<40 {
+        for _ in 0..<60 {
             t += 2.0
             _ = state.step(
                 lossRatio: 0.0, sentPackets: 400, now: t,
@@ -256,6 +257,32 @@ enum RegressionTestRunner {
                    "Heavy-loss keyframe cooldown must be >= 1.5s")
         try expect(Session.computeKeyframeCooldown(usingUdpVideo: true, lossRatio: 0.0) <= 0.4,
                    "Clean-link keyframe cooldown should remain fast (<= 0.4s)")
+    }
+
+    private static func testNoSawtoothOscillationAfterLoss() throws {
+        // Reproduces mac2 13:48:36-13:48:52 sawtooth: 6.4% loss at 2.5M backs off to 1.875M/cap=2.0M.
+        // Over the next 10s of clean active traffic, it should hold steady at 2.0M instead of
+        // slamming straight back into 2.5M after 4s and causing repeated kfReq=3 scroll freezes!
+        var state = Session.UdpBitrateState(currentBitrate: 2_500_000)
+        var t = 100.0
+        _ = state.step(lossRatio: 0.064, sentPackets: 251, now: t, clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: false)
+        try expect(state.currentBitrate == 1_875_000 && state.learnedCeilingBps == 2_000_000,
+                   "Expected backoff to 1.875M/cap=2.0M, got \(state.currentBitrate)/\(String(describing: state.learnedCeilingBps))")
+
+        for _ in 0..<5 { // +10 seconds
+            t += 2.0
+            _ = state.step(lossRatio: 0.0, sentPackets: 450, now: t, clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: false)
+        }
+        try expect(state.currentBitrate == 2_000_000,
+                   "Bitrate sawtoothed past learned 2.0M ceiling within 10s: \(state.currentBitrate)")
+
+        // After >= 12s cooldown + 3 clean windows, it should gently probe up (+12% -> 2.24M)
+        for _ in 0..<4 {
+            t += 2.0
+            _ = state.step(lossRatio: 0.0, sentPackets: 450, now: t, clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: false)
+        }
+        try expect(state.currentBitrate == 2_240_000,
+                   "Expected gentle +12% probe to 2.24M after cooldown, got \(state.currentBitrate)")
     }
 
     private static func testInputLatencyDuringActiveVideoPacing() throws {

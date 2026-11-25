@@ -28,6 +28,10 @@ public class Program
             AppLog.Write($"[Global] MFStartup failed: {ex.Message}");
         }
 
+        // Ensure physical pixel coordinates on 125%/150%/200% DPI Windows displays
+        // (prevents GDI fallback, DXGI bounds & PrivacyScreen from being DPI-virtualized).
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+
         // Register global exception handlers
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (sender, args) =>

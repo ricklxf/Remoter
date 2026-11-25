@@ -105,13 +105,13 @@ enum RegressionTestRunner {
                 throw Failure(message: "Expected .down on 10% loss, got \(action)")
             }
         }
-        try expect(state.currentBitrate >= 600_000, "1080p WAN anti-freeze floor dropped below 600 kbps: \(state.currentBitrate)")
+        try expect(state.currentBitrate >= 1_200_000, "1080p WAN floor dropped below 1.2 Mbps: \(state.currentBitrate)")
 
-        // Simulate 24s of clean idle (6fps = 12 pkts / 2s): must rapidly recover >= 4 Mbps
-        for _ in 0..<12 {
+        // Simulate 16s of mild-noise idle (1.2% loss, 12 pkts/2s): must rapidly recover >= 4 Mbps
+        for _ in 0..<8 {
             t += 2.0
             _ = state.step(
-                lossRatio: 0.0, sentPackets: 12, now: t,
+                lossRatio: 0.012, sentPackets: 12, now: t,
                 clientNotOnLan: true, screenWidth: 1920, scrollBoostActive: false
             )
         }
@@ -129,10 +129,10 @@ enum RegressionTestRunner {
                 clientNotOnLan: true, screenWidth: 2560, scrollBoostActive: true
             )
         }
-        try expect(state.currentBitrate == 800_000, "2K WAN anti-freeze floor expected 800 kbps, got \(state.currentBitrate)")
+        try expect(state.currentBitrate == 1_500_000, "2K WAN floor expected 1.5 Mbps, got \(state.currentBitrate)")
 
-        // Fast recovery: 800k -> 8M within 20 clean 2s windows (40s max)
-        for _ in 0..<20 {
+        // Fast recovery: 1.5M -> 8M within 14 clean 2s windows (28s max)
+        for _ in 0..<14 {
             t += 2.0
             _ = state.step(
                 lossRatio: 0.0, sentPackets: 120, now: t,

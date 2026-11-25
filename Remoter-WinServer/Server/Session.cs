@@ -869,10 +869,11 @@ sealed class Session
         int hardCeilingBps = wan ? 8_000_000 : 25_000_000;
         int width = _capturer?.Width ?? 1920;
         int floorBps = wan
-            ? (width >= 2560 ? 800_000 : 600_000)
+            ? (width >= 2560 ? 1_500_000 : 1_200_000)
             : (width >= 2560 ? 5_000_000 : 4_000_000);
         ulong minLossPackets = wan ? 80UL : 400UL;
         double lossThreshold = wan ? 0.05 : 0.08;
+        double cleanLossThreshold = _targetBitrateBps < 3_000_000 ? 0.03 : 0.015;
         long nowTicks = Environment.TickCount64;
 
         if (lossRatio >= lossThreshold && sentPackets >= minLossPackets)
@@ -880,8 +881,8 @@ sealed class Session
             CancelScrollBoost();
             _udpCleanBitrateStreak = 0;
             _udpStableAtCapStreak = 0;
-            double dropFactor = lossRatio >= 0.25 ? 0.45 : (lossRatio >= 0.12 ? 0.60 : 0.75);
-            double capFactor = lossRatio >= 0.25 ? 0.55 : (lossRatio >= 0.12 ? 0.68 : 0.80);
+            double dropFactor = lossRatio >= 0.25 ? 0.50 : (lossRatio >= 0.12 ? 0.65 : 0.75);
+            double capFactor = lossRatio >= 0.25 ? 0.58 : (lossRatio >= 0.12 ? 0.72 : 0.80);
             int nextBps = Math.Clamp((int)Math.Round(_targetBitrateBps * dropFactor), floorBps, hardCeilingBps);
             int learnedCap = Math.Clamp((int)Math.Round(_targetBitrateBps * capFactor), floorBps, hardCeilingBps);
             _udpLearnedCeilingBps = Math.Max(floorBps, Math.Min(_udpLearnedCeilingBps ?? hardCeilingBps, learnedCap));
@@ -889,7 +890,7 @@ sealed class Session
             ApplyUdpBitrate(nextBps);
             AppLog.Write($"[Session] udp_bitrate_adapt dir=down loss={lossRatio:F3} sent={sentPackets} br={nextBps / 1000}k cap={(_udpLearnedCeilingBps ?? hardCeilingBps) / 1000}k");
         }
-        else if (lossRatio < 0.015)
+        else if (lossRatio < cleanLossThreshold)
         {
             bool boosting;
             lock (_scrollBoostLock) { boosting = _scrollBoostActive; }
@@ -903,7 +904,8 @@ sealed class Session
             {
                 _udpStableAtCapStreak = 0;
                 _udpCleanBitrateStreak++;
-                if (_udpCleanBitrateStreak >= 2)
+                int requiredClean = _targetBitrateBps < 3_000_000 ? 1 : 2;
+                if (_udpCleanBitrateStreak >= requiredClean)
                 {
                     _udpCleanBitrateStreak = 0;
                     double stepFactor = _targetBitrateBps < 3_000_000 ? 1.45 : 1.25;
@@ -918,10 +920,11 @@ sealed class Session
             else if (_udpLearnedCeilingBps is int cap)
             {
                 _udpCleanBitrateStreak = 0;
-                long probeCooldownMs = _targetBitrateBps < 3_000_000 ? 4_000 : 6_000;
+                long probeCooldownMs = _targetBitrateBps < 3_000_000 ? 2_000 : 6_000;
                 if (nowTicks - _udpLossCapSetAtTicks < probeCooldownMs) return;
                 _udpStableAtCapStreak++;
-                if (_udpStableAtCapStreak >= 2)
+                int requiredStable = _targetBitrateBps < 3_000_000 ? 1 : 2;
+                if (_udpStableAtCapStreak >= requiredStable)
                 {
                     _udpStableAtCapStreak = 0;
                     double probeFactor = cap < 3_000_000 ? 1.50 : (cap < 6_000_000 ? 1.30 : 1.20);
@@ -951,7 +954,7 @@ sealed class Session
         int hardCeilingBps = wan ? 8_000_000 : 25_000_000;
         int width = _capturer?.Width ?? 1920;
         int floorBps = wan
-            ? (width >= 2560 ? 800_000 : 600_000)
+            ? (width >= 2560 ? 1_500_000 : 1_200_000)
             : (width >= 2560 ? 5_000_000 : 4_000_000);
         long nowTicks = Environment.TickCount64;
 

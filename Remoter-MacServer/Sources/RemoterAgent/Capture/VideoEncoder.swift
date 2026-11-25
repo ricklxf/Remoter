@@ -89,8 +89,9 @@ final class VideoEncoder {
     private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
-        // Match UU's 1.0s x 1.5x burst bucket
-        let burstByteLimit = Int64(Double(bitrateBps) * 1.5 / 8.0)
+        // Keep >= 500 KB/s burst headroom so VideoToolbox never silently drops
+        // frames after a 2K keyframe when AverageBitRate adapts down to 1.2-2 Mbps.
+        let burstByteLimit = Int64(max(Double(bitrateBps) * 2.0 / 8.0, 500_000.0))
         let dataRateLimits: [Any] = [burstByteLimit, 1.0]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         appliedBitrateBps = bitrateBps

@@ -938,8 +938,20 @@ final class Session {
             keyframeRequests += 1
             let now = Date()
             // On UDP, give NACK/FEC breathing room instead of blasting keyframes every 200ms:
-            // 0.4s when link is clean, 0.8s under active packet loss (>=3%) to prevent 2K keyframe storms.
-            let cooldown: TimeInterval = usingUdpVideo ? (udpLastLossRatio >= 0.03 ? 0.8 : 0.4) : 1.0
+            // 0.4s when clean, 0.8s under moderate loss (>=3%), 1.5s under heavy loss (>=15%)
+            // so a 20-40% WAN burst does not trigger a 6-keyframes-in-5s self-inflicted freeze loop.
+            let cooldown: TimeInterval
+            if usingUdpVideo {
+                if udpLastLossRatio >= 0.15 {
+                    cooldown = 1.5
+                } else if udpLastLossRatio >= 0.03 {
+                    cooldown = 0.8
+                } else {
+                    cooldown = 0.4
+                }
+            } else {
+                cooldown = 1.0
+            }
             guard now.timeIntervalSince(lastForcedKeyframeAt) > cooldown else { break }
             lastForcedKeyframeAt = now
             keyframesForced += 1
@@ -1968,11 +1980,16 @@ final class Session {
             scrollBoostActive: Bool
         ) -> StepAction {
             let hardCeilingBps = clientNotOnLan ? 8_000_000 : 25_000_000
+            // Keep WAN floor readable (1.5M 2K / 1.2M 1080p) so text stays legible and
+            // VideoToolbox never starves, while still cutting WAN traffic 4-5x under congestion.
             let floorBps = clientNotOnLan
-                ? ((screenWidth >= 2560) ? 800_000 : 600_000)
+                ? ((screenWidth >= 2560) ? 1_500_000 : 1_200_000)
                 : ((screenWidth >= 2560) ? 5_000_000 : 4_000_000)
             let minLossPackets: UInt64 = clientNotOnLan ? 80 : 400
             let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
+            // At low bitrate (< 3 Mbps), a single NACK out of ~60 packets is 1.67%, so allow
+            // recovery whenever loss < 3% instead of locking the user at the blurry floor!
+            let cleanLossThreshold: Double = (currentBitrate < 3_000_000) ? 0.03 : 0.015
 
             if lossRatio >= lossThreshold && sentPackets >= minLossPackets {
                 cleanStreak = 0
@@ -1980,11 +1997,11 @@ final class Session {
                 let dropFactor: Double
                 let capFactor: Double
                 if lossRatio >= 0.25 {
-                    dropFactor = 0.45
-                    capFactor = 0.55
+                    dropFactor = 0.50
+                    capFactor = 0.58
                 } else if lossRatio >= 0.12 {
-                    dropFactor = 0.60
-                    capFactor = 0.68
+                    dropFactor = 0.65
+                    capFactor = 0.72
                 } else {
                     dropFactor = 0.75
                     capFactor = 0.80
@@ -1995,7 +2012,7 @@ final class Session {
                 lossCapSetAt = now
                 currentBitrate = nextBps
                 return .down(nextBps)
-            } else if lossRatio < 0.015 {
+            } else if lossRatio < cleanLossThreshold {
                 guard !scrollBoostActive else { return .hold }
                 let minRampPackets: UInt64 = (currentBitrate < 4_000_000) ? 10 : 60
                 guard sentPackets >= minRampPackets else { return .hold }
@@ -2004,7 +2021,8 @@ final class Session {
                 if currentBitrate < effectiveCeiling {
                     stableAtCapStreak = 0
                     cleanStreak += 1
-                    if cleanStreak >= 2 {
+                    let requiredClean = (currentBitrate < 3_000_000) ? 1 : 2
+                    if cleanStreak >= requiredClean {
                         cleanStreak = 0
                         let stepFactor: Double = (currentBitrate < 3_000_000) ? 1.45 : 1.25
                         let nextBps = max(floorBps, min(effectiveCeiling, Int((Double(currentBitrate) * stepFactor).rounded())))
@@ -2015,10 +2033,11 @@ final class Session {
                     }
                 } else if let cap = learnedCeilingBps {
                     cleanStreak = 0
-                    let probeCooldown: Double = (currentBitrate < 3_000_000) ? 4.0 : 6.0
+                    let probeCooldown: Double = (currentBitrate < 3_000_000) ? 2.0 : 6.0
                     guard now - lossCapSetAt >= probeCooldown else { return .hold }
                     stableAtCapStreak += 1
-                    if stableAtCapStreak >= 2 {
+                    let requiredStable = (currentBitrate < 3_000_000) ? 1 : 2
+                    if stableAtCapStreak >= requiredStable {
                         stableAtCapStreak = 0
                         let probeFactor: Double
                         if cap < 3_000_000 {
@@ -2147,7 +2166,7 @@ final class Session {
 
         let hardCeilingBps = clientNotOnLan ? 8_000_000 : (Self.autoBitrateTiers.last ?? 25_000_000)
         let floorBps = clientNotOnLan
-            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 800_000 : 600_000)
+            ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)
         let now = CFAbsoluteTimeGetCurrent()
 

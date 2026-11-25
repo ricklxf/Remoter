@@ -1347,7 +1347,7 @@ final class UdpVideoServer {
             session.windowNackPackets = 0
 
             guard sent > 0 else { continue }
-            let lossRatio = Double(nacks) / Double(max(1, sent))
+            let lossRatio = min(1.0, Double(nacks) / Double(max(1, sent)))
             if nacks == 0 {
                 session.cleanWindows += 1
             } else {
@@ -1358,12 +1358,12 @@ final class UdpVideoServer {
             let newDeltaFec: UInt8
             let newKeyFec: UInt8
             if lossRatio >= 0.08 {
-                // Cap heavy FEC overhead at +33% (group=3) instead of +50% (group=2)
-                // so FEC protection does not push a congested WAN/tunnel link back into
-                // self-inflicted packet loss and keyframe stalls.
+                // Keep delta FEC capped at +33% (group=3) to avoid bandwidth amplification,
+                // but protect keyframes with +50% (group=2) when loss >= 15% so recovery
+                // keyframes actually survive burst loss and unfreeze the client immediately.
                 newLevel = .heavy
                 newDeltaFec = 3
-                newKeyFec = 3
+                newKeyFec = lossRatio >= 0.15 ? 2 : 3
             } else if lossRatio >= 0.03 {
                 newLevel = .moderate
                 newDeltaFec = 4

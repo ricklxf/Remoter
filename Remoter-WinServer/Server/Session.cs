@@ -107,7 +107,56 @@ sealed class Session
     private DateTime _fpsCalcTime = DateTime.UtcNow;
     private double _currentFpsDisplay = 0;
     
-        // PIN enabled flag (static, shared across all sessions)
+    // Active authenticated session registry: immediately reap stale zombie sessions (>=3s idle)
+    // on reconnect so old half-open TCP sessions never overlap and compete for bandwidth.
+    private static readonly object ActiveSessionsLock = new();
+    private static readonly Dictionary<string, Session> ActiveSessions = new(StringComparer.Ordinal);
+
+    private static void RegisterAndReapStaleSessions(Session newSession)
+    {
+        long nowTicks = Environment.TickCount64;
+        List<(Session Stale, double IdleSec)>? staleList = null;
+        lock (ActiveSessionsLock)
+        {
+            ActiveSessions[newSession._id] = newSession;
+            List<string>? toRemove = null;
+            foreach (var kvp in ActiveSessions)
+            {
+                if (kvp.Key == newSession._id) continue;
+                var existing = kvp.Value;
+                double idleSec = (nowTicks - Volatile.Read(ref existing._lastInboundTicks)) / 1000.0;
+                if (existing._authed && idleSec >= 3.0)
+                {
+                    staleList ??= new List<(Session, double)>();
+                    staleList.Add((existing, idleSec));
+                    toRemove ??= new List<string>();
+                    toRemove.Add(kvp.Key);
+                }
+            }
+            if (toRemove != null)
+            {
+                foreach (var key in toRemove) ActiveSessions.Remove(key);
+            }
+        }
+        if (staleList != null)
+        {
+            foreach (var (stale, idleSec) in staleList)
+            {
+                AppLog.Write($"[Session] session_zombie_reaped_on_reconnect idleSec={idleSec:F1} replacedBy={newSession._id[..Math.Min(8, newSession._id.Length)]}");
+                try { stale.Close(); } catch { }
+            }
+        }
+    }
+
+    private static void UnregisterActiveSession(string id)
+    {
+        lock (ActiveSessionsLock)
+        {
+            ActiveSessions.Remove(id);
+        }
+    }
+
+    // PIN enabled flag (static, shared across all sessions)
     private static bool _pinEnabled = true;
     
     public Session(IWsConn conn, string pin)
@@ -174,6 +223,7 @@ sealed class Session
 
     public void Close()
     {
+        UnregisterActiveSession(_id);
         _cts?.Cancel();
         UnregisterUdpSession();
         StopClipboardMonitor(flush: false);
@@ -572,6 +622,7 @@ sealed class Session
             c.Initialize();
             _capturer   = c;
             _input      = new InputController(c.Width, c.Height);
+            RegisterAndReapStaleSessions(this);
             _fileRecv   = new FileReceiver();
             _connectTime = DateTime.UtcNow;
             _cts        = new CancellationTokenSource();

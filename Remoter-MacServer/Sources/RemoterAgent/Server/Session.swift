@@ -218,6 +218,47 @@ final class Session {
     private var loggedFirstInput = false
 
 
+    // Active authenticated session registry: when a client reconnects after a drop,
+    // immediately reap any half-open zombie session idle >= 3s BEFORE starting the new
+    // capture/encoder pipeline so the old zombie never overlaps and steals bandwidth!
+    private static let activeSessionsLock = NSLock()
+    private static var activeSessions: [UUID: Session] = [:]
+
+    private static func registerAndReapStaleSessions(newSession: Session) {
+        let now = CFAbsoluteTimeGetCurrent()
+        var staleToClose: [(Session, Double)] = []
+        activeSessionsLock.lock()
+        activeSessions[newSession.id] = newSession
+        for (sid, existing) in activeSessions where sid != newSession.id {
+            if existing.isClosed {
+                activeSessions.removeValue(forKey: sid)
+                continue
+            }
+            let idleSec = now - existing.lastClientActivityAt
+            if existing.authenticated && idleSec >= 3.0 {
+                staleToClose.append((existing, idleSec))
+                activeSessions.removeValue(forKey: sid)
+            }
+        }
+        activeSessionsLock.unlock()
+
+        for (stale, idleSec) in staleToClose {
+            ConnectionLogger.shared.logStep(
+                sessionId: stale.id.uuidString,
+                step: "session_zombie_reaped_on_reconnect",
+                detail: "idleSec=\(String(format: "%.1f", idleSec)) replacedBy=\(newSession.id.uuidString.prefix(8))"
+            )
+            stale.connection.close()
+            stale.close()
+        }
+    }
+
+    private static func unregisterActiveSession(id: UUID) {
+        activeSessionsLock.lock()
+        activeSessions.removeValue(forKey: id)
+        activeSessionsLock.unlock()
+    }
+
     // Keepalive: send a JSON message every 3s so the client's stale-timeout (6s)
     // doesn't fire when the screen is static and CGDisplayStream pushes no frames.
     // Also reaps half-open zombie TCP sessions after 15s of zero inbound client traffic.
@@ -349,6 +390,7 @@ final class Session {
     }
 
     func close() {
+        Self.unregisterActiveSession(id: id)
         let alreadyClosed = isClosed
         isClosed = true
         // Log disconnection if we were streaming
@@ -1391,6 +1433,7 @@ final class Session {
     }
 
     private func beginCapture() async {
+        Self.registerAndReapStaleSessions(newSession: self)
         let c   = ScreenCapturer()
         let sid = id.uuidString
         ConnectionLogger.shared.logStep(sessionId: sid, step: "capture_begin", detail: "jpeg")

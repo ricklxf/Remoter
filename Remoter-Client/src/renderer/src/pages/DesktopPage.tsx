@@ -46,6 +46,7 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
   })
   const [chromaMode, setChromaMode] = useState<ChromaMode>('420')
   const [hdrOn, setHdrOn] = useState(false)
+  const [matchHiDPI, setMatchHiDPI] = useState<boolean>(() => localStorage.getItem('remoter_match_hidpi') === '1')
   const [toneMap, setToneMap] = useState(false)
   const [lowLatency, setLowLatency] = useState<boolean>(() => {
     return localStorage.getItem('remoter_low_latency') === 'true'
@@ -142,6 +143,9 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     if (lowLatency) {
       conn.sendLowLatency(true)
     }
+    if (matchHiDPI) {
+      applyMatchHiDPI(true)
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleQualityPresetChange(preset: QualityPreset) {
@@ -195,6 +199,26 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     setHdrOn(next)
     setToneMap(next)
     conn.sendHdr(next)
+  }
+
+  function applyMatchHiDPI(enabled: boolean) {
+    if (enabled) {
+      const scale = Math.max(2, Math.round(window.devicePixelRatio || 2))
+      const w = Math.round(window.screen.width || window.innerWidth) & ~1
+      const h = Math.round(window.screen.height || window.innerHeight) & ~1
+      setResolution('match')
+      conn.sendResolution('match', w, h, scale)
+    } else {
+      setResolution('native')
+      conn.sendResolution('native')
+    }
+  }
+
+  function handleToggleMatchHiDPI() {
+    const next = !matchHiDPI
+    setMatchHiDPI(next)
+    localStorage.setItem('remoter_match_hidpi', next ? '1' : '0')
+    applyMatchHiDPI(next)
   }
 
   function handleToggleLowLatency() {
@@ -601,6 +625,8 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
             onToggleChroma={handleToggleChroma}
             hdrOn={hdrOn}
             onToggleHdr={handleToggleHdr}
+            matchHiDPI={matchHiDPI}
+            onToggleMatchHiDPI={handleToggleMatchHiDPI}
             toneMap={toneMap}
             onToggleToneMap={() => setToneMap(v => !v)}
             lowLatency={lowLatency}

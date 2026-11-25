@@ -200,6 +200,7 @@ final class Session {
     // (RTT-gated minimum) now sits at 12M, so the ceiling gives room for 25M
     // pristine stream quality.
     private static let autoBitrateTiers: [Int] = [2_000_000, 4_000_000, 8_000_000, 15_000_000, 25_000_000]
+    private static let lanStartupBitrateIndex: Int = autoBitrateTiers.firstIndex(of: 15_000_000) ?? max(0, autoBitrateTiers.count - 2)
     // Independent — the client can put either on auto while pinning the
     // other to a manual value, matching the fact they're genuinely two
     // separate knobs, not one bundled "quality" choice.
@@ -559,7 +560,20 @@ final class Session {
             webrtc?.lanFloorAllowed = lan
             webrtc?.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
             UdpVideoServer.shared.setFecSuppressionAllowed(token: udpSessionToken, allowed: lan)
-            if !lan && usingUdpVideo && !manualBitrateSelected && currentBitrate > 12_000_000 {
+            if lan {
+                if !manualBitrateSelected && currentBitrate < 15_000_000 {
+                    autoBitrateIndex = Self.lanStartupBitrateIndex
+                    autoBitrateCleanStreak = 0
+                    applyBitrate(15_000_000, notify: true)
+                }
+                if !manualFpsSelected && currentFps < 60 {
+                    if let idx60 = Self.autoFpsTiers.firstIndex(of: 60) {
+                        autoFpsIndex = min(idx60, autoFpsTopIndex)
+                    }
+                    autoFpsCleanStreak = 0
+                    applyFps(60, notify: true)
+                }
+            } else if usingUdpVideo && !manualBitrateSelected && currentBitrate > 12_000_000 {
                 applyBitrate(12_000_000, notify: true)
             }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
@@ -711,10 +725,19 @@ final class Session {
                     applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
                 } else if usingUdpVideo {
                     autoBitrateCleanStreak = 0
-                    applyBitrate(max(6_000_000, currentBitrate))
+                    if !clientNotOnLan {
+                        autoBitrateIndex = Self.lanStartupBitrateIndex
+                        applyBitrate(max(15_000_000, currentBitrate))
+                    } else {
+                        applyBitrate(max(6_000_000, currentBitrate))
+                    }
                 } else {
-                    autoBitrateIndex = 0
                     autoBitrateCleanStreak = 0
+                    if !clientNotOnLan {
+                        autoBitrateIndex = Self.lanStartupBitrateIndex
+                    } else {
+                        autoBitrateIndex = min(1, Self.autoBitrateTiers.count - 1)
+                    }
                     applyBitrate(Self.autoBitrateTiers[autoBitrateIndex])
                 }
             } else {
@@ -727,6 +750,7 @@ final class Session {
                 if VirtualDisplayManager.shared.activeDisplayID != nil {
                     VirtualDisplayManager.shared.destroyVirtualDisplay()
                     selectedDisplayID = nil
+                    sendJson(["type": "virtual_display_active", "enabled": false])
                 }
                 resolutionMaxDimension = nil
                 Task { await rebuildPipeline() }
@@ -734,8 +758,17 @@ final class Session {
             }
 
             if tier == "match", let w = customW, let h = customH, w > 0, h > 0 {
-                let targetW = UInt(min(max(w, 640), 5120)) & ~1
-                let targetH = UInt(min(max(h, 480), 2880)) & ~1
+                var logicalW = Double(min(max(w, 640), 5120))
+                var logicalH = Double(min(max(h, 480), 2880))
+                let physW = logicalW * effectiveScale
+                let physH = logicalH * effectiveScale
+                if physW > 3840.0 || physH > 2160.0 {
+                    let factor = min(3840.0 / physW, 2160.0 / physH)
+                    logicalW = max(640.0, logicalW * factor)
+                    logicalH = max(480.0, logicalH * factor)
+                }
+                let targetW = UInt(logicalW.rounded()) & ~1
+                let targetH = UInt(logicalH.rounded()) & ~1
                 ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "match_resolution",
                                                 detail: "\(targetW)x\(targetH)@\(effectiveScale)x")
                 if let vId = VirtualDisplayManager.shared.createOrUpdateVirtualDisplay(
@@ -746,6 +779,11 @@ final class Session {
                 ) {
                     selectedDisplayID = vId
                     resolutionMaxDimension = nil
+                    sendJson([
+                        "type": "virtual_display_active",
+                        "enabled": true,
+                        "display_id": Int(vId)
+                    ])
                     Task {
                         try? await Task.sleep(nanoseconds: 200_000_000)
                         await rebuildPipeline()
@@ -1823,7 +1861,8 @@ final class Session {
                 if autoBitrateIndex > 0 { autoBitrateIndex -= 1; bitrateChanged = true }
             } else {
                 autoBitrateCleanStreak += 1
-                if autoBitrateCleanStreak >= 3 && autoBitrateIndex < Self.autoBitrateTiers.count - 1 {
+                let requiredClean = clientNotOnLan ? 3 : 1
+                if autoBitrateCleanStreak >= requiredClean && autoBitrateIndex < Self.autoBitrateTiers.count - 1 {
                     autoBitrateCleanStreak = 0
                     autoBitrateIndex += 1
                     bitrateChanged = true

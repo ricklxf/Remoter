@@ -29,6 +29,8 @@ interface Props {
   onToggleChroma: () => void
   hdrOn: boolean
   onToggleHdr: () => void
+  matchHiDPI: boolean
+  onToggleMatchHiDPI: () => void
   toneMap: boolean
   onToggleToneMap: () => void
   lowLatency: boolean
@@ -114,6 +116,7 @@ export function Toolbar({
   sharpness, onSharpnessChange,
   chromaMode, onToggleChroma,
   hdrOn, onToggleHdr,
+  matchHiDPI, onToggleMatchHiDPI,
   toneMap, onToggleToneMap,
   lowLatency, onToggleLowLatency,
   zoom, onZoomChange,
@@ -166,6 +169,8 @@ export function Toolbar({
         onToggleChroma={onToggleChroma}
         hdrOn={hdrOn}
         onToggleHdr={onToggleHdr}
+        matchHiDPI={matchHiDPI}
+        onToggleMatchHiDPI={onToggleMatchHiDPI}
         toneMap={toneMap}
         onToggleToneMap={onToggleToneMap}
         lowLatency={lowLatency}
@@ -244,6 +249,7 @@ function QualityMenu({
   sharpness, onSharpnessChange,
   chromaMode, onToggleChroma,
   hdrOn, onToggleHdr,
+  matchHiDPI, onToggleMatchHiDPI,
   toneMap, onToggleToneMap,
   lowLatency, onToggleLowLatency,
   showStatsHud, onToggleStatsHud,
@@ -269,6 +275,8 @@ function QualityMenu({
   onToggleChroma: () => void
   hdrOn: boolean
   onToggleHdr: () => void
+  matchHiDPI: boolean
+  onToggleMatchHiDPI: () => void
   toneMap: boolean
   onToggleToneMap: () => void
   lowLatency: boolean
@@ -368,6 +376,10 @@ function QualityMenu({
           <div style={s.qualityToggleRow} title="开启 10-bit HDR 捕获与编码">
             <span>HDR 10-bit</span>
             <Toggle checked={hdrOn} onToggle={onToggleHdr} />
+          </div>
+          <div style={s.qualityToggleRow} title="自动在被控端创建匹配本机逻辑分辨率的 2x Retina HiDPI 虚拟屏">
+            <span>匹配本机 HiDPI</span>
+            <Toggle checked={matchHiDPI} onToggle={onToggleMatchHiDPI} />
           </div>
           <div style={s.qualityToggleRow} title="在画面右下角显示实时帧率、码率与延迟信息">
             <span>性能浮窗</span>

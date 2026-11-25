@@ -511,7 +511,28 @@ sealed class Session
                 {
                     UdpVideoServer.Shared.SetFecSuppressionAllowed(udpTok, nh.Lan);
                 }
-                AppLog.Write($"[Session] net_hint lan={nh.Lan} (UDP FEC suppression {(nh.Lan ? "allowed" : "disabled for WAN")})");
+                if (nh.Lan)
+                {
+                    bool qualityBumped = false;
+                    if (!_manualBitrate && _targetBitrateBps < 15_000_000)
+                    {
+                        _targetBitrateBps = 15_000_000;
+                        _encoder?.SetBitrate(_targetBitrateBps);
+                        if (_udpSessionToken is { } tok) UdpVideoServer.Shared.UpdatePacingBitrate(tok, _targetBitrateBps);
+                        qualityBumped = true;
+                    }
+                    if (!_manualFps && _currentFps < 60)
+                    {
+                        _currentFps = 60;
+                        _encoder?.SetFps(_currentFps);
+                        qualityBumped = true;
+                    }
+                    if (qualityBumped)
+                    {
+                        Send(new { type = "quality_active", fps = _currentFps, bitrate = _targetBitrateBps });
+                    }
+                }
+                AppLog.Write($"[Session] net_hint lan={nh.Lan} (UDP FEC suppression {(nh.Lan ? "allowed" : "disabled for WAN")}, br={_targetBitrateBps / 1000}k, fps={_currentFps})");
                 break;
 
             case ClientMsg.QualitySet q:   // legacy clients (≤ v1.0.204) sent fps+bitrate bundled

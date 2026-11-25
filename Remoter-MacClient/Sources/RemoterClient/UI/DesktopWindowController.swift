@@ -56,6 +56,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
     // Session state
     private static let qualityPresetDefaultsKey = "remoter_quality_preset"
+    private static let matchLocalHiDPIDefaultsKey = "remoter_match_local_hidpi"
     private var isTornDown = false
     private var closeErrorMessage: String?
     private var privacyEnabled = false
@@ -64,6 +65,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     private var isFullscreen = false
     private var statsHudVisible = true
     private var hasSentCodecCaps = false
+    private var hasSentMatchLocalHiDPI = false
     private var manualCodecSelected = false
     private var displays: [DisplayInfo] = []
     private var activeDisplayId: UInt32 = 0
@@ -74,6 +76,9 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         if let rawPreset = UserDefaults.standard.string(forKey: Self.qualityPresetDefaultsKey),
            let savedPreset = QualityPreset(rawValue: rawPreset) {
             loadedSettings.qualityPreset = savedPreset
+        }
+        if UserDefaults.standard.object(forKey: Self.matchLocalHiDPIDefaultsKey) != nil {
+            loadedSettings.matchLocalHiDPI = UserDefaults.standard.bool(forKey: Self.matchLocalHiDPIDefaultsKey)
         }
         self.settings = loadedSettings
 
@@ -475,6 +480,10 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
                 if self.settings.lowLatencyEnabled {
                     self.connection.sendLowLatency(true)
                 }
+                if self.settings.matchLocalHiDPI && !self.hasSentMatchLocalHiDPI {
+                    self.hasSentMatchLocalHiDPI = true
+                    self.sendMatchLocalHiDPI()
+                }
 
                 if !self.hasSentCodecCaps {
                     self.hasSentCodecCaps = true
@@ -758,21 +767,33 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             self.showToast(visible ? "已显示性能浮窗" : "已隐藏性能浮窗")
         }
 
+        toolbar.onMatchLocalHiDPIToggled = { [weak self] enabled in
+            guard let self else { return }
+            self.settings.matchLocalHiDPI = enabled
+            self.settings.resolutionTier = enabled ? .match : .native
+            UserDefaults.standard.set(enabled, forKey: Self.matchLocalHiDPIDefaultsKey)
+            DeviceStore.shared.saveSettings(self.settings)
+            self.toolbarPanel?.updateState(resolution: self.settings.resolutionTier, matchLocalHiDPI: enabled)
+            if enabled {
+                self.hasSentMatchLocalHiDPI = true
+                self.sendMatchLocalHiDPI()
+                self.showToast("匹配本机 HiDPI 已开启")
+            } else {
+                self.connection.sendResolution(tier: .native)
+                self.showToast("匹配本机 HiDPI 已关闭")
+            }
+        }
+
         toolbar.onResolutionChanged = { [weak self] tier in
             guard let self else { return }
             self.settings.resolutionTier = tier
+            self.settings.matchLocalHiDPI = (tier == .match)
+            UserDefaults.standard.set(self.settings.matchLocalHiDPI, forKey: Self.matchLocalHiDPIDefaultsKey)
             DeviceStore.shared.saveSettings(self.settings)
-            self.toolbarPanel?.updateState(resolution: tier)
+            self.toolbarPanel?.updateState(resolution: tier, matchLocalHiDPI: self.settings.matchLocalHiDPI)
             if tier == .match {
-                let screen = self.window?.screen ?? NSScreen.main
-                let logicalSize = screen?.frame.size ?? self.window?.frame.size ?? self.rendererView.bounds.size
-                let scale = Double(screen?.backingScaleFactor ?? self.window?.backingScaleFactor ?? 1.0)
-                self.connection.sendResolution(
-                    tier: .match,
-                    width: Int(logicalSize.width.rounded()),
-                    height: Int(logicalSize.height.rounded()),
-                    scale: scale
-                )
+                self.hasSentMatchLocalHiDPI = true
+                self.sendMatchLocalHiDPI()
             } else {
                 self.connection.sendResolution(tier: tier)
             }
@@ -968,7 +989,21 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             macWinSwapOn: settings.macWinKeySwap,
             clipboardSyncOn: settings.clipboardSyncEnabled,
             isFullscreen: false,
-            statsHudVisible: statsHudVisible
+            statsHudVisible: statsHudVisible,
+            matchLocalHiDPI: settings.matchLocalHiDPI
+        )
+    }
+
+    private func sendMatchLocalHiDPI() {
+        let screen = window?.screen ?? NSScreen.main
+        let logicalWidth = Int((screen?.frame.width ?? window?.frame.width ?? rendererView.bounds.width).rounded())
+        let logicalHeight = Int((screen?.frame.height ?? window?.frame.height ?? rendererView.bounds.height).rounded())
+        let scale = max(2.0, Double(screen?.backingScaleFactor ?? window?.backingScaleFactor ?? 2.0))
+        connection.sendResolution(
+            tier: .match,
+            width: max(640, logicalWidth),
+            height: max(480, logicalHeight),
+            scale: scale
         )
     }
 
@@ -978,6 +1013,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         switch state {
         case .connecting:
             hasSentCodecCaps = false
+            hasSentMatchLocalHiDPI = false
             showOverlay(title: "正在连接…", subtitle: "建立 WebSocket 加密通道")
         case .authenticating:
             showOverlay(title: "正在认证…", subtitle: "验证访问凭据与密钥协商")

@@ -28,6 +28,7 @@ public final class FloatingToolbarPanel: NSPanel {
     public var onDisplaySelected: ((UInt32) -> Void)?
     public var onCycleDisplay: (() -> Void)?
     public var onVirtualDisplayToggled: ((Bool) -> Void)?
+    public var onMatchLocalHiDPIToggled: ((Bool) -> Void)?
     public var onAudioToggled: ((Bool) -> Void)?
     public var onVolumeChanged: ((Float) -> Void)?
     public var onMicToggled: ((Bool) -> Void)?
@@ -69,6 +70,7 @@ public final class FloatingToolbarPanel: NSPanel {
     private var statsHudVisible: Bool = true
     private var isWindowsHost: Bool = false
     private var virtualDisplayOn: Bool = false
+    private var matchLocalHiDPI: Bool = false
     private var displays: [DisplayInfo] = []
     private var activeDisplayId: UInt32 = 0
 
@@ -363,7 +365,8 @@ public final class FloatingToolbarPanel: NSPanel {
         clipboardSyncOn: Bool? = nil,
         isFullscreen: Bool? = nil,
         statsHudVisible: Bool? = nil,
-        virtualDisplayOn: Bool? = nil
+        virtualDisplayOn: Bool? = nil,
+        matchLocalHiDPI: Bool? = nil
     ) {
         var needsMenuRebuild = false
         if let qualityPreset { self.qualityPreset = qualityPreset; needsMenuRebuild = true }
@@ -381,6 +384,7 @@ public final class FloatingToolbarPanel: NSPanel {
         if let codec { self.codec = codec; needsMenuRebuild = true }
         if let statsHudVisible { self.statsHudVisible = statsHudVisible; needsMenuRebuild = true }
         if let virtualDisplayOn { self.virtualDisplayOn = virtualDisplayOn; needsMenuRebuild = true }
+        if let matchLocalHiDPI { self.matchLocalHiDPI = matchLocalHiDPI; needsMenuRebuild = true }
 
         if let audioOn {
             self.audioOn = audioOn
@@ -499,6 +503,11 @@ public final class FloatingToolbarPanel: NSPanel {
         vdispItem.target = self
         vdispItem.state = virtualDisplayOn ? .on : .off
         qualityMenu.addItem(vdispItem)
+
+        let hiDpiItem = NSMenuItem(title: "匹配本机 HiDPI", action: #selector(toggleMatchLocalHiDPITapped), keyEquivalent: "")
+        hiDpiItem.target = self
+        hiDpiItem.state = matchLocalHiDPI ? .on : .off
+        qualityMenu.addItem(hiDpiItem)
 
         let statsHudItem = NSMenuItem(title: "性能浮窗", action: #selector(toggleStatsHudTapped), keyEquivalent: "")
         statsHudItem.target = self
@@ -715,6 +724,10 @@ public final class FloatingToolbarPanel: NSPanel {
 
     @objc private func toggleVirtualDisplayTapped() {
         onVirtualDisplayToggled?(!virtualDisplayOn)
+    }
+
+    @objc private func toggleMatchLocalHiDPITapped() {
+        onMatchLocalHiDPIToggled?(!matchLocalHiDPI)
     }
 
     @objc private func selectResolution(_ sender: NSMenuItem) {

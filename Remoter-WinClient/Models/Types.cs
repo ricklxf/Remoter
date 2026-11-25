@@ -207,6 +207,7 @@ public sealed class ClientSettings
     public ChromaMode ChromaMode { get; set; } = ChromaMode.Yuv420;
 
     public bool HdrEnabled { get; set; } = false;
+    public bool MatchLocalHiDPI { get; set; } = false;
     public bool ToneMapEnabled { get; set; } = false;
     public bool LowLatencyEnabled { get; set; } = false;
 

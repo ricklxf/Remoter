@@ -51,6 +51,7 @@ public sealed class FloatingToolbar : Form
     private SharpnessLevel _sharpness = SharpnessLevel.Low;
     private ChromaMode _chromaMode = ChromaMode.Yuv420;
     private bool _hdrOn;
+    private bool _matchHiDpiOn;
     private bool _toneMapOn;
     private bool _lowLatencyOn;
     private bool _virtualDisplayOn;
@@ -77,6 +78,7 @@ public sealed class FloatingToolbar : Form
     public event Action<SharpnessLevel>? SharpnessChanged;
     public event Action<ChromaMode>? ChromaToggled;
     public event Action<bool>? HdrToggled;
+    public event Action<bool>? MatchHiDpiToggled;
     public event Action<bool>? ToneMapToggled;
     public event Action<bool>? LowLatencyToggled;
     public event Action<bool>? VirtualDisplayToggled;
@@ -303,6 +305,7 @@ public sealed class FloatingToolbar : Form
         SharpnessLevel? sharpness = null,
         ChromaMode? chromaMode = null,
         bool? hdrOn = null,
+        bool? matchHiDpiOn = null,
         bool? toneMapOn = null,
         bool? lowLatencyOn = null,
         bool? virtualDisplayOn = null,
@@ -327,6 +330,7 @@ public sealed class FloatingToolbar : Form
         if (sharpness.HasValue)     { _sharpness = sharpness.Value;         rebuildMenu = true; }
         if (chromaMode.HasValue)    { _chromaMode = chromaMode.Value;       rebuildMenu = true; }
         if (hdrOn.HasValue)         { _hdrOn = hdrOn.Value;                 rebuildMenu = true; }
+        if (matchHiDpiOn.HasValue)  { _matchHiDpiOn = matchHiDpiOn.Value;   rebuildMenu = true; }
         if (toneMapOn.HasValue)     { _toneMapOn = toneMapOn.Value;         rebuildMenu = true; }
         if (lowLatencyOn.HasValue)  { _lowLatencyOn = lowLatencyOn.Value;   rebuildMenu = true; }
         if (virtualDisplayOn.HasValue) { _virtualDisplayOn = virtualDisplayOn.Value; rebuildMenu = true; }
@@ -462,6 +466,11 @@ public sealed class FloatingToolbar : Form
             "HDR 10-bit",
             _hdrOn,
             () => HdrToggled?.Invoke(!_hdrOn));
+        AddRootCheckItem(
+            _qualityMenu,
+            "匹配本机 HiDPI",
+            _matchHiDpiOn,
+            () => MatchHiDpiToggled?.Invoke(!_matchHiDpiOn));
         AddRootCheckItem(
             _qualityMenu,
             "🖥️ 虚拟扩展屏",

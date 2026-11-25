@@ -414,6 +414,7 @@ public struct ClientSettings: Codable, Equatable, Sendable {
     public var lowLatencyEnabled: Bool
     public var scaleMode: ScaleMode
     public var resolutionTier: ResolutionTier
+    public var matchLocalHiDPI: Bool
     public var preferredCodec: VideoCodec
     public var fps: Int
     public var autoFps: Bool
@@ -435,6 +436,7 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         lowLatencyEnabled: Bool = false,
         scaleMode: ScaleMode = .fit,
         resolutionTier: ResolutionTier = .native,
+        matchLocalHiDPI: Bool = false,
         preferredCodec: VideoCodec = .h264,
         fps: Int = 60,
         autoFps: Bool = true,
@@ -455,6 +457,7 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         self.lowLatencyEnabled = lowLatencyEnabled
         self.scaleMode = scaleMode
         self.resolutionTier = resolutionTier
+        self.matchLocalHiDPI = matchLocalHiDPI
         self.preferredCodec = preferredCodec
         self.fps = fps
         self.autoFps = autoFps
@@ -478,6 +481,7 @@ public struct ClientSettings: Codable, Equatable, Sendable {
         self.lowLatencyEnabled = try c.decodeIfPresent(Bool.self, forKey: .lowLatencyEnabled) ?? false
         self.scaleMode = try c.decodeIfPresent(ScaleMode.self, forKey: .scaleMode) ?? .fit
         self.resolutionTier = try c.decodeIfPresent(ResolutionTier.self, forKey: .resolutionTier) ?? .native
+        self.matchLocalHiDPI = try c.decodeIfPresent(Bool.self, forKey: .matchLocalHiDPI) ?? false
         self.preferredCodec = try c.decodeIfPresent(VideoCodec.self, forKey: .preferredCodec) ?? .h264
         self.fps = try c.decodeIfPresent(Int.self, forKey: .fps) ?? 60
         self.autoFps = try c.decodeIfPresent(Bool.self, forKey: .autoFps) ?? true

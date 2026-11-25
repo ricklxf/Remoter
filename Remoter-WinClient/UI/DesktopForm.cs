@@ -276,6 +276,10 @@ public sealed class DesktopForm : Form
         {
             _conn.SendHdr(true);
         }
+        if (_settings.MatchLocalHiDPI)
+        {
+            ApplyMatchLocalHiDPI(true);
+        }
         if (_settings.LowLatencyEnabled)
         {
             _conn.SendLowLatency(true);
@@ -816,6 +820,14 @@ public sealed class DesktopForm : Form
             _virtualDisplayOn = enable;
             _toolbar.UpdateState(virtualDisplayOn: enable);
             _conn.SendVirtualDisplay(enable ? "create" : "destroy");
+        };
+
+        _toolbar.MatchHiDpiToggled += enable =>
+        {
+            _settings.MatchLocalHiDPI = enable;
+            DeviceStore.Shared.SaveSettings(_settings);
+            _toolbar.UpdateState(matchHiDpiOn: enable);
+            ApplyMatchLocalHiDPI(enable);
         };
 
         _toolbar.ResolutionChanged += tierStr =>
@@ -1735,6 +1747,25 @@ public sealed class DesktopForm : Form
         }
     }
 
+    private void ApplyMatchLocalHiDPI(bool enable)
+    {
+        if (enable)
+        {
+            var bounds = Screen.FromControl(this).Bounds;
+            int w = (bounds.Width > 0 ? bounds.Width : 1920) & ~1;
+            int h = (bounds.Height > 0 ? bounds.Height : 1080) & ~1;
+            _settings.ResolutionTier = ResolutionTier.Match;
+            _toolbar.UpdateState(resolution: "match");
+            _conn.SendResolution("match", w, h, 2.0);
+        }
+        else
+        {
+            _settings.ResolutionTier = ResolutionTier.Native;
+            _toolbar.UpdateState(resolution: "native");
+            _conn.SendResolution("native");
+        }
+    }
+
     private void SyncToolbarFromState()
     {
         _toolbar.UpdateState(
@@ -1742,6 +1773,7 @@ public sealed class DesktopForm : Form
             sharpness: _settings.Sharpness,
             chromaMode: _settings.ChromaMode,
             hdrOn: _settings.HdrEnabled,
+            matchHiDpiOn: _settings.MatchLocalHiDPI,
             toneMapOn: _settings.ToneMapEnabled,
             lowLatencyOn: _settings.LowLatencyEnabled,
             virtualDisplayOn: _virtualDisplayOn,

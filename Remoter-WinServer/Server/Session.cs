@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -61,6 +62,7 @@ sealed class Session
     private bool  _hasLastClipboardTextHash = false;
     private ulong _lastClipboardImageHash = 0;
     private bool  _hasLastClipboardImageHash = false;
+    private string? _lastSentClipboardFilesSig = null;
     private int   _clipboardPollRunning = 0;
     private const int MaxReverseClipboardImageBytes = 4 * 1024 * 1024;
 
@@ -425,12 +427,27 @@ sealed class Session
                 else StopClipboardMonitor(flush: true);
                 break;
 
+            case ClientMsg.ClipboardSetFiles cf:
+                HandleClipboardSetFiles(cf.Paths);
+                break;
+
             // ── File transfer ──────────────────────────────────────────
             case ClientMsg.FileStart f:
-                _fileRecv?.Start(f.Id, f.Name, f.Size); break;
+                if (_fileRecv != null)
+                {
+                    var (offset, resumed) = _fileRecv.Start(
+                        f.Id, f.Name, f.Size, f.RelPath, f.DestDir, f.Resume, f.Purpose);
+                    Send(new { type = "file_ack", id = f.Id, offset, resumed });
+                }
+                break;
 
             case ClientMsg.FileEnd f:
-                _fileRecv?.Finish(f.Id); break;
+                if (_fileRecv != null)
+                {
+                    var finalPath = _fileRecv.Finish(f.Id);
+                    Send(new { type = "file_done", id = f.Id, path = finalPath ?? "" });
+                }
+                break;
 
             // ── System commands ────────────────────────────────────────
             case ClientMsg.CtrlAltDel:
@@ -594,8 +611,11 @@ sealed class Session
             case ClientMsg.ListDir ld:
                 HandleListDir(ld.Path); break;
 
+            case ClientMsg.ListDirRecursive ldr:
+                HandleListDirRecursive(ldr.Path); break;
+
             case ClientMsg.RequestFile rf:
-                _ = SendFileAsync(rf.Path).ContinueWith(t =>
+                _ = SendFileAsync(rf.Path, rf.Offset).ContinueWith(t =>
                 {
                     if (t.Exception != null)
                     {
@@ -1333,36 +1353,114 @@ sealed class Session
         Send(new { type = "dir_listing", path = dir.FullName, entries });
     }
 
+    private const int MaxRecursiveDirFiles = 2000;
+
+    private void HandleListDirRecursive(string path)
+    {
+        if (path == "~") path = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var rootDir = new DirectoryInfo(path);
+        if (!rootDir.Exists)
+        {
+            Send(new { type = "dir_tree", root = path, files = Array.Empty<object>() });
+            return;
+        }
+
+        var files = new List<object>();
+        var stack = new Stack<DirectoryInfo>();
+        stack.Push(rootDir);
+
+        while (stack.Count > 0 && files.Count < MaxRecursiveDirFiles)
+        {
+            var current = stack.Pop();
+            IEnumerable<FileSystemInfo> items;
+            try
+            {
+                items = current.EnumerateFileSystemInfos();
+            }
+            catch (UnauthorizedAccessException) { continue; }
+            catch (IOException) { continue; }
+
+            foreach (var item in items)
+            {
+                if (files.Count >= MaxRecursiveDirFiles) break;
+                try
+                {
+                    // Skip symlinks / reparse points to prevent cycles
+                    if ((item.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+
+                    if (item is DirectoryInfo subDir)
+                    {
+                        stack.Push(subDir);
+                    }
+                    else if (item is FileInfo fi)
+                    {
+                        var relPath = Path.GetRelativePath(rootDir.FullName, fi.FullName).Replace('\\', '/');
+                        files.Add(new
+                        {
+                            relPath,
+                            path = fi.FullName,
+                            size = fi.Length,
+                        });
+                    }
+                }
+                catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
+            }
+        }
+
+        Send(new { type = "dir_tree", root = rootDir.FullName, files });
+    }
+
     // ── File send (Win → client) ─────────────────────────────────────────
 
-    private async Task SendFileAsync(string path)
+    private async Task SendFileAsync(string path, long startOffset = 0)
     {
-        byte[] data;
-        try   { data = await File.ReadAllBytesAsync(path); }
+        FileStream fs;
+        try
+        {
+            fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 64 * 1024, useAsync: true);
+        }
         catch { return; }
 
-        var rawId = Guid.NewGuid().ToString("N")[..16];
-        var name  = Path.GetFileName(path);
-        Send(new { type = "file_start", id = rawId, name, size = data.Length });
-
-        const int CHUNK = 64 * 1024;
-        for (int offset = 0; offset < data.Length; offset += CHUNK)
+        await using (fs)
         {
-            int len    = Math.Min(CHUNK, data.Length - offset);
+            long totalSize = fs.Length;
+            long offset = (startOffset > 0 && startOffset <= totalSize) ? startOffset : 0;
+            if (offset > 0)
+            {
+                fs.Seek(offset, SeekOrigin.Begin);
+            }
+
+            var rawId = Guid.NewGuid().ToString("N")[..16];
+            var name  = Path.GetFileName(path);
+            Send(new { type = "file_start", id = rawId, name, size = totalSize, offset });
+
             var idBytes = new byte[16];
-            var idData  = System.Text.Encoding.UTF8.GetBytes(rawId);
+            var idData  = Encoding.UTF8.GetBytes(rawId);
             Buffer.BlockCopy(idData, 0, idBytes, 0, Math.Min(idData.Length, 16));
 
-            var pkt = new byte[1 + 16 + 4 + len];
-            pkt[0]  = FrameType.FileChunk;
-            Buffer.BlockCopy(idBytes, 0, pkt, 1, 16);
-            pkt[17] = (byte)(offset >> 24); pkt[18] = (byte)(offset >> 16);
-            pkt[19] = (byte)(offset >> 8);  pkt[20] = (byte)(offset);
-            Buffer.BlockCopy(data, offset, pkt, 21, len);
-            _bytesSent += pkt.Length;
-            await _conn.SendBinaryAsync(pkt);
+            const int CHUNK = 64 * 1024;
+            var buf = new byte[CHUNK];
+            while (offset < totalSize)
+            {
+                int read = await fs.ReadAsync(buf, 0, CHUNK);
+                if (read <= 0) break;
+
+                uint chunkOffset = (uint)offset;
+                var pkt = new byte[1 + 16 + 4 + read];
+                pkt[0]  = FrameType.FileChunk;
+                Buffer.BlockCopy(idBytes, 0, pkt, 1, 16);
+                pkt[17] = (byte)(chunkOffset >> 24);
+                pkt[18] = (byte)(chunkOffset >> 16);
+                pkt[19] = (byte)(chunkOffset >> 8);
+                pkt[20] = (byte)(chunkOffset);
+                Buffer.BlockCopy(buf, 0, pkt, 21, read);
+                _bytesSent += pkt.Length;
+                offset += read;
+                await _conn.SendBinaryAsync(pkt);
+            }
+            Send(new { type = "file_end", id = rawId });
         }
-        Send(new { type = "file_end", id = rawId });
     }
 
     // ── Clipboard ────────────────────────────────────────────────────────
@@ -1468,10 +1566,21 @@ sealed class Session
         if (needBaseline)
         {
             var seq = GetClipboardSequenceNumber();
+            string? baseFilesSig = null;
+            if (IsClipboardFormatAvailable(CF_HDROP) &&
+                TryReadClipboardFileDropList(out var baseFiles) &&
+                baseFiles.Count > 0)
+            {
+                baseFilesSig = ComputeClipboardFilesSignature(baseFiles);
+            }
             TryReadClipboardSnapshot(out var baseText, out var baseDib);
             lock (_clipboardLock)
             {
                 _lastClipboardSeq = seq;
+                if (baseFilesSig != null)
+                {
+                    _lastSentClipboardFilesSig = baseFilesSig;
+                }
                 if (!string.IsNullOrEmpty(baseText))
                 {
                     _lastClipboardTextHash = ComputeFnv1a64(baseText);
@@ -1540,6 +1649,61 @@ sealed class Session
                 if (!_reverseClipboardEnabled || seq == _lastClipboardSeq) return;
             }
 
+            // Check for file drop list (CF_HDROP) first so Explorer file copies
+            // trigger clipboard_files_from_target instead of plain text/image sync.
+            if (IsClipboardFormatAvailable(CF_HDROP))
+            {
+                if (!TryReadClipboardFileDropList(out var filePaths))
+                {
+                    // Transient clipboard contention — retry on next poll tick.
+                    return;
+                }
+
+                var existingPaths = filePaths
+                    .Where(p => !string.IsNullOrWhiteSpace(p) && (File.Exists(p) || Directory.Exists(p)))
+                    .ToList();
+
+                if (existingPaths.Count > 0)
+                {
+                    var sig = ComputeClipboardFilesSignature(existingPaths);
+                    bool sendFiles = false;
+                    lock (_clipboardLock)
+                    {
+                        if (!_reverseClipboardEnabled) return;
+                        _lastClipboardSeq = seq;
+                        if (sig != _lastSentClipboardFilesSig)
+                        {
+                            _lastSentClipboardFilesSig = sig;
+                            sendFiles = true;
+                        }
+                    }
+
+                    if (sendFiles)
+                    {
+                        var files = existingPaths.Select(p =>
+                        {
+                            bool isDir = Directory.Exists(p);
+                            long size = 0;
+                            if (!isDir)
+                            {
+                                try { size = new FileInfo(p).Length; } catch { }
+                            }
+                            return new
+                            {
+                                name = Path.GetFileName(p.TrimEnd('\\', '/')),
+                                path = p,
+                                size,
+                                isDir,
+                            };
+                        }).ToArray();
+
+                        ConnectionLogger.Shared.LogStep(_id, "clipboard_files_reverse_sent", $"count={files.Length}");
+                        Send(new { type = "clipboard_files_from_target", files });
+                    }
+                    return;
+                }
+            }
+
             if (!TryReadClipboardSnapshot(out var text, out var dib))
             {
                 // Transient OpenClipboard contention — leave _lastClipboardSeq unchanged so next tick retries.
@@ -1598,6 +1762,165 @@ sealed class Session
         {
             Interlocked.Exchange(ref _clipboardPollRunning, 0);
         }
+    }
+
+    private void HandleClipboardSetFiles(string[] paths)
+    {
+        var col = new StringCollection();
+        var validPaths = new List<string>();
+        foreach (var raw in paths)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            string p;
+            try { p = Path.GetFullPath(raw); }
+            catch { continue; }
+            if (File.Exists(p) || Directory.Exists(p))
+            {
+                col.Add(p);
+                validPaths.Add(p);
+            }
+        }
+
+        if (col.Count > 0)
+        {
+            var sig = ComputeClipboardFilesSignature(validPaths);
+            lock (_clipboardLock)
+            {
+                _lastSentClipboardFilesSig = sig;
+            }
+
+            var ok = RunOnStaThread(() =>
+            {
+                for (int attempt = 0; attempt < 6; attempt++)
+                {
+                    try
+                    {
+                        System.Windows.Forms.Clipboard.SetFileDropList(col);
+                        return true;
+                    }
+                    catch (ExternalException)
+                    {
+                        if (attempt + 1 < 6) Thread.Sleep(20);
+                    }
+                }
+                return false;
+            });
+
+            if (ok)
+            {
+                lock (_clipboardLock)
+                {
+                    _lastClipboardSeq = GetClipboardSequenceNumber();
+                }
+                AppLog.Write($"[Session] Clipboard SetFileDropList succeeded: {col.Count} item(s)");
+            }
+            else
+            {
+                AppLog.Write($"[Session] Clipboard SetFileDropList failed for {col.Count} item(s)");
+            }
+        }
+
+        Send(new { type = "clipboard_files_ready", count = col.Count });
+    }
+
+    private static bool TryReadClipboardFileDropList(out List<string> paths)
+    {
+        paths = new List<string>();
+        if (!IsClipboardFormatAvailable(CF_HDROP)) return true;
+
+        var result = RunOnStaThread<(bool ok, List<string> list)>(() =>
+        {
+            try
+            {
+                var list = new List<string>();
+                if (System.Windows.Forms.Clipboard.ContainsFileDropList())
+                {
+                    var drop = System.Windows.Forms.Clipboard.GetFileDropList();
+                    if (drop != null)
+                    {
+                        foreach (string? item in drop)
+                        {
+                            if (!string.IsNullOrWhiteSpace(item))
+                            {
+                                list.Add(item);
+                            }
+                        }
+                    }
+                }
+                return (true, list);
+            }
+            catch (ExternalException)
+            {
+                return (false, new List<string>());
+            }
+            catch
+            {
+                return (true, new List<string>());
+            }
+        });
+
+        if (!result.ok) return false;
+        paths = result.list;
+        return true;
+    }
+
+    private static T RunOnStaThread<T>(Func<T> func, int timeoutMs = 3000)
+    {
+        T result = default!;
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try { result = func(); }
+            catch (Exception ex) { error = ex; }
+        })
+        {
+            IsBackground = true,
+            Name = "Remoter-Clipboard-STA",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        if (!thread.Join(timeoutMs))
+        {
+            AppLog.Write("[Session] STA clipboard operation timed out");
+            return default!;
+        }
+        if (error != null)
+        {
+            AppLog.Write($"[Session] STA clipboard error: {error.Message}");
+            return default!;
+        }
+        return result;
+    }
+
+    private static string ComputeClipboardFilesSignature(IEnumerable<string> paths)
+    {
+        var entries = new List<string>();
+        foreach (var raw in paths)
+        {
+            string full;
+            try { full = Path.GetFullPath(raw); }
+            catch { full = raw; }
+
+            long size = 0;
+            long mtime = 0;
+            try
+            {
+                if (Directory.Exists(full))
+                {
+                    mtime = Directory.GetLastWriteTimeUtc(full).Ticks;
+                }
+                else if (File.Exists(full))
+                {
+                    var fi = new FileInfo(full);
+                    size = fi.Length;
+                    mtime = fi.LastWriteTimeUtc.Ticks;
+                }
+            }
+            catch { }
+            entries.Add($"{full}|{size}|{mtime}");
+        }
+        entries.Sort(StringComparer.Ordinal);
+        return string.Join("\n", entries);
     }
 
     private static bool TryReadClipboardSnapshot(out string? text, out byte[]? dib)
@@ -1890,6 +2213,7 @@ sealed class Session
 
     private const uint CF_UNICODETEXT = 13;
     private const uint CF_DIB         = 8;
+    private const uint CF_HDROP       = 15;
     private const uint GMEM_MOVEABLE  = 0x0002;
     private const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
     private const uint TOKEN_QUERY             = 0x0008;

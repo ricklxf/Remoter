@@ -190,12 +190,29 @@ public enum ClientMessages {
         serialize(["type": "clipboard_set_image", "data": base64Png])
     }
 
+    public static func clipboardSetFiles(paths: [String]) -> Data {
+        serialize(["type": "clipboard_set_files", "paths": paths])
+    }
+
     public static func setReverseClipboardSync(enabled: Bool) -> Data {
         serialize(["type": "set_reverse_clipboard_sync", "enabled": enabled])
     }
 
-    public static func fileStart(id: String, name: String, size: Int64) -> Data {
-        serialize(["type": "file_start", "id": id, "name": name, "size": size])
+    public static func fileStart(
+        id: String,
+        name: String,
+        size: Int64,
+        relPath: String? = nil,
+        destDir: String? = nil,
+        resume: Bool = false,
+        purpose: String? = nil
+    ) -> Data {
+        var dict: [String: Any] = ["type": "file_start", "id": id, "name": name, "size": size]
+        if let relPath, !relPath.isEmpty { dict["relPath"] = relPath }
+        if let destDir, !destDir.isEmpty { dict["destDir"] = destDir }
+        if resume { dict["resume"] = true }
+        if let purpose, !purpose.isEmpty { dict["purpose"] = purpose }
+        return serialize(dict)
     }
 
     public static func fileEnd(id: String) -> Data {
@@ -206,8 +223,14 @@ public enum ClientMessages {
         serialize(["type": "list_dir", "path": path])
     }
 
-    public static func requestFile(path: String) -> Data {
-        serialize(["type": "request_file", "path": path])
+    public static func listDirRecursive(path: String) -> Data {
+        serialize(["type": "list_dir_recursive", "path": path])
+    }
+
+    public static func requestFile(path: String, offset: Int64 = 0) -> Data {
+        var dict: [String: Any] = ["type": "request_file", "path": path]
+        if offset > 0 { dict["offset"] = offset }
+        return serialize(dict)
     }
 
     public static func fps(_ fps: Int, auto: Bool) -> Data {
@@ -353,10 +376,15 @@ public enum ServerMessage: Equatable, Sendable {
     case cursorShape(CursorShapeInfo)
     case pong(encodeMs: Int)
     case serverStats(ServerStats)
-    case fileStart(id: String, name: String, size: Int64)
+    case fileStart(id: String, name: String, size: Int64, offset: Int64 = 0)
+    case fileAck(id: String, offset: Int64, resumed: Bool)
+    case fileDone(id: String, path: String)
     case fileEnd(id: String)
     case dirListing(path: String, entries: [RemoteFileEntry])
+    case dirTree(root: String, files: [DirTreeFile])
     case clipboardFromTarget(ClipboardData)
+    case clipboardFilesFromTarget(files: [RemoteClipboardFile])
+    case clipboardFilesReady(count: Int)
     case keepalive
     case hostDisconnected
     case error(code: String, message: String)
@@ -462,7 +490,21 @@ public enum ServerMessage: Equatable, Sendable {
             return .fileStart(
                 id: readString(root, "id"),
                 name: readString(root, "name"),
-                size: readInt64(root, "size")
+                size: readInt64(root, "size"),
+                offset: readInt64(root, "offset", defaultValue: 0)
+            )
+
+        case "file_ack":
+            return .fileAck(
+                id: readString(root, "id"),
+                offset: readInt64(root, "offset", defaultValue: 0),
+                resumed: readBool(root, "resumed", defaultValue: false)
+            )
+
+        case "file_done":
+            return .fileDone(
+                id: readString(root, "id"),
+                path: readString(root, "path")
             )
 
         case "file_end":
@@ -471,8 +513,17 @@ public enum ServerMessage: Equatable, Sendable {
         case "dir_listing":
             return parseDirListing(root)
 
+        case "dir_tree":
+            return parseDirTree(root)
+
         case "clipboard_from_target":
             return parseClipboardFromTarget(root)
+
+        case "clipboard_files_from_target":
+            return parseClipboardFilesFromTarget(root)
+
+        case "clipboard_files_ready":
+            return .clipboardFilesReady(count: readInt(root, "count", defaultValue: 0))
 
         case "keepalive":
             return .keepalive
@@ -565,6 +616,38 @@ public enum ServerMessage: Equatable, Sendable {
             imagePngData: imageData,
             imageBase64: imageBase64
         ))
+    }
+
+    private static func parseDirTree(_ root: [String: Any]) -> ServerMessage {
+        let rootPath = readString(root, "root")
+        var files: [DirTreeFile] = []
+        if let arr = root["files"] as? [[String: Any]] {
+            files.reserveCapacity(arr.count)
+            for item in arr {
+                files.append(DirTreeFile(
+                    relPath: readString(item, "relPath"),
+                    path: readString(item, "path"),
+                    size: readInt64(item, "size")
+                ))
+            }
+        }
+        return .dirTree(root: rootPath, files: files)
+    }
+
+    private static func parseClipboardFilesFromTarget(_ root: [String: Any]) -> ServerMessage {
+        var files: [RemoteClipboardFile] = []
+        if let arr = root["files"] as? [[String: Any]] {
+            files.reserveCapacity(arr.count)
+            for item in arr {
+                files.append(RemoteClipboardFile(
+                    name: readString(item, "name"),
+                    path: readString(item, "path"),
+                    size: readInt64(item, "size"),
+                    isDir: readBool(item, "isDir")
+                ))
+            }
+        }
+        return .clipboardFilesFromTarget(files: files)
     }
 
     // MARK: - Safe JSON Readers

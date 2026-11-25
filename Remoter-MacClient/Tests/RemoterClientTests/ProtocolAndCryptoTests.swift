@@ -285,13 +285,13 @@ struct ProtocolAndCryptoTests {
             downloadDirectory: dlDir
         )
 
-        try await client.uploadFile(at: sourceURL)
+        try await client.uploadFile(at: sourceURL, resume: false)
         #expect(sentJson.count == 2) // file_start + file_end
         #expect(sentBinary.count == 3) // 64K + 64K + remaining
 
         // Replay uploaded packets back into download side
         let startMsg = ServerMessage.parse(jsonData: sentJson[0])
-        guard case .fileStart(let id, let name, let size) = startMsg else {
+        guard case .fileStart(let id, let name, let size, _) = startMsg else {
             Issue.record("Expected file_start")
             return
         }
@@ -307,6 +307,94 @@ struct ProtocolAndCryptoTests {
         let savedPath = try #require(completedPath)
         let downloaded = try Data(contentsOf: URL(fileURLWithPath: savedPath))
         #expect(downloaded == sourceData)
+    }
+
+    @Test("Item 4 & Item 5 protocol messages and resumable transfer round-trip")
+    func clipboardFilesAndResumableTransfer() async throws {
+        func decode(_ data: Data) throws -> [String: Any] {
+            try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        let startDict = try decode(ClientMessages.fileStart(
+            id: "f1", name: "a.txt", size: 1024, relPath: "dir/a.txt", destDir: "/tmp", resume: true, purpose: "clipboard"
+        ))
+        #expect(startDict["relPath"] as? String == "dir/a.txt")
+        #expect(startDict["destDir"] as? String == "/tmp")
+        #expect(startDict["resume"] as? Bool == true)
+        #expect(startDict["purpose"] as? String == "clipboard")
+
+        let reqDict = try decode(ClientMessages.requestFile(path: "/a/b.bin", offset: 4096))
+        #expect(reqDict["type"] as? String == "request_file")
+        #expect(reqDict["offset"] as? Int == 4096)
+
+        let treeReq = try decode(ClientMessages.listDirRecursive(path: "/Users/test/folder"))
+        #expect(treeReq["type"] as? String == "list_dir_recursive")
+
+        let cbSet = try decode(ClientMessages.clipboardSetFiles(paths: ["/tmp/1.txt", "/tmp/2.txt"]))
+        #expect(cbSet["type"] as? String == "clipboard_set_files")
+        #expect((cbSet["paths"] as? [String])?.count == 2)
+
+        guard case .fileAck(let ackId, let ackOff, let resumed) = ServerMessage.parse(
+            jsonData: Data(#"{"type":"file_ack","id":"f1","offset":65536,"resumed":true}"#.utf8)
+        ) else {
+            Issue.record("Expected .fileAck")
+            return
+        }
+        #expect(ackId == "f1" && ackOff == 65536 && resumed)
+
+        guard case .fileDone(let doneId, let donePath) = ServerMessage.parse(
+            jsonData: Data(#"{"type":"file_done","id":"f1","path":"/Users/host/Downloads/a.txt"}"#.utf8)
+        ) else {
+            Issue.record("Expected .fileDone")
+            return
+        }
+        #expect(doneId == "f1" && donePath == "/Users/host/Downloads/a.txt")
+
+        guard case .dirTree(let root, let files) = ServerMessage.parse(
+            jsonData: Data(#"{"type":"dir_tree","root":"/src","files":[{"relPath":"sub/a.txt","path":"/src/sub/a.txt","size":12}]}"#.utf8)
+        ) else {
+            Issue.record("Expected .dirTree")
+            return
+        }
+        #expect(root == "/src" && files.count == 1 && files[0].relPath == "sub/a.txt")
+
+        guard case .clipboardFilesFromTarget(let cbFiles) = ServerMessage.parse(
+            jsonData: Data(#"{"type":"clipboard_files_from_target","files":[{"name":"a.png","path":"/tmp/a.png","size":500,"isDir":false}]}"#.utf8)
+        ) else {
+            Issue.record("Expected .clipboardFilesFromTarget")
+            return
+        }
+        #expect(cbFiles.count == 1 && cbFiles[0].name == "a.png" && !cbFiles[0].isDir)
+
+        guard case .clipboardFilesReady(let readyCount) = ServerMessage.parse(
+            jsonData: Data(#"{"type":"clipboard_files_ready","count":3}"#.utf8)
+        ) else {
+            Issue.record("Expected .clipboardFilesReady")
+            return
+        }
+        #expect(readyCount == 3)
+
+        // Resumable download test with pre-existing .remoter.part
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("remoter_resume_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let fullData = Data((0..<100_000).map { UInt8($0 & 0xFF) })
+        let destURL = tmpDir.appendingPathComponent("resumed.bin")
+        let partURL = URL(fileURLWithPath: destURL.path + ".remoter.part")
+        try fullData.prefix(40_000).write(to: partURL)
+
+        let client = FileTransferClient(sendJsonBytes: { _ in }, sendBinaryAsync: { _ in }, downloadDirectory: tmpDir)
+        let existingOff = client.prepareDownloadTarget(remotePath: "/remote/resumed.bin", destURL: destURL, overwriteExisting: true)
+        #expect(existingOff == 40_000)
+
+        client.handleFileStart(id: "r1", name: "resumed.bin", size: Int64(fullData.count), offset: existingOff)
+        client.handleFileChunk(id: "r1", offset: UInt32(existingOff), chunk: fullData.suffix(from: 40_000))
+        client.handleFileEnd(id: "r1")
+
+        let finalData = try Data(contentsOf: destURL)
+        #expect(finalData == fullData)
+        #expect(!FileManager.default.fileExists(atPath: partURL.path))
     }
 
     // MARK: - LAN Helper Tests

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Connection, ConnStats } from '../network/Connection'
-import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode, QualityPreset } from '../types'
+import { StreamInfo, FileTransfer, ResolutionTier, ScaleMode, SharpnessLevel, ChromaMode, QualityPreset, ClipboardFileItem } from '../types'
+import { extractDroppedEntries } from '../utils/fileEntries'
 import { RemoteCanvas } from '../components/RemoteCanvas'
 import { StatsHUD } from '../components/StatsHUD'
 import { Toolbar } from '../components/Toolbar'
@@ -60,6 +61,9 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
   const micCapturerRef = useRef<MicCapturer | null>(null)
   const [micToast, setMicToast] = useState<string | null>(null)
   const micToastTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  // Clipboard files copied on the remote host (one-click download toast)
+  const [remoteClipboardFiles, setRemoteClipboardFiles] = useState<ClipboardFileItem[] | null>(null)
+  const clipFilesTimerRef = useRef<ReturnType<typeof setTimeout>>()
   // Machine-wide lock on the target's own physical keyboard/mouse — off by
   // default, and only ever flipped by the input_lock_changed broadcast (see
   // conn.onEvent below), never optimistically here, since the agent is the
@@ -259,6 +263,13 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
           showMicToast(`🎤 麦克风已回传至 ${e.device}`)
         }
       }
+      if (e.type === 'clipboard_files_from_target') {
+        if (e.files.length > 0) {
+          setRemoteClipboardFiles(e.files)
+          clearTimeout(clipFilesTimerRef.current)
+          clipFilesTimerRef.current = setTimeout(() => setRemoteClipboardFiles(null), 8000)
+        }
+      }
       if (e.type === 'input_lock_changed') {
         setInputLocked(e.locked)
       }
@@ -273,6 +284,7 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     micCapturerRef.current?.stop()
     micCapturerRef.current = null
     clearTimeout(micToastTimerRef.current)
+    clearTimeout(clipFilesTimerRef.current)
   }, [])
 
   function showMicToast(msg: string) {
@@ -394,18 +406,44 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
     if (!hasDraggedFiles(e.dataTransfer)) return
     e.preventDefault()
     e.stopPropagation()
-    const files = Array.from(e.dataTransfer.files)
-    if (files.length === 0) return
-    setShowTransfers(true)
+    const dt = e.dataTransfer
     ;(async () => {
-      for (const file of files) {
+      const entries = await extractDroppedEntries(dt)
+      if (entries.length === 0) return
+      setShowTransfers(true)
+      for (const entry of entries) {
         try {
-          await conn.sendFile(file)
+          await conn.sendFile(entry.file, { relPath: entry.relPath, resume: true })
         } catch (err) {
-          console.warn('[DesktopPage] drop upload failed:', file.name, err)
+          console.warn('[DesktopPage] drop upload failed:', entry.relPath ?? entry.file.name, err)
         }
       }
     })()
+  }
+
+  function fmtClipSize(bytes: number): string {
+    if (bytes <= 0) return '0 B'
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  }
+
+  async function handleDownloadClipboardFiles() {
+    const files = remoteClipboardFiles
+    if (!files || files.length === 0) return
+    clearTimeout(clipFilesTimerRef.current)
+    setRemoteClipboardFiles(null)
+    setShowTransfers(true)
+    for (const item of files) {
+      if (item.isDir) {
+        const tree = await conn.requestDirTree(item.path)
+        for (const f of tree.files) {
+          conn.sendRequestFile(f.path)
+        }
+      } else {
+        conn.sendRequestFile(item.path)
+      }
+    }
   }
 
   return (
@@ -466,6 +504,55 @@ export function DesktopPage({ conn, streamInfo, stats, initialCodec = 'jpeg', tr
       {micToast && (
         <div style={{ ...styles.reconnectBanner, top: isReconnecting ? 52 : 12 }}>
           {micToast}
+        </div>
+      )}
+
+      {remoteClipboardFiles && remoteClipboardFiles.length > 0 && (
+        <div
+          style={{
+            ...styles.reconnectBanner,
+            top: (isReconnecting ? 52 : 12) + (micToast ? 40 : 0),
+            pointerEvents: 'auto',
+            gap: 10,
+            padding: '7px 14px',
+          }}
+        >
+          <span>
+            📋 远端复制了 {remoteClipboardFiles.length} 个文件 ({fmtClipSize(remoteClipboardFiles.reduce((s, f) => s + (f.size || 0), 0))})
+          </span>
+          <button
+            onClick={handleDownloadClipboardFiles}
+            style={{
+              background: '#0d9488',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '3px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            下载
+          </button>
+          <button
+            onClick={() => {
+              clearTimeout(clipFilesTimerRef.current)
+              setRemoteClipboardFiles(null)
+            }}
+            style={{
+              background: 'transparent',
+              color: 'rgba(255,255,255,0.75)',
+              border: 'none',
+              fontSize: 14,
+              cursor: 'pointer',
+              padding: '0 2px',
+              lineHeight: 1,
+            }}
+            title="关闭"
+          >
+            ×
+          </button>
         </div>
       )}
 

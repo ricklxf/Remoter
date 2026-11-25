@@ -1,50 +1,81 @@
 import AppKit
 
-/// Remote file browser & bidirectional file transfer sheet/window.
-/// Supports browsing remote directories (`connection.sendListDir`), downloading files
-/// (`connection.sendRequestFile`), uploading local files (`NSOpenPanel` -> `connection.uploadFile(at:)`),
-/// and displaying live `FileTransferProgress` status.
+/// Dual-pane bidirectional file manager & transfer window:
+/// - Left pane:  Local filesystem browser (path bar, up-dir, multi-select, upload selected files/folders recursively to current remote dir)
+/// - Right pane: Remote filesystem browser (path bar, up-dir, multi-select, download selected files/folders recursively to current local dir)
+/// - Bottom bar: Live transfer progress, resumable transfer (`[断点续传]`) indicator, and transfer history.
 public final class FileTransferSheetController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+    private struct LocalFileEntry {
+        let url: URL
+        let name: String
+        let size: Int64
+        let isDir: Bool
+        let modifiedDate: Date?
+    }
+
     private weak var connection: RemoterConnection?
-    private var currentPath: String = ""
-    private var entries: [RemoteFileEntry] = []
-    private var transfers: [FileTransferProgress] = []
     private var isWindowsHost: Bool = false
 
-    private let pathLabel = Theme.makeLabel("/", size: 12, weight: .medium, color: Theme.textPrimary, monospaced: true)
-    private let upButton = Theme.makeButton(title: "↑ 上级", style: .secondary, fontSize: 12)
-    private let refreshButton = Theme.makeButton(title: "刷新", style: .secondary, fontSize: 12)
-    private let uploadButton = Theme.makeButton(title: "上传文件…", style: .primary, fontSize: 12, weight: .semibold)
-    private let downloadButton = Theme.makeButton(title: "下载选中", style: .secondary, fontSize: 12)
-    private let openDownloadsButton = Theme.makeButton(title: "打开下载目录", style: .ghost, fontSize: 11.5)
-    private let closeButton = Theme.makeButton(title: "关闭", style: .secondary, fontSize: 12)
+    // Local pane state
+    private var currentLocalURL: URL
+    private var localEntries: [LocalFileEntry] = []
 
-    private let fileTable = NSTableView()
-    private let emptyLabel = Theme.makeLabel("目录为空或正在加载…", size: 12.5, color: Theme.textMuted)
+    // Remote pane state
+    private var currentRemotePath: String = ""
+    private var remoteEntries: [RemoteFileEntry] = []
 
+    // Transfer state
+    private var transfers: [FileTransferProgress] = []
+
+    // Local pane controls
+    private let localPathLabel = Theme.makeLabel("~", size: 11.5, weight: .medium, color: Theme.textPrimary, monospaced: true)
+    private let localUpButton = Theme.makeButton(title: "↑", style: .secondary, fontSize: 12)
+    private let localRefreshButton = Theme.makeButton(title: "刷新", style: .secondary, fontSize: 11.5)
+    private let localUploadSelectedButton = Theme.makeButton(title: "上传选中 →", style: .primary, fontSize: 11.5, weight: .semibold)
+    private let localTable = NSTableView()
+    private let localEmptyLabel = Theme.makeLabel("此目录为空", size: 12, color: Theme.textMuted)
+
+    // Remote pane controls
+    private let remotePathLabel = Theme.makeLabel("/", size: 11.5, weight: .medium, color: Theme.textPrimary, monospaced: true)
+    private let remoteUpButton = Theme.makeButton(title: "↑", style: .secondary, fontSize: 12)
+    private let remoteRefreshButton = Theme.makeButton(title: "刷新", style: .secondary, fontSize: 11.5)
+    private let remoteDownloadSelectedButton = Theme.makeButton(title: "← 下载选中", style: .primary, fontSize: 11.5, weight: .semibold)
+    private let pickUploadButton = Theme.makeButton(title: "选择上传…", style: .secondary, fontSize: 11.5)
+    private let remoteTable = NSTableView()
+    private let remoteEmptyLabel = Theme.makeLabel("目录为空或正在加载…", size: 12, color: Theme.textMuted)
+
+    // Transfer progress & history controls
     private let progressBar = NSProgressIndicator()
-    private let progressLabel = Theme.makeLabel("拖拽文件到远程桌面或点击「上传文件」开始传输", size: 11.5, color: Theme.textMuted)
+    private let progressLabel = Theme.makeLabel("支持双栏互传、文件夹递归上传/下载与断点续传（也可直接拖拽文件或文件夹到远程桌面）", size: 11.5, color: Theme.textMuted)
     private let transferTable = NSTableView()
+
+    // Bottom bar
+    private let openLocalDirButton = Theme.makeButton(title: "在 Finder 中打开本地目录", style: .ghost, fontSize: 11.5)
+    private let openDownloadsButton = Theme.makeButton(title: "打开默认下载目录", style: .ghost, fontSize: 11.5)
+    private let closeButton = Theme.makeButton(title: "关闭", style: .secondary, fontSize: 12)
 
     public var onUploadError: ((String) -> Void)?
 
     public init(connection: RemoterConnection) {
         self.connection = connection
         self.isWindowsHost = connection.serverOs.lowercased().contains("win")
+        self.currentLocalURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 620),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "文件传输"
+        window.title = "文件管理器 — 双向文件传输"
         window.appearance = Theme.darkAppearance
         window.backgroundColor = Theme.background
-        window.minSize = NSSize(width: 560, height: 420)
+        window.minSize = NSSize(width: 760, height: 480)
         super.init(window: window)
 
         buildUI()
+        reloadLocalDirectory()
     }
 
     @available(*, unavailable)
@@ -55,22 +86,23 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
     // MARK: - Public Updates
 
     public func requestInitialDirectory() {
-        requestDirectory(currentPath)
+        reloadLocalDirectory()
+        requestRemoteDirectory(currentRemotePath)
     }
 
     public func handleDirListing(path: String, entries: [RemoteFileEntry]) {
-        currentPath = path
-        pathLabel.stringValue = path.isEmpty ? "/" : path
-        self.entries = entries.sorted { lhs, rhs in
+        currentRemotePath = path
+        remotePathLabel.stringValue = path.isEmpty ? "/" : path
+        self.remoteEntries = entries.sorted { lhs, rhs in
             if lhs.isDir != rhs.isDir { return lhs.isDir && !rhs.isDir }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
-        fileTable.reloadData()
-        emptyLabel.isHidden = !self.entries.isEmpty
-        if self.entries.isEmpty {
-            emptyLabel.stringValue = "此目录为空"
+        remoteTable.reloadData()
+        remoteEmptyLabel.isHidden = !self.remoteEntries.isEmpty
+        if self.remoteEntries.isEmpty {
+            remoteEmptyLabel.stringValue = "此目录为空"
         }
-        updateDownloadButtonState()
+        updateActionButtonsState()
     }
 
     public func updateTransferProgress(_ progress: FileTransferProgress) {
@@ -78,7 +110,7 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
             transfers[idx] = progress
         } else {
             transfers.insert(progress, at: 0)
-            if transfers.count > 40 {
+            if transfers.count > 60 {
                 transfers.removeLast()
             }
         }
@@ -87,18 +119,19 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
         if let active = transfers.first(where: { !$0.done }) ?? transfers.first {
             progressBar.doubleValue = active.fractionCompleted * 100.0
             let arrow = active.direction == .upload ? "↑ 上传" : "↓ 下载"
+            let resumeTag = active.resumed ? " [断点续传]" : ""
             if let err = active.error {
-                progressLabel.stringValue = "\(arrow) 失败: \(active.name) — \(err)"
+                progressLabel.stringValue = "\(arrow)\(resumeTag) 失败: \(active.name) — \(err)"
                 progressLabel.textColor = Theme.danger
             } else if active.done {
                 let extra = active.savedPath.map { " → \($0)" } ?? ""
-                progressLabel.stringValue = "\(arrow) 完成: \(active.name)\(extra)"
+                progressLabel.stringValue = "\(arrow)\(resumeTag) 完成: \(active.name)\(extra)"
                 progressLabel.textColor = Theme.accent
             } else {
                 let pct = Int(active.fractionCompleted * 100)
                 let spd = Theme.formatSpeed(active.speedBps)
                 let spdPart = spd.isEmpty ? "" : " · \(spd)"
-                progressLabel.stringValue = "\(arrow) \(active.name) (\(pct)% · \(Theme.formatBytes(active.transferred)) / \(Theme.formatBytes(active.size))\(spdPart))"
+                progressLabel.stringValue = "\(arrow)\(resumeTag) \(active.name) (\(pct)% · \(Theme.formatBytes(active.transferred)) / \(Theme.formatBytes(active.size))\(spdPart))"
                 progressLabel.textColor = Theme.textPrimary
             }
         }
@@ -111,68 +144,19 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = Theme.background.cgColor
 
-        // Top toolbar row
-        upButton.target = self
-        upButton.action = #selector(goUpTapped)
-        refreshButton.target = self
-        refreshButton.action = #selector(refreshTapped)
-        uploadButton.target = self
-        uploadButton.action = #selector(uploadTapped)
-        downloadButton.target = self
-        downloadButton.action = #selector(downloadSelectedTapped)
-        downloadButton.isEnabled = false
+        let splitView = NSSplitView()
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+        splitView.translatesAutoresizingMaskIntoConstraints = false
 
-        let pathCard = Theme.makeCard(background: Theme.inputBackground, cornerRadius: 7)
-        pathLabel.lineBreakMode = .byTruncatingMiddle
-        pathCard.addSubview(pathLabel)
-        NSLayoutConstraint.activate([
-            pathLabel.leadingAnchor.constraint(equalTo: pathCard.leadingAnchor, constant: 10),
-            pathLabel.trailingAnchor.constraint(equalTo: pathCard.trailingAnchor, constant: -10),
-            pathLabel.centerYAnchor.constraint(equalTo: pathCard.centerYAnchor),
-            pathCard.heightAnchor.constraint(equalToConstant: 30),
-        ])
+        let leftPane = buildLocalPane()
+        let rightPane = buildRemotePane()
+        splitView.addArrangedSubview(leftPane)
+        splitView.addArrangedSubview(rightPane)
+        splitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
+        splitView.setHoldingPriority(.defaultLow, forSubviewAt: 1)
 
-        let topBar = NSStackView(views: [upButton, pathCard, refreshButton, downloadButton, uploadButton])
-        topBar.orientation = .horizontal
-        topBar.alignment = .centerY
-        topBar.spacing = 8
-        topBar.translatesAutoresizingMaskIntoConstraints = false
-
-        upButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        upButton.widthAnchor.constraint(equalToConstant: 66).isActive = true
-        refreshButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        refreshButton.widthAnchor.constraint(equalToConstant: 54).isActive = true
-        downloadButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        downloadButton.widthAnchor.constraint(equalToConstant: 76).isActive = true
-        uploadButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        uploadButton.widthAnchor.constraint(equalToConstant: 86).isActive = true
-        pathCard.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // Remote file table card
-        let fileCard = Theme.makeCard(background: Theme.surface, cornerRadius: 10)
-        setupFileTable()
-
-        let fileScroll = NSScrollView()
-        fileScroll.documentView = fileTable
-        fileScroll.drawsBackground = false
-        fileScroll.hasVerticalScroller = true
-        fileScroll.autohidesScrollers = true
-        fileScroll.borderType = .noBorder
-        fileScroll.translatesAutoresizingMaskIntoConstraints = false
-
-        fileCard.addSubview(fileScroll)
-        fileCard.addSubview(emptyLabel)
-        NSLayoutConstraint.activate([
-            fileScroll.leadingAnchor.constraint(equalTo: fileCard.leadingAnchor, constant: 6),
-            fileScroll.trailingAnchor.constraint(equalTo: fileCard.trailingAnchor, constant: -6),
-            fileScroll.topAnchor.constraint(equalTo: fileCard.topAnchor, constant: 6),
-            fileScroll.bottomAnchor.constraint(equalTo: fileCard.bottomAnchor, constant: -6),
-
-            emptyLabel.centerXAnchor.constraint(equalTo: fileCard.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: fileCard.centerYAnchor),
-        ])
-
-        // Active transfer progress & history card
+        // Bottom transfer progress & history card
         let transferCard = Theme.makeCard(background: Theme.surface, cornerRadius: 10)
 
         progressBar.isIndeterminate = false
@@ -210,7 +194,9 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
             transferScroll.bottomAnchor.constraint(equalTo: transferCard.bottomAnchor, constant: -6),
         ])
 
-        // Bottom bar
+        // Bottom action bar
+        openLocalDirButton.target = self
+        openLocalDirButton.action = #selector(openLocalDirTapped)
         openDownloadsButton.target = self
         openDownloadsButton.action = #selector(openDownloadsTapped)
         closeButton.target = self
@@ -218,64 +204,224 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
 
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
-        let bottomBar = NSStackView(views: [openDownloadsButton, spacer, closeButton])
+        let bottomBar = NSStackView(views: [openLocalDirButton, openDownloadsButton, spacer, closeButton])
         bottomBar.orientation = .horizontal
         bottomBar.alignment = .centerY
+        bottomBar.spacing = 10
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
+        openLocalDirButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
         openDownloadsButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
         closeButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
         closeButton.widthAnchor.constraint(equalToConstant: 70).isActive = true
 
-        contentView.addSubview(topBar)
-        contentView.addSubview(fileCard)
+        contentView.addSubview(splitView)
         contentView.addSubview(transferCard)
         contentView.addSubview(bottomBar)
 
         NSLayoutConstraint.activate([
-            topBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            topBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            topBar.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            splitView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            splitView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            splitView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            splitView.bottomAnchor.constraint(equalTo: transferCard.topAnchor, constant: -10),
 
-            fileCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            fileCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            fileCard.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 10),
-            fileCard.bottomAnchor.constraint(equalTo: transferCard.topAnchor, constant: -10),
+            leftPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
+            rightPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
 
-            transferCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            transferCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            transferCard.heightAnchor.constraint(equalToConstant: 140),
+            transferCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            transferCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            transferCard.heightAnchor.constraint(equalToConstant: 148),
             transferCard.bottomAnchor.constraint(equalTo: bottomBar.topAnchor, constant: -10),
 
-            bottomBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            bottomBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            bottomBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            bottomBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
             bottomBar.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
         ])
+
+        DispatchQueue.main.async {
+            splitView.setPosition(460, ofDividerAt: 0)
+        }
     }
 
-    private func setupFileTable() {
+    private func buildLocalPane() -> NSView {
+        let pane = Theme.makeCard(background: Theme.surface, cornerRadius: 10)
+
+        let title = Theme.makeLabel("本地文件", size: 12.5, weight: .semibold, color: Theme.textPrimary)
+        localUpButton.target = self
+        localUpButton.action = #selector(localGoUpTapped)
+        localRefreshButton.target = self
+        localRefreshButton.action = #selector(localRefreshTapped)
+        localUploadSelectedButton.target = self
+        localUploadSelectedButton.action = #selector(localUploadSelectedTapped)
+        localUploadSelectedButton.isEnabled = false
+
+        let headerSpacer = NSView()
+        headerSpacer.translatesAutoresizingMaskIntoConstraints = false
+        let headerRow = NSStackView(views: [title, headerSpacer, localUploadSelectedButton])
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 8
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+        localUploadSelectedButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+
+        let pathCard = Theme.makeCard(background: Theme.inputBackground, cornerRadius: 6)
+        localPathLabel.lineBreakMode = .byTruncatingMiddle
+        pathCard.addSubview(localPathLabel)
+        NSLayoutConstraint.activate([
+            localPathLabel.leadingAnchor.constraint(equalTo: pathCard.leadingAnchor, constant: 8),
+            localPathLabel.trailingAnchor.constraint(equalTo: pathCard.trailingAnchor, constant: -8),
+            localPathLabel.centerYAnchor.constraint(equalTo: pathCard.centerYAnchor),
+            pathCard.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
+        let pathRow = NSStackView(views: [localUpButton, pathCard, localRefreshButton])
+        pathRow.orientation = .horizontal
+        pathRow.alignment = .centerY
+        pathRow.spacing = 6
+        pathRow.translatesAutoresizingMaskIntoConstraints = false
+        localUpButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        localUpButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        localRefreshButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        localRefreshButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        pathCard.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        setupBrowserTable(localTable, doubleAction: #selector(localRowDoubleClicked))
+        let scroll = NSScrollView()
+        scroll.documentView = localTable
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        pane.addSubview(headerRow)
+        pane.addSubview(pathRow)
+        pane.addSubview(scroll)
+        pane.addSubview(localEmptyLabel)
+
+        NSLayoutConstraint.activate([
+            headerRow.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: 10),
+            headerRow.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -10),
+            headerRow.topAnchor.constraint(equalTo: pane.topAnchor, constant: 8),
+
+            pathRow.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: 10),
+            pathRow.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -10),
+            pathRow.topAnchor.constraint(equalTo: headerRow.bottomAnchor, constant: 6),
+
+            scroll.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: 6),
+            scroll.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -6),
+            scroll.topAnchor.constraint(equalTo: pathRow.bottomAnchor, constant: 6),
+            scroll.bottomAnchor.constraint(equalTo: pane.bottomAnchor, constant: -6),
+
+            localEmptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            localEmptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+        ])
+        return pane
+    }
+
+    private func buildRemotePane() -> NSView {
+        let pane = Theme.makeCard(background: Theme.surface, cornerRadius: 10)
+
+        let title = Theme.makeLabel("远端文件", size: 12.5, weight: .semibold, color: Theme.textPrimary)
+        remoteUpButton.target = self
+        remoteUpButton.action = #selector(remoteGoUpTapped)
+        remoteRefreshButton.target = self
+        remoteRefreshButton.action = #selector(remoteRefreshTapped)
+        remoteDownloadSelectedButton.target = self
+        remoteDownloadSelectedButton.action = #selector(remoteDownloadSelectedTapped)
+        remoteDownloadSelectedButton.isEnabled = false
+        pickUploadButton.target = self
+        pickUploadButton.action = #selector(pickUploadTapped)
+
+        let headerSpacer = NSView()
+        headerSpacer.translatesAutoresizingMaskIntoConstraints = false
+        let headerRow = NSStackView(views: [title, headerSpacer, remoteDownloadSelectedButton, pickUploadButton])
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 6
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+        remoteDownloadSelectedButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        pickUploadButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+
+        let pathCard = Theme.makeCard(background: Theme.inputBackground, cornerRadius: 6)
+        remotePathLabel.lineBreakMode = .byTruncatingMiddle
+        pathCard.addSubview(remotePathLabel)
+        NSLayoutConstraint.activate([
+            remotePathLabel.leadingAnchor.constraint(equalTo: pathCard.leadingAnchor, constant: 8),
+            remotePathLabel.trailingAnchor.constraint(equalTo: pathCard.trailingAnchor, constant: -8),
+            remotePathLabel.centerYAnchor.constraint(equalTo: pathCard.centerYAnchor),
+            pathCard.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
+        let pathRow = NSStackView(views: [remoteUpButton, pathCard, remoteRefreshButton])
+        pathRow.orientation = .horizontal
+        pathRow.alignment = .centerY
+        pathRow.spacing = 6
+        pathRow.translatesAutoresizingMaskIntoConstraints = false
+        remoteUpButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        remoteUpButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        remoteRefreshButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        remoteRefreshButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        pathCard.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        setupBrowserTable(remoteTable, doubleAction: #selector(remoteRowDoubleClicked))
+        let scroll = NSScrollView()
+        scroll.documentView = remoteTable
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        pane.addSubview(headerRow)
+        pane.addSubview(pathRow)
+        pane.addSubview(scroll)
+        pane.addSubview(remoteEmptyLabel)
+
+        NSLayoutConstraint.activate([
+            headerRow.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: 10),
+            headerRow.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -10),
+            headerRow.topAnchor.constraint(equalTo: pane.topAnchor, constant: 8),
+
+            pathRow.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: 10),
+            pathRow.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -10),
+            pathRow.topAnchor.constraint(equalTo: headerRow.bottomAnchor, constant: 6),
+
+            scroll.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: 6),
+            scroll.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -6),
+            scroll.topAnchor.constraint(equalTo: pathRow.bottomAnchor, constant: 6),
+            scroll.bottomAnchor.constraint(equalTo: pane.bottomAnchor, constant: -6),
+
+            remoteEmptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            remoteEmptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+        ])
+        return pane
+    }
+
+    private func setupBrowserTable(_ table: NSTableView, doubleAction: Selector) {
         let nameCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         nameCol.title = "名称"
-        nameCol.width = 360
-        nameCol.minWidth = 180
+        nameCol.width = 210
+        nameCol.minWidth = 120
 
         let sizeCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("size"))
         sizeCol.title = "大小"
-        sizeCol.width = 100
+        sizeCol.width = 76
 
         let modCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("modified"))
         modCol.title = "修改时间"
-        modCol.width = 150
+        modCol.width = 124
 
-        fileTable.addTableColumn(nameCol)
-        fileTable.addTableColumn(sizeCol)
-        fileTable.addTableColumn(modCol)
-        fileTable.backgroundColor = .clear
-        fileTable.rowHeight = 26
-        fileTable.usesAlternatingRowBackgroundColors = false
-        fileTable.dataSource = self
-        fileTable.delegate = self
-        fileTable.target = self
-        fileTable.doubleAction = #selector(fileRowDoubleClicked)
+        table.addTableColumn(nameCol)
+        table.addTableColumn(sizeCol)
+        table.addTableColumn(modCol)
+        table.backgroundColor = .clear
+        table.rowHeight = 25
+        table.allowsMultipleSelection = true
+        table.usesAlternatingRowBackgroundColors = false
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.doubleAction = doubleAction
     }
 
     private func setupTransferTable() {
@@ -285,77 +431,179 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
         transferTable.addTableColumn(col)
         transferTable.headerView = nil
         transferTable.backgroundColor = .clear
-        transferTable.rowHeight = 24
+        transferTable.rowHeight = 22
         transferTable.dataSource = self
         transferTable.delegate = self
     }
 
-    // MARK: - Actions
+    // MARK: - Local Directory Loading
 
-    private func requestDirectory(_ path: String) {
-        emptyLabel.stringValue = "正在加载目录…"
-        emptyLabel.isHidden = !entries.isEmpty
+    private func reloadLocalDirectory() {
+        localPathLabel.stringValue = currentLocalURL.path
+        let fm = FileManager.default
+        var list: [LocalFileEntry] = []
+        if let urls = try? fm.contentsOfDirectory(
+            at: currentLocalURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for u in urls {
+                let rv = try? u.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                let isDir = rv?.isDirectory ?? false
+                let size = Int64(rv?.fileSize ?? 0)
+                list.append(LocalFileEntry(
+                    url: u,
+                    name: u.lastPathComponent,
+                    size: size,
+                    isDir: isDir,
+                    modifiedDate: rv?.contentModificationDate
+                ))
+            }
+        }
+        localEntries = list.sorted { lhs, rhs in
+            if lhs.isDir != rhs.isDir { return lhs.isDir && !rhs.isDir }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        localTable.reloadData()
+        localEmptyLabel.isHidden = !localEntries.isEmpty
+        updateActionButtonsState()
+    }
+
+    private func requestRemoteDirectory(_ path: String) {
+        remoteEmptyLabel.stringValue = "正在加载目录…"
+        remoteEmptyLabel.isHidden = !remoteEntries.isEmpty
         connection?.sendListDir(path: path)
     }
 
-    @objc private func goUpTapped() {
-        guard !currentPath.isEmpty else {
-            requestDirectory("")
+    // MARK: - Actions
+
+    @objc private func localGoUpTapped() {
+        let parent = currentLocalURL.deletingLastPathComponent()
+        if parent.path != currentLocalURL.path {
+            currentLocalURL = parent
+            reloadLocalDirectory()
+        }
+    }
+
+    @objc private func localRefreshTapped() {
+        reloadLocalDirectory()
+    }
+
+    @objc private func localRowDoubleClicked() {
+        let row = localTable.clickedRow
+        guard row >= 0, row < localEntries.count else { return }
+        let entry = localEntries[row]
+        if entry.isDir {
+            currentLocalURL = entry.url
+            reloadLocalDirectory()
+        } else {
+            uploadLocalURLs([entry.url])
+        }
+    }
+
+    @objc private func localUploadSelectedTapped() {
+        let rows = localTable.selectedRowIndexes
+        guard !rows.isEmpty else { return }
+        let urls = rows.compactMap { idx -> URL? in
+            guard idx >= 0, idx < localEntries.count else { return nil }
+            return localEntries[idx].url
+        }
+        uploadLocalURLs(urls)
+    }
+
+    private func uploadLocalURLs(_ urls: [URL]) {
+        guard !urls.isEmpty, let conn = connection else { return }
+        let targetRemoteDir = currentRemotePath.isEmpty ? nil : currentRemotePath
+        Task { [weak self] in
+            do {
+                _ = try await conn.uploadItems(at: urls, destDir: targetRemoteDir, resume: true)
+                await MainActor.run {
+                    self?.requestRemoteDirectory(self?.currentRemotePath ?? "")
+                }
+            } catch {
+                await MainActor.run {
+                    self?.onUploadError?("上传失败: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    @objc private func remoteGoUpTapped() {
+        guard !currentRemotePath.isEmpty else {
+            requestRemoteDirectory("")
             return
         }
-        let parent = parentPath(of: currentPath)
-        requestDirectory(parent)
+        requestRemoteDirectory(parentPath(of: currentRemotePath))
     }
 
-    @objc private func refreshTapped() {
-        requestDirectory(currentPath)
+    @objc private func remoteRefreshTapped() {
+        requestRemoteDirectory(currentRemotePath)
     }
 
-    @objc private func uploadTapped() {
+    @objc private func pickUploadTapped() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.prompt = "上传"
         guard let win = window else { return }
         panel.beginSheetModal(for: win) { [weak self] response in
-            guard response == .OK, let self, let conn = self.connection else { return }
-            let urls = panel.urls
-            Task {
-                for url in urls {
-                    do {
-                        try await conn.uploadFile(at: url)
-                    } catch {
-                        await MainActor.run {
-                            self.onUploadError?("上传失败 (\(url.lastPathComponent)): \(error.localizedDescription)")
-                        }
+            guard response == .OK, let self else { return }
+            self.uploadLocalURLs(panel.urls)
+        }
+    }
+
+    @objc private func remoteRowDoubleClicked() {
+        let row = remoteTable.clickedRow
+        guard row >= 0, row < remoteEntries.count else { return }
+        let entry = remoteEntries[row]
+        let fullPath = joinPath(currentRemotePath, entry.name)
+        if entry.isDir {
+            requestRemoteDirectory(fullPath)
+        } else {
+            downloadRemoteEntries([entry])
+        }
+    }
+
+    @objc private func remoteDownloadSelectedTapped() {
+        let rows = remoteTable.selectedRowIndexes
+        guard !rows.isEmpty else { return }
+        let selected = rows.compactMap { idx -> RemoteFileEntry? in
+            guard idx >= 0, idx < remoteEntries.count else { return nil }
+            return remoteEntries[idx]
+        }
+        downloadRemoteEntries(selected)
+    }
+
+    private func downloadRemoteEntries(_ selected: [RemoteFileEntry]) {
+        guard !selected.isEmpty, let conn = connection else { return }
+        let localDir = currentLocalURL
+        let baseRemote = currentRemotePath
+        Task { [weak self] in
+            for entry in selected {
+                let fullPath = self?.joinPath(baseRemote, entry.name) ?? entry.name
+                do {
+                    if entry.isDir {
+                        _ = try await conn.downloadDirectory(remotePath: fullPath, to: localDir)
+                    } else {
+                        let safeName = FileTransferClient.sanitizeFileName(entry.name)
+                        let targetURL = localDir.appendingPathComponent(safeName)
+                        _ = try await conn.downloadFile(remotePath: fullPath, to: targetURL, overwriteExisting: true)
+                    }
+                    await MainActor.run {
+                        self?.reloadLocalDirectory()
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.onUploadError?("下载失败 (\(entry.name)): \(error.localizedDescription)")
                     }
                 }
             }
         }
     }
 
-    @objc private func downloadSelectedTapped() {
-        let row = fileTable.selectedRow
-        guard row >= 0, row < entries.count else { return }
-        let entry = entries[row]
-        if entry.isDir {
-            requestDirectory(joinPath(currentPath, entry.name))
-        } else {
-            connection?.sendRequestFile(remotePath: joinPath(currentPath, entry.name))
-        }
-    }
-
-    @objc private func fileRowDoubleClicked() {
-        let row = fileTable.clickedRow
-        guard row >= 0, row < entries.count else { return }
-        let entry = entries[row]
-        let fullPath = joinPath(currentPath, entry.name)
-        if entry.isDir {
-            requestDirectory(fullPath)
-        } else {
-            connection?.sendRequestFile(remotePath: fullPath)
-        }
+    @objc private func openLocalDirTapped() {
+        NSWorkspace.shared.open(currentLocalURL)
     }
 
     @objc private func openDownloadsTapped() {
@@ -372,15 +620,14 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
         }
     }
 
-    private func updateDownloadButtonState() {
-        let row = fileTable.selectedRow
-        if row >= 0, row < entries.count {
-            downloadButton.isEnabled = true
-            downloadButton.title = entries[row].isDir ? "打开目录" : "下载选中"
-        } else {
-            downloadButton.isEnabled = false
-            downloadButton.title = "下载选中"
-        }
+    private func updateActionButtonsState() {
+        let localCount = localTable.selectedRowIndexes.count
+        localUploadSelectedButton.isEnabled = localCount > 0
+        localUploadSelectedButton.title = localCount > 1 ? "上传选中 (\(localCount)) →" : "上传选中 →"
+
+        let remoteCount = remoteTable.selectedRowIndexes.count
+        remoteDownloadSelectedButton.isEnabled = remoteCount > 0
+        remoteDownloadSelectedButton.title = remoteCount > 1 ? "← 下载选中 (\(remoteCount))" : "← 下载选中"
     }
 
     // MARK: - Path Helpers
@@ -424,33 +671,37 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
     // MARK: - NSTableViewDataSource & Delegate
 
     public func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView === fileTable { return entries.count }
+        if tableView === localTable { return localEntries.count }
+        if tableView === remoteTable { return remoteEntries.count }
         return transfers.count
     }
 
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if tableView === fileTable {
-            guard row >= 0, row < entries.count, let colId = tableColumn?.identifier.rawValue else { return nil }
-            let entry = entries[row]
-            let cellId = NSUserInterfaceItemIdentifier("FileCell_\(colId)")
-            let cell = (tableView.makeView(withIdentifier: cellId, owner: self) as? NSTableCellView) ?? {
-                let c = NSTableCellView()
-                c.identifier = cellId
-                let tf = Theme.makeLabel("", size: 12, color: Theme.textPrimary)
-                c.textField = tf
-                c.addSubview(tf)
-                NSLayoutConstraint.activate([
-                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 6),
-                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -6),
-                    tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                ])
-                return c
-            }()
-
+        if tableView === localTable {
+            guard row >= 0, row < localEntries.count, let colId = tableColumn?.identifier.rawValue else { return nil }
+            let entry = localEntries[row]
+            let cell = makeBrowserCell(tableView: tableView, colId: colId, prefix: "LocalCell")
             switch colId {
             case "name":
-                let prefix = entry.isDir ? "📁 " : "📄 "
-                cell.textField?.stringValue = prefix + entry.name
+                cell.textField?.stringValue = (entry.isDir ? "📁 " : "📄 ") + entry.name
+                cell.textField?.textColor = entry.isDir ? Theme.accent : Theme.textPrimary
+            case "size":
+                cell.textField?.stringValue = entry.isDir ? "--" : Theme.formatBytes(entry.size)
+                cell.textField?.textColor = Theme.textMuted
+            case "modified":
+                cell.textField?.stringValue = entry.modifiedDate.map { Self.dateFormatter.string(from: $0) } ?? "--"
+                cell.textField?.textColor = Theme.textMuted
+            default:
+                break
+            }
+            return cell
+        } else if tableView === remoteTable {
+            guard row >= 0, row < remoteEntries.count, let colId = tableColumn?.identifier.rawValue else { return nil }
+            let entry = remoteEntries[row]
+            let cell = makeBrowserCell(tableView: tableView, colId: colId, prefix: "RemoteCell")
+            switch colId {
+            case "name":
+                cell.textField?.stringValue = (entry.isDir ? "📁 " : "📄 ") + entry.name
                 cell.textField?.textColor = entry.isDir ? Theme.accent : Theme.textPrimary
             case "size":
                 cell.textField?.stringValue = entry.isDir ? "--" : Theme.formatBytes(entry.size)
@@ -486,25 +737,42 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
             }()
 
             let dir = item.direction == .upload ? "↑" : "↓"
+            let resumeBadge = item.resumed ? "[续传] " : ""
             if let err = item.error {
-                cell.textField?.stringValue = "\(dir) \(item.name) — 失败: \(err)"
+                cell.textField?.stringValue = "\(dir) \(resumeBadge)\(item.name) — 失败: \(err)"
                 cell.textField?.textColor = Theme.danger
             } else if item.done {
-                cell.textField?.stringValue = "\(dir) \(item.name) (\(Theme.formatBytes(item.size))) — 完成"
+                cell.textField?.stringValue = "\(dir) \(resumeBadge)\(item.name) (\(Theme.formatBytes(item.size))) — 完成"
                 cell.textField?.textColor = Theme.accent
             } else {
                 let pct = Int(item.fractionCompleted * 100)
                 let spd = Theme.formatSpeed(item.speedBps)
-                cell.textField?.stringValue = "\(dir) \(item.name) — \(pct)% \(spd)"
+                cell.textField?.stringValue = "\(dir) \(resumeBadge)\(item.name) — \(pct)% \(spd)"
                 cell.textField?.textColor = Theme.textPrimary
             }
             return cell
         }
     }
 
+    private func makeBrowserCell(tableView: NSTableView, colId: String, prefix: String) -> NSTableCellView {
+        let cellId = NSUserInterfaceItemIdentifier("\(prefix)_\(colId)")
+        return (tableView.makeView(withIdentifier: cellId, owner: self) as? NSTableCellView) ?? {
+            let c = NSTableCellView()
+            c.identifier = cellId
+            let tf = Theme.makeLabel("", size: 11.5, color: Theme.textPrimary)
+            tf.lineBreakMode = .byTruncatingMiddle
+            c.textField = tf
+            c.addSubview(tf)
+            NSLayoutConstraint.activate([
+                tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 6),
+                tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -6),
+                tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+            ])
+            return c
+        }()
+    }
+
     public func tableViewSelectionDidChange(_ notification: Notification) {
-        if (notification.object as? NSTableView) === fileTable {
-            updateDownloadButtonState()
-        }
+        updateActionButtonsState()
     }
 }

@@ -32,6 +32,10 @@ public sealed class DesktopForm : Form
     private readonly StatsHudOverlay _statsHud;
     private readonly RawInputManager _inputManager;
     private readonly ClipboardSync _clipboardSync;
+    private FileManagerForm? _fileManagerForm;
+    private int _clipboardFilesSyncing;
+    private const long MaxClipboardUploadBytes = 100L * 1024 * 1024;
+    private const long MaxClipboardDownloadBytes = 50L * 1024 * 1024;
 
     private readonly D3D11Renderer _renderer = new();
     private readonly FfmpegVideoDecoder _ffmpegDecoder = new();
@@ -218,6 +222,7 @@ public sealed class DesktopForm : Form
         };
         _clipboardSync.LocalTextChanged += text => _conn.SendClipboardText(text);
         _clipboardSync.LocalImageChanged += b64 => _conn.SendClipboardImageBase64(b64);
+        _clipboardSync.LocalFilesChanged += OnLocalClipboardFilesChanged;
 
         // ── FloatingToolbar & StatsHudOverlay ──
         _toolbar = new FloatingToolbar(this);
@@ -940,6 +945,8 @@ public sealed class DesktopForm : Form
             }
         };
 
+        _toolbar.FileManagerRequested += OpenFileManager;
+
         _toolbar.PrivacyToggled += enable =>
         {
             _privacyOn = enable;
@@ -1001,6 +1008,7 @@ public sealed class DesktopForm : Form
         _conn.VirtualDisplayActiveChanged += OnVirtualDisplayActiveChanged;
         _conn.CursorShapeReceived += OnCursorShapeReceived;
         _conn.ClipboardReceived += OnClipboardReceived;
+        _conn.ClipboardFilesReceived += OnRemoteClipboardFilesReceived;
         _conn.StatsUpdated += OnStatsUpdated;
         _conn.AuthSucceeded += OnAuthSucceeded;
         _conn.ServerHelloReceived += OnServerHelloReceived;
@@ -1020,6 +1028,7 @@ public sealed class DesktopForm : Form
         _conn.VirtualDisplayActiveChanged -= OnVirtualDisplayActiveChanged;
         _conn.CursorShapeReceived -= OnCursorShapeReceived;
         _conn.ClipboardReceived -= OnClipboardReceived;
+        _conn.ClipboardFilesReceived -= OnRemoteClipboardFilesReceived;
         _conn.StatsUpdated -= OnStatsUpdated;
         _conn.AuthSucceeded -= OnAuthSucceeded;
         _conn.ServerHelloReceived -= OnServerHelloReceived;
@@ -1157,6 +1166,161 @@ public sealed class DesktopForm : Form
         {
             _clipboardSync.ApplyRemoteImageBase64(data.ImageBase64);
         }
+    }
+
+    private void OpenFileManager()
+    {
+        if (_disposed || IsDisposed) return;
+        if (_fileManagerForm != null && !_fileManagerForm.IsDisposed)
+        {
+            if (_fileManagerForm.WindowState == FormWindowState.Minimized)
+                _fileManagerForm.WindowState = FormWindowState.Normal;
+            _fileManagerForm.Activate();
+            return;
+        }
+
+        _fileManagerForm = new FileManagerForm(_conn, _settings.DownloadDirectory);
+        _fileManagerForm.FormClosed += (_, _) => _fileManagerForm = null;
+        _fileManagerForm.Show(this);
+    }
+
+    private void OnLocalClipboardFilesChanged(string[] localPaths)
+    {
+        if (_disposed || !_settings.ClipboardSyncEnabled || localPaths.Length == 0) return;
+        if (Interlocked.CompareExchange(ref _clipboardFilesSyncing, 1, 0) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                long totalBytes = ComputeLocalPathsTotalSize(localPaths, MaxClipboardUploadBytes + 1);
+                if (totalBytes > MaxClipboardUploadBytes)
+                {
+                    ShowUploadToast("剪贴板文件超过 100MB，请通过「文件」管理器传输", autoHide: true);
+                    return;
+                }
+
+                var hostPaths = new List<string>();
+                foreach (var p in localPaths)
+                {
+                    if (_disposed) return;
+                    if (Directory.Exists(p))
+                    {
+                        var uploaded = await _conn.UploadFolderAsync(
+                            p, destDir: null, resume: true, purpose: "clipboard").ConfigureAwait(false);
+                        hostPaths.AddRange(uploaded);
+                    }
+                    else if (File.Exists(p))
+                    {
+                        var saved = await _conn.UploadFileExAsync(
+                            p, relPath: null, destDir: null, resume: true, purpose: "clipboard").ConfigureAwait(false);
+                        if (!string.IsNullOrWhiteSpace(saved))
+                            hostPaths.Add(saved);
+                    }
+                }
+
+                if (hostPaths.Count > 0 && !_disposed)
+                {
+                    _conn.SendClipboardSetFiles(hostPaths.ToArray());
+                    ShowUploadToast($"✓ 已同步剪贴板文件到远端 ({hostPaths.Count} 个)", autoHide: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogVideo($"Clipboard files upload failed: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _clipboardFilesSyncing, 0);
+            }
+        });
+    }
+
+    private void OnRemoteClipboardFilesReceived(RemoteClipboardFile[] files)
+    {
+        if (_disposed || !_settings.ClipboardSyncEnabled || files == null || files.Length == 0) return;
+
+        bool hasDir = files.Any(f => f.IsDir);
+        long totalSize = files.Sum(f => Math.Max(0, f.Size));
+        if (hasDir || totalSize > MaxClipboardDownloadBytes)
+        {
+            ShowUploadToast("远端剪贴板包含文件夹或超过 50MB，请通过「文件」管理器拉取", autoHide: true);
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _clipboardFilesSyncing, 1, 0) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string cacheDir = Path.Combine(Path.GetTempPath(), "RemoterClipboard");
+                Directory.CreateDirectory(cacheDir);
+
+                var localPaths = new List<string>(files.Length);
+                foreach (var f in files)
+                {
+                    if (_disposed) return;
+                    string safeName = Path.GetFileName(f.Name);
+                    if (string.IsNullOrWhiteSpace(safeName)) safeName = "clipboard_file";
+                    foreach (char c in Path.GetInvalidFileNameChars())
+                        safeName = safeName.Replace(c, '_');
+
+                    string localDest = Path.Combine(cacheDir, safeName);
+                    var saved = await _conn.DownloadFileAsync(f.Path, localDest, resume: true).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(saved) && File.Exists(saved))
+                    {
+                        localPaths.Add(saved);
+                    }
+                }
+
+                if (localPaths.Count > 0 && !_disposed)
+                {
+                    _clipboardSync.ApplyRemoteFiles(localPaths.ToArray());
+                    ShowUploadToast($"已同步远端剪贴板文件 ({localPaths.Count} 个)，可直接 Ctrl+V 粘贴", autoHide: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogVideo($"Remote clipboard files download failed: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _clipboardFilesSyncing, 0);
+            }
+        });
+    }
+
+    private static long ComputeLocalPathsTotalSize(string[] paths, long stopAfterBytes)
+    {
+        long total = 0;
+        foreach (var p in paths)
+        {
+            try
+            {
+                if (File.Exists(p))
+                {
+                    total += new FileInfo(p).Length;
+                }
+                else if (Directory.Exists(p))
+                {
+                    var opts = new EnumerationOptions
+                    {
+                        RecurseSubdirectories = true,
+                        IgnoreInaccessible = true,
+                        AttributesToSkip = FileAttributes.ReparsePoint,
+                    };
+                    foreach (var f in Directory.EnumerateFiles(p, "*", opts))
+                    {
+                        total += new FileInfo(f).Length;
+                        if (total >= stopAfterBytes) return total;
+                    }
+                }
+            }
+            catch { }
+            if (total >= stopAfterBytes) return total;
+        }
+        return total;
     }
 
     private void OnStatsUpdated(ClientStats stats)
@@ -1427,22 +1591,35 @@ public sealed class DesktopForm : Form
 
     private void OnFilesDropped(string[] files)
     {
-        var validFiles = files.Where(File.Exists).ToList();
-        if (validFiles.Count == 0) return;
+        var validPaths = files.Where(p => File.Exists(p) || Directory.Exists(p)).ToList();
+        if (validPaths.Count == 0) return;
 
         _ = Task.Run(async () =>
         {
-            int uploaded = 0;
-            for (int i = 0; i < validFiles.Count; i++)
+            int uploadedFiles = 0;
+            for (int i = 0; i < validPaths.Count; i++)
             {
                 if (_disposed) return;
-                string path = validFiles[i];
-                string name = Path.GetFileName(path);
-                ShowUploadToast($"📁 正在上传 ({i + 1}/{validFiles.Count}): {name}");
+                string path = validPaths[i];
+                string name = Path.GetFileName(path.TrimEnd('\\', '/'));
                 try
                 {
-                    await _conn.UploadFileAsync(path).ConfigureAwait(false);
-                    uploaded++;
+                    if (Directory.Exists(path))
+                    {
+                        var uploaded = await _conn.UploadFolderAsync(
+                            path,
+                            destDir: null,
+                            resume: true,
+                            onFileStarted: (idx, total, rel) =>
+                                ShowUploadToast($"📁 上传文件夹 ({idx}/{total}): {rel}")).ConfigureAwait(false);
+                        uploadedFiles += uploaded.Count;
+                    }
+                    else
+                    {
+                        ShowUploadToast($"📁 正在上传 ({i + 1}/{validPaths.Count}): {name}");
+                        await _conn.UploadFileExAsync(path, resume: true).ConfigureAwait(false);
+                        uploadedFiles++;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1452,7 +1629,7 @@ public sealed class DesktopForm : Form
             if (!_disposed)
             {
                 ShowUploadToast(
-                    uploaded > 0 ? $"✓ 已上传 {uploaded}/{validFiles.Count} 个文件到远端" : "✕ 文件上传失败",
+                    uploadedFiles > 0 ? $"✓ 已上传 {uploadedFiles} 个文件到远端" : "✕ 文件上传失败",
                     autoHide: true);
             }
         });
@@ -1755,6 +1932,11 @@ public sealed class DesktopForm : Form
 
             _inputManager.Dispose();
             _clipboardSync.Dispose();
+            if (_fileManagerForm != null && !_fileManagerForm.IsDisposed)
+            {
+                try { _fileManagerForm.Close(); } catch { }
+                _fileManagerForm = null;
+            }
             _dropToastTimer.Stop();
             _dropToastTimer.Dispose();
 

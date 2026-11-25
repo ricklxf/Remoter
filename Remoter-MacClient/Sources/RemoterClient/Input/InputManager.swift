@@ -29,6 +29,7 @@ public final class InputManager {
 
     public private(set) var isPointerLocked: Bool = false
     public var onPointerLockChanged: ((Bool) -> Void)?
+    public var onPasteShortcut: (() -> Void)?
 
     // MARK: - Private State
 
@@ -200,6 +201,9 @@ public final class InputManager {
         }
 
         guard !isViewOnly, let connection else { return }
+        if Int(event.keyCode) == kVK_ANSI_V && (flags.contains(.command) || flags.contains(.control)) {
+            onPasteShortcut?()
+        }
         guard let code = KeyCodeMapper.mapKeyCode(event.keyCode, swapMacToWinModifiers: swapMacToWinModifiers) else {
             return
         }

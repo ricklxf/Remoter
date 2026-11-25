@@ -216,11 +216,21 @@ public static class ClientMessages
     public static byte[] ClipboardSetImage(string base64Png) =>
         Serialize(new { type = "clipboard_set_image", data = base64Png });
 
+    public static byte[] ClipboardSetFiles(string[] paths) =>
+        Serialize(new { type = "clipboard_set_files", paths });
+
     public static byte[] SetReverseClipboardSync(bool enabled) =>
         Serialize(new { type = "set_reverse_clipboard_sync", enabled });
 
-    public static byte[] FileStart(string id, string name, long size) =>
-        Serialize(new { type = "file_start", id, name, size });
+    public static byte[] FileStart(
+        string id,
+        string name,
+        long size,
+        string? relPath = null,
+        string? destDir = null,
+        bool? resume = null,
+        string? purpose = null) =>
+        Serialize(new { type = "file_start", id, name, size, relPath, destDir, resume, purpose });
 
     public static byte[] FileEnd(string id) =>
         Serialize(new { type = "file_end", id });
@@ -228,8 +238,11 @@ public static class ClientMessages
     public static byte[] ListDir(string path) =>
         Serialize(new { type = "list_dir", path });
 
-    public static byte[] RequestFile(string path) =>
-        Serialize(new { type = "request_file", path });
+    public static byte[] ListDirRecursive(string path) =>
+        Serialize(new { type = "list_dir_recursive", path });
+
+    public static byte[] RequestFile(string path, long? offset = null) =>
+        Serialize(new { type = "request_file", path, offset });
 
     public static byte[] Fps(int fps, bool auto) =>
         Serialize(new { type = "fps", fps, auto });
@@ -345,10 +358,15 @@ public abstract record ServerMessage
     public sealed record CursorShape(CursorShapeInfo Cursor) : ServerMessage;
     public sealed record Pong(int EncodeMs) : ServerMessage;
     public sealed record ServerStatsMsg(ServerStats Stats) : ServerMessage;
-    public sealed record FileStart(string Id, string Name, long Size) : ServerMessage;
+    public sealed record FileStart(string Id, string Name, long Size, long Offset = 0) : ServerMessage;
     public sealed record FileEnd(string Id) : ServerMessage;
+    public sealed record FileAck(string Id, long Offset, bool Resumed) : ServerMessage;
+    public sealed record FileDone(string Id, string Path) : ServerMessage;
     public sealed record DirListing(string Path, DirEntry[] Entries) : ServerMessage;
+    public sealed record DirTree(string Root, DirTreeFile[] Files) : ServerMessage;
     public sealed record ClipboardFromTarget(ClipboardData Data) : ServerMessage;
+    public sealed record ClipboardFilesFromTarget(RemoteClipboardFile[] Files) : ServerMessage;
+    public sealed record ClipboardFilesReady(int Count) : ServerMessage;
     public sealed record Keepalive : ServerMessage;
     public sealed record HostDisconnected : ServerMessage;
     public sealed record ErrorMsg(string Code, string Message) : ServerMessage;
@@ -425,13 +443,29 @@ public abstract record ServerMessage
             "file_start" => new FileStart(
                 Id: root.ReadString("id"),
                 Name: root.ReadString("name"),
-                Size: root.ReadLong("size")),
+                Size: root.ReadLong("size"),
+                Offset: root.ReadLong("offset")),
 
             "file_end" => new FileEnd(root.ReadString("id")),
 
+            "file_ack" => new FileAck(
+                Id: root.ReadString("id"),
+                Offset: root.ReadLong("offset"),
+                Resumed: root.ReadBool("resumed")),
+
+            "file_done" => new FileDone(
+                Id: root.ReadString("id"),
+                Path: root.ReadString("path")),
+
             "dir_listing" => ParseDirListing(root),
 
+            "dir_tree" => ParseDirTree(root),
+
             "clipboard_from_target" => ParseClipboardFromTarget(root),
+
+            "clipboard_files_from_target" => ParseClipboardFilesFromTarget(root),
+
+            "clipboard_files_ready" => new ClipboardFilesReady(root.ReadInt("count")),
 
             "keepalive" => new Keepalive(),
 
@@ -508,6 +542,42 @@ public abstract record ServerMessage
             }
         }
         return new DirListing(path, list.ToArray());
+    }
+
+    private static DirTree ParseDirTree(JsonElement root)
+    {
+        var rootPath = root.ReadString("root");
+        var list = new List<DirTreeFile>();
+        if (root.TryGetProperty("files", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in arr.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                list.Add(new DirTreeFile(
+                    RelPath: item.ReadString("relPath"),
+                    Path: item.ReadString("path"),
+                    Size: item.ReadLong("size")));
+            }
+        }
+        return new DirTree(rootPath, list.ToArray());
+    }
+
+    private static ClipboardFilesFromTarget ParseClipboardFilesFromTarget(JsonElement root)
+    {
+        var list = new List<RemoteClipboardFile>();
+        if (root.TryGetProperty("files", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in arr.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                list.Add(new RemoteClipboardFile(
+                    Name: item.ReadString("name"),
+                    Path: item.ReadString("path"),
+                    Size: item.ReadLong("size"),
+                    IsDir: item.ReadBool("isDir")));
+            }
+        }
+        return new ClipboardFilesFromTarget(list.ToArray());
     }
 
     private static ClipboardFromTarget ParseClipboardFromTarget(JsonElement root)

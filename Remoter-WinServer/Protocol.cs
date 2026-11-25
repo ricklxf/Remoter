@@ -12,7 +12,15 @@ public abstract record ClientMsg
     public record MouseScroll(int Dx, int Dy, int? Px = null, int? Py = null) : ClientMsg;
     public record KeyEvent(string Code, bool Down, string[] Mods) : ClientMsg;
     public record ClipboardSet(string Text) : ClientMsg;
-    public record FileStart(string Id, string Name, long Size) : ClientMsg;
+    public record ClipboardSetFiles(string[] Paths) : ClientMsg;
+    public record FileStart(
+        string Id,
+        string Name,
+        long Size,
+        string? RelPath = null,
+        string? DestDir = null,
+        bool Resume = false,
+        string? Purpose = null) : ClientMsg;
     public record FileEnd(string Id) : ClientMsg;
     public record QualitySet(int Fps, int Bitrate) : ClientMsg;   // legacy clients (≤ v1.0.204)
     public record FpsSet(int Fps, bool Auto) : ClientMsg;
@@ -30,7 +38,8 @@ public abstract record ClientMsg
     public record SetCodec(string Codec) : ClientMsg;
     public record CryptoHello(string Pubkey) : ClientMsg;
     public record ListDir(string Path) : ClientMsg;
-    public record RequestFile(string Path) : ClientMsg;
+    public record ListDirRecursive(string Path) : ClientMsg;
+    public record RequestFile(string Path, long Offset = 0) : ClientMsg;
     public record SetMuted(bool Muted) : ClientMsg;
     public record SetAudio(bool Enabled) : ClientMsg;
     public record SetPrivacyScreen(bool Enabled) : ClientMsg;
@@ -61,7 +70,15 @@ public abstract record ClientMsg
                 : new MouseScroll(e.Int("dx"), e.Int("dy")),
             "key"               => new KeyEvent(e.Str("code"), e.Bool("down"), e.StrArr("modifiers")),
             "clipboard_set"     => new ClipboardSet(e.Str("text")),
-            "file_start"        => new FileStart(e.Str("id"), e.Str("name"), e.Long("size")),
+            "clipboard_set_files" => new ClipboardSetFiles(e.StrArr("paths")),
+            "file_start"        => new FileStart(
+                e.Str("id"),
+                e.Str("name"),
+                e.Long("size"),
+                e.OptStr("relPath"),
+                e.OptStr("destDir"),
+                e.Bool("resume"),
+                e.OptStr("purpose")),
             "file_end"          => new FileEnd(e.Str("id")),
             "quality"           => new QualitySet(e.Int("fps"), e.Int("bitrate")),
             "fps"               => new FpsSet(e.Int("fps"), e.Bool("auto")),
@@ -79,7 +96,8 @@ public abstract record ClientMsg
             "set_codec"         => new SetCodec(e.Str("codec")),
             "crypto_hello"      => new CryptoHello(e.Str("pubkey")),
             "list_dir"          => new ListDir(e.Str("path")),
-            "request_file"      => new RequestFile(e.Str("path")),
+            "list_dir_recursive" => new ListDirRecursive(e.Str("path")),
+            "request_file"      => new RequestFile(e.Str("path"), e.Long("offset")),
             "set_muted"         => new SetMuted(e.Bool("muted")),
             "set_audio"         => new SetAudio(e.Bool("enabled")),
             "set_privacy_screen"=> new SetPrivacyScreen(e.Bool("enabled")),
@@ -105,6 +123,8 @@ static class JsonExt
 {
     public static string  Str (this JsonElement e, string k) =>
         e.TryGetProperty(k, out var v) ? v.GetString() ?? "" : "";
+    public static string? OptStr(this JsonElement e, string k) =>
+        e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
     public static bool    Bool(this JsonElement e, string k, bool defaultValue = false) =>
         e.TryGetProperty(k, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? v.GetBoolean()

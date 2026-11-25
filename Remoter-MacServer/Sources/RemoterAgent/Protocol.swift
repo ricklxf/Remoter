@@ -18,7 +18,8 @@ enum ClientMessage {
     case key(code: String, down: Bool, modifiers: [String])
     case textInput(String)   // IME-composed text, injected as a unicode string
     case clipboardSet(text: String)
-    case fileStart(id: String, name: String, size: Int64)
+    case clipboardSetFiles(paths: [String])
+    case fileStart(id: String, name: String, size: Int64, relPath: String? = nil, destDir: String? = nil, resume: Bool = false, purpose: String? = nil)
     case fileEnd(id: String)
     case fpsSet(fps: Int, auto: Bool)
     case bitrateSet(bitrate: Int, auto: Bool)
@@ -42,7 +43,8 @@ enum ClientMessage {
     case netHint(lan: Bool)
     case cryptoHello(pubkey: String)
     case listDir(path: String)
-    case requestFile(path: String)
+    case listDirRecursive(path: String)
+    case requestFile(path: String, offset: Int64 = 0)
     case setMuted(muted: Bool)
     case ctrlAltDel
     case setInputEnabled(enabled: Bool)
@@ -99,11 +101,17 @@ enum ClientMessage {
             return .textInput(json["text"] as? String ?? "")
         case "clipboard_set":
             return .clipboardSet(text: json["text"] as? String ?? "")
+        case "clipboard_set_files":
+            return .clipboardSetFiles(paths: json["paths"] as? [String] ?? [])
         case "file_start":
             return .fileStart(
                 id: json["id"] as? String ?? "",
                 name: json["name"] as? String ?? "",
-                size: Int64(json["size"] as? Int ?? 0)
+                size: (json["size"] as? NSNumber)?.int64Value ?? Int64(json["size"] as? Int ?? 0),
+                relPath: json["relPath"] as? String,
+                destDir: json["destDir"] as? String,
+                resume: json["resume"] as? Bool ?? false,
+                purpose: json["purpose"] as? String
             )
         case "file_end":
             return .fileEnd(id: json["id"] as? String ?? "")
@@ -173,8 +181,13 @@ enum ClientMessage {
             return .cryptoHello(pubkey: json["pubkey"] as? String ?? "")
         case "list_dir":
             return .listDir(path: json["path"] as? String ?? "~")
+        case "list_dir_recursive":
+            return .listDirRecursive(path: json["path"] as? String ?? "~")
         case "request_file":
-            return .requestFile(path: json["path"] as? String ?? "")
+            return .requestFile(
+                path: json["path"] as? String ?? "",
+                offset: (json["offset"] as? NSNumber)?.int64Value ?? Int64(json["offset"] as? Int ?? 0)
+            )
         case "set_muted":
             return .setMuted(muted: json["muted"] as? Bool ?? false)
         case "ctrl_alt_del":

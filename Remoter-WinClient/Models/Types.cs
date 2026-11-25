@@ -275,6 +275,19 @@ public sealed record DirEntry(
     long ModifiedMs
 );
 
+public sealed record DirTreeFile(
+    string RelPath,
+    string Path,
+    long Size
+);
+
+public sealed record RemoteClipboardFile(
+    string Name,
+    string Path,
+    long Size,
+    bool IsDir
+);
+
 public sealed record FileTransferProgress(
     string Id,
     string Name,
@@ -284,5 +297,6 @@ public sealed record FileTransferProgress(
     double SpeedBps,
     bool Done,
     string? SavedPath = null,
-    string? Error = null
+    string? Error = null,
+    bool Resumed = false
 );

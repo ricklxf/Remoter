@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Connection } from '../network/Connection'
 import { DirEntry, FileTransfer } from '../types'
+import { UploadEntry, extractDroppedEntries, extractPickedEntries } from '../utils/fileEntries'
 
 interface Props {
   conn: Connection
@@ -154,22 +155,50 @@ function StatusBar({ selected, total, showHidden, onToggleHidden }: {
 
 // ─── TransferItem ────────────────────────────────────────────────
 
-function TransferItem({ t }: { t: FileTransfer }) {
+function TransferItem({ t, onRetry }: { t: FileTransfer; onRetry?: (t: FileTransfer) => void }) {
   const pct = t.size > 0 ? Math.min(100, (t.transferred / t.size * 100)) : 0
   const dir = t.direction === 'upload' ? '↑' : '↓'
-  const color = t.direction === 'upload' ? '#3b82f6' : '#10b981'
+  const color = t.error ? '#ef4444' : (t.direction === 'upload' ? '#3b82f6' : '#10b981')
   return (
     <div style={{ padding: '7px 12px', borderBottom: '1px solid #f0f2f5', fontSize: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
         <span style={{ color, fontWeight: 700, fontSize: 13 }}>{dir}</span>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a2e' }}>{t.name}</span>
-        <span style={{ color: '#6c757d', flexShrink: 0 }}>
-          {t.done ? '完成' : `${Math.round(pct)}%`}
-          {!t.done && t.speedBps > 0 && ` · ${fmtSpeed(t.speedBps)}`}
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a2e' }} title={t.relPath ?? t.name}>
+          {t.name}
         </span>
+        {t.resumed && (
+          <span style={{
+            fontSize: 10, padding: '1px 5px', borderRadius: 4,
+            background: '#e0f2fe', color: '#0369a1', fontWeight: 600, flexShrink: 0,
+          }}>
+            断点续传
+          </span>
+        )}
+        {t.error ? (
+          <>
+            <span style={{ color: '#ef4444', flexShrink: 0, fontSize: 11 }}>失败</span>
+            {onRetry && (
+              <button
+                onClick={() => onRetry(t)}
+                style={{
+                  fontSize: 11, padding: '1px 7px', borderRadius: 4,
+                  background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
+                  cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                续传
+              </button>
+            )}
+          </>
+        ) : (
+          <span style={{ color: '#6c757d', flexShrink: 0 }}>
+            {t.done ? '完成' : `${Math.round(pct)}%`}
+            {!t.done && t.speedBps > 0 && ` · ${fmtSpeed(t.speedBps)}`}
+          </span>
+        )}
       </div>
       <div style={{ height: 3, background: '#e8ecf0', borderRadius: 2, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: t.done ? '#10b981' : color, borderRadius: 2, transition: 'width 0.2s' }} />
+        <div style={{ height: '100%', width: `${pct}%`, background: t.error ? '#ef4444' : (t.done ? '#10b981' : color), borderRadius: 2, transition: 'width 0.2s' }} />
       </div>
     </div>
   )
@@ -199,6 +228,10 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
   const [log, setLog]             = useState<string[]>([])
   const [busy, setBusy]           = useState(false)
 
+  const failedUploadsRef = useRef(new Map<string, { entry: UploadEntry; destDir?: string }>())
+  const remoteUploadFileRef = useRef<HTMLInputElement>(null)
+  const remoteUploadDirRef  = useRef<HTMLInputElement>(null)
+
   function addLog(msg: string) {
     const t = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     setLog(prev => [`[${t}] ${msg}`, ...prev.slice(0, 99)])
@@ -216,7 +249,7 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
     } catch (e) { addLog(`本地读取失败: ${e}`) }
   }, [localPath])
 
-  const isWeb = window.remoterAPI?.platform === 'web'
+  const isWeb = window.remoterAPI?.platform === 'web' || !window.remoterAPI
 
   useEffect(() => {
     if (!isWeb) {
@@ -245,56 +278,132 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
     return () => { conn.onDirListing = null }
   }, [conn])
 
-  async function sendWebFiles(files: File[]) {
-    if (!files.length) return
+  async function sendEntries(entries: UploadEntry[], destDir?: string) {
+    if (!entries.length) return
     setBusy(true)
-    setActiveTab('log')
-    for (const file of files) {
+    setActiveTab('list')
+    const targetDir = destDir || remotePath || undefined
+    for (const entry of entries) {
+      const label = entry.relPath || entry.file.name
       try {
-        addLog(`↑ 开始发送: ${file.name} (${fmtBytes(file.size)})`)
-        await conn.sendFile(file)
-        addLog(`↑ 发送完成: ${file.name}`)
-        if (remotePath) loadRemote(remotePath, false)
-      } catch (e) { addLog(`↑ 失败: ${file.name} - ${e}`) }
+        addLog(`↑ 开始发送: ${label} (${fmtBytes(entry.file.size)})${targetDir ? ` → ${targetDir}` : ''}`)
+        const res = await conn.sendFile(entry.file, {
+          relPath: entry.relPath,
+          destDir: targetDir,
+          resume: true,
+        })
+        failedUploadsRef.current.delete(label)
+        addLog(`↑ 发送完成${res.resumed ? ' (断点续传)' : ''}: ${label}`)
+      } catch (e) {
+        failedUploadsRef.current.set(label, { entry, destDir: targetDir })
+        addLog(`↑ 失败: ${label} - ${e}`)
+      }
     }
+    if (remotePath) loadRemote(remotePath, false)
     setBusy(false)
+  }
+
+  async function collectLocalFolderEntries(dirPath: string, relPrefix: string, out: UploadEntry[]) {
+    const res = await window.remoterAPI!.listDir(dirPath)
+    for (const child of res.entries) {
+      const childPath = `${dirPath}/${child.name}`
+      const childRel = relPrefix ? `${relPrefix}/${child.name}` : child.name
+      if (child.isDir) {
+        await collectLocalFolderEntries(childPath, childRel, out)
+      } else {
+        const data = await window.remoterAPI!.readFile(childPath)
+        out.push({ file: new File([data as BlobPart], child.name), relPath: childRel })
+      }
+    }
   }
 
   async function sendToRemote() {
-    const files = [...localSel].filter(n => localEntries.find(e => e.name === n && !e.isDir))
-    if (!files.length) return
+    if (localSel.size === 0) return
     setBusy(true)
-    setActiveTab('log')
-    for (const name of files) {
-      try {
-        const data = await window.remoterAPI!.readFile(localPath + '/' + name)
-        const file = new File([data as BlobPart], name)
-        addLog(`↑ 开始发送: ${name} (${fmtBytes(data.byteLength)})`)
-        await conn.sendFile(file)
-        addLog(`↑ 发送完成: ${name}`)
-        if (remotePath) loadRemote(remotePath, false)
-      } catch (e) { addLog(`↑ 失败: ${name} - ${e}`) }
+    try {
+      const entries: UploadEntry[] = []
+      for (const name of localSel) {
+        const item = localEntries.find(e => e.name === name)
+        if (!item) continue
+        if (item.isDir) {
+          addLog(`📁 扫描本地文件夹: ${name}`)
+          await collectLocalFolderEntries(`${localPath}/${name}`, name, entries)
+        } else {
+          const data = await window.remoterAPI!.readFile(`${localPath}/${name}`)
+          entries.push({ file: new File([data as BlobPart], name) })
+        }
+      }
+      await sendEntries(entries, remotePath || undefined)
+    } catch (e) {
+      addLog(`↑ 读取本地文件失败: ${e}`)
+      setBusy(false)
     }
-    setBusy(false)
   }
 
-  function requestFromRemote() {
-    const files = [...remoteSel].filter(n => remoteEntries.find(e => e.name === n && !e.isDir))
-    if (!files.length) return
-    setActiveTab('log')
-    for (const name of files) {
-      conn.sendRequestFile(remotePath + '/' + name)
-      addLog(`↓ 请求接收: ${name}`)
+  async function requestFromRemote() {
+    if (remoteSel.size === 0) return
+    setActiveTab('list')
+    for (const name of remoteSel) {
+      const entry = remoteEntries.find(e => e.name === name)
+      if (!entry) continue
+      const fullPath = remotePath ? `${remotePath}/${name}` : name
+      if (entry.isDir) {
+        addLog(`📁 扫描远端文件夹: ${name}`)
+        const tree = await conn.requestDirTree(fullPath)
+        if (tree.files.length === 0) {
+          addLog(`📁 远端文件夹为空或无权访问: ${name}`)
+          continue
+        }
+        addLog(`↓ 递归下载 ${name} (${tree.files.length} 个文件)`)
+        for (const f of tree.files) {
+          conn.sendRequestFile(f.path)
+        }
+      } else {
+        conn.sendRequestFile(fullPath)
+        addLog(`↓ 请求接收: ${name}`)
+      }
     }
+  }
+
+  async function handleRetryTransfer(t: FileTransfer) {
+    if (busy) return
+    const saved = failedUploadsRef.current.get(t.relPath || t.name)
+    if (!saved) return
+    await sendEntries([saved.entry], saved.destDir)
   }
 
   const visibleLocal  = showHiddenL ? localEntries  : localEntries.filter(e => !e.name.startsWith('.'))
   const visibleRemote = showHiddenR ? remoteEntries : remoteEntries.filter(e => !e.name.startsWith('.'))
-  const activeTransfers = transfers.filter(t => !t.done)
+  const activeTransfers = transfers.filter(t => !t.done && !t.error)
 
   return (
     <div style={w.backdrop} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={w.window}>
+
+        {/* Hidden pickers for "上传到此目录" on remote pane */}
+        <input
+          ref={remoteUploadFileRef}
+          type="file"
+          multiple
+          style={{ display: 'none' }}
+          onChange={e => {
+            const entries = extractPickedEntries(e.target.files)
+            if (entries.length) void sendEntries(entries, remotePath || undefined)
+            e.target.value = ''
+          }}
+        />
+        <input
+          ref={remoteUploadDirRef}
+          type="file"
+          multiple
+          {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+          style={{ display: 'none' }}
+          onChange={e => {
+            const entries = extractPickedEntries(e.target.files)
+            if (entries.length) void sendEntries(entries, remotePath || undefined)
+            e.target.value = ''
+          }}
+        />
 
         {/* Header */}
         <div style={w.header}>
@@ -316,7 +425,11 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
           {/* Local */}
           <div style={w.panel}>
             {isWeb ? (
-              <WebLocalPanel onSend={sendWebFiles} busy={busy} />
+              <WebLocalPanel
+                onSend={entries => void sendEntries(entries, remotePath || undefined)}
+                busy={busy}
+                targetDir={remotePath || 'Downloads'}
+              />
             ) : (
               <>
                 <NavBar
@@ -335,7 +448,8 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
                     style={{ ...w.sendBtn, opacity: localSel.size === 0 || busy ? 0.45 : 1 }}
                     disabled={localSel.size === 0 || busy}
                     onClick={sendToRemote}
-                  >发送 →</button>
+                    title="支持多选文件与文件夹递归上传到右侧远端目录"
+                  >上传到远端目录 →</button>
                 </div>
                 <FileList entries={visibleLocal} selected={localSel} onSelect={setLocalSel}
                   onOpen={e => e.isDir ? loadLocal(localPath + '/' + e.name) : undefined} />
@@ -364,8 +478,21 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
               <button
                 style={{ ...w.recvBtn, opacity: remoteSel.size === 0 ? 0.45 : 1 }}
                 disabled={remoteSel.size === 0}
-                onClick={requestFromRemote}
-              >← 接收</button>
+                onClick={() => void requestFromRemote()}
+                title="支持下载选中的单个文件或递归下载整个文件夹"
+              >← 下载</button>
+              <button
+                style={{ ...w.sendBtn, opacity: busy ? 0.45 : 1, padding: '4px 10px' }}
+                disabled={busy}
+                onClick={() => remoteUploadFileRef.current?.click()}
+                title={`上传文件到 ${remotePath || '当前目录'}`}
+              >↑ 上传到此目录</button>
+              <button
+                style={{ ...w.recvBtn, opacity: busy ? 0.45 : 1, padding: '4px 10px' }}
+                disabled={busy}
+                onClick={() => remoteUploadDirRef.current?.click()}
+                title={`递归上传整个文件夹到 ${remotePath || '当前目录'}`}
+              >📁 传文件夹</button>
             </div>
             {remoteLoading
               ? <div style={w.loading}>加载中…</div>
@@ -391,7 +518,13 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
             {activeTab === 'list'
               ? transfers.length === 0
                 ? <div style={{ padding: '12px 16px', color: '#aaa', fontSize: 12 }}>暂无传输任务</div>
-                : transfers.map(t => <TransferItem key={t.id} t={t} />)
+                : transfers.map(t => (
+                    <TransferItem
+                      key={t.id}
+                      t={t}
+                      onRetry={t.error && failedUploadsRef.current.has(t.relPath || t.name) ? handleRetryTransfer : undefined}
+                    />
+                  ))
               : log.length === 0
                 ? <div style={{ padding: '12px 16px', color: '#aaa', fontSize: 12 }}>暂无日志</div>
                 : log.map((l, i) => <div key={i} style={{ padding: '2px 14px', fontSize: 11, color: '#555', fontFamily: 'monospace' }}>{l}</div>)
@@ -406,19 +539,23 @@ export function FileTransferWindow({ conn, transfers, onClose }: Props) {
 
 // ─── WebLocalPanel ───────────────────────────────────────────────
 
-function WebLocalPanel({ onSend, busy }: { onSend: (files: File[]) => void; busy: boolean }) {
-  const inputRef = useRef<HTMLInputElement>(null)
+function WebLocalPanel({ onSend, busy, targetDir }: { onSend: (entries: UploadEntry[]) => void; busy: boolean; targetDir: string }) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const dirInputRef  = useRef<HTMLInputElement>(null)
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? [])
-    if (files.length) onSend(files)
+    const entries = extractPickedEntries(e.target.files)
+    if (entries.length) onSend(entries)
     e.target.value = ''
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
-    const files = Array.from(e.dataTransfer.files)
-    if (files.length && !busy) onSend(files)
+    if (busy) return
+    const dt = e.dataTransfer
+    void extractDroppedEntries(dt).then((entries) => {
+      if (entries.length) onSend(entries)
+    })
   }
 
   return (
@@ -427,16 +564,31 @@ function WebLocalPanel({ onSend, busy }: { onSend: (files: File[]) => void; busy
       onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
       onDrop={handleDrop}
     >
-      <input ref={inputRef} type="file" multiple onChange={handleChange} style={{ display: 'none' }} />
+      <input ref={fileInputRef} type="file" multiple onChange={handleChange} style={{ display: 'none' }} />
+      <input
+        ref={dirInputRef}
+        type="file"
+        multiple
+        {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+        onChange={handleChange}
+        style={{ display: 'none' }}
+      />
       <div style={wp.dropZone}>
         <div style={wp.icon}>📂</div>
-        <p style={wp.title}>拖放文件到此处</p>
-        <p style={wp.desc}>或点击按钮选择文件，发送到远端 Downloads</p>
-        <button
-          style={{ ...w.sendBtn, opacity: busy ? 0.45 : 1, marginTop: 8 }}
-          disabled={busy}
-          onClick={() => inputRef.current?.click()}
-        >选择文件发送 →</button>
+        <p style={wp.title}>拖放文件或文件夹到此处</p>
+        <p style={wp.desc}>支持递归上传文件夹与断点续传，目标：{targetDir}</p>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button
+            style={{ ...w.sendBtn, opacity: busy ? 0.45 : 1 }}
+            disabled={busy}
+            onClick={() => fileInputRef.current?.click()}
+          >选择文件 →</button>
+          <button
+            style={{ ...w.recvBtn, opacity: busy ? 0.45 : 1 }}
+            disabled={busy}
+            onClick={() => dirInputRef.current?.click()}
+          >📁 选择文件夹 →</button>
+        </div>
       </div>
     </div>
   )

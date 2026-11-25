@@ -1,4 +1,4 @@
-import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry, ChromaMode } from '../types'
+import { ConnectParams, ConnectionState, StreamInfo, FileTransfer, DirEntry, DirTreeFile, ClipboardFileItem, FileStartOptions, ChromaMode } from '../types'
 import { saveAccount, saveMachineInfo } from '../utils/savedAccounts'
 import { WebRTCClient } from '../webrtc/WebRTCClient'
 import { E2ECrypto } from '../crypto/E2ECrypto'
@@ -36,7 +36,11 @@ export type ConnEvent =
   | { type: 'error'; message: string }
   | { type: 'stats'; stats: ConnStats }
   | { type: 'file_progress'; transfer: FileTransfer }
+  | { type: 'file_ack'; id: string; offset: number; resumed: boolean }
+  | { type: 'file_done'; id: string; path?: string }
   | { type: 'dir_listing'; path: string; entries: DirEntry[] }
+  | { type: 'dir_tree'; root: string; files: DirTreeFile[] }
+  | { type: 'clipboard_files_from_target'; files: ClipboardFileItem[] }
 
 const VIDEO_FRAME   = 0x01
 const FILE_CHUNK    = 0x02
@@ -122,6 +126,9 @@ export class Connection {
   }
 
   private downloads = new Map<string, DownloadState>()
+  private pendingFileAcks = new Map<string, (ack: { offset: number; resumed: boolean }) => void>()
+  private pendingFileDones = new Map<string, (path?: string) => void>()
+  private pendingDirTrees = new Map<string, (res: { root: string; files: DirTreeFile[] }) => void>()
 
   // Clipboard sync — one-directional and paste-triggered only, driven by
   // the browser's native `paste` ClipboardEvent (see InputHandler.onPaste)
@@ -428,8 +435,47 @@ export class Connection {
     this.sendJson({ type: 'list_dir', path })
   }
 
-  sendRequestFile(path: string): void {
-    this.sendJson({ type: 'request_file', path })
+  sendListDirRecursive(path: string): void {
+    this.sendJson({ type: 'list_dir_recursive', path })
+  }
+
+  requestDirTree(path: string, timeoutMs = 10000): Promise<{ root: string; files: DirTreeFile[] }> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingDirTrees.delete(path)
+        resolve({ root: path, files: [] })
+      }, timeoutMs)
+      this.pendingDirTrees.set(path, (res) => {
+        clearTimeout(timer)
+        resolve(res)
+      })
+      this.sendListDirRecursive(path)
+    })
+  }
+
+  sendFileStart(id: string, name: string, size: number, opts?: FileStartOptions): void {
+    this.sendJson({
+      type: 'file_start',
+      id,
+      name,
+      size,
+      ...(opts?.relPath ? { relPath: opts.relPath } : {}),
+      ...(opts?.destDir ? { destDir: opts.destDir } : {}),
+      ...(opts?.resume !== undefined ? { resume: opts.resume } : {}),
+      ...(opts?.purpose ? { purpose: opts.purpose } : {}),
+    })
+  }
+
+  sendRequestFile(path: string, offset?: number): void {
+    this.sendJson({
+      type: 'request_file',
+      path,
+      ...(offset && offset > 0 ? { offset } : {}),
+    })
+  }
+
+  requestFile(path: string, offset?: number): void {
+    this.sendRequestFile(path, offset)
   }
 
   sendSetCodec(codec: string): void {
@@ -561,50 +607,93 @@ export class Connection {
     }
   }
 
-  async sendFile(file: File): Promise<void> {
+  async sendFile(file: File, opts?: FileStartOptions): Promise<{ id: string; path?: string; resumed: boolean }> {
     const id = crypto.randomUUID()
-    let lastSpeedTime = Date.now()
-    let lastSpeedBytes = 0
-    let speedBps = 0
+    const displayName = opts?.relPath || file.name
+    const wantResume = opts?.resume ?? true
 
-    const emitProgress = (transferred: number, done: boolean) => {
+    const ackPromise = new Promise<{ offset: number; resumed: boolean }>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingFileAcks.delete(id)
+        resolve({ offset: 0, resumed: false })
+      }, 1500)
+      this.pendingFileAcks.set(id, (ack) => {
+        clearTimeout(timer)
+        resolve(ack)
+      })
+    })
+
+    const emitProgress = (transferred: number, speedBps: number, done: boolean, resumed: boolean, error?: string) => {
       this.emit({ type: 'file_progress', transfer: {
-        id, name: file.name, size: file.size, transferred,
-        direction: 'upload', speedBps, done
+        id, name: displayName, size: file.size, transferred,
+        direction: 'upload', speedBps, done, resumed, relPath: opts?.relPath, error,
       }})
     }
 
-    emitProgress(0, false)
-    this.sendJson({ type: 'file_start', id, name: file.name, size: file.size })
+    emitProgress(0, 0, false, false)
+    this.sendFileStart(id, file.name, file.size, { ...opts, resume: wantResume })
 
-    const CHUNK = 64 * 1024
-    let offset = 0
-    while (offset < file.size) {
-      const buf  = await file.slice(offset, offset + CHUNK).arrayBuffer()
-      const idB  = new TextEncoder().encode(id.padEnd(16, '\0').slice(0, 16))
-      const hdr  = new Uint8Array(1 + 16 + 4)
-      hdr[0] = FILE_CHUNK
-      hdr.set(idB, 1)
-      new DataView(hdr.buffer).setUint32(17, offset, false)
-      const pkt = new Uint8Array(hdr.length + buf.byteLength)
-      pkt.set(hdr)
-      pkt.set(new Uint8Array(buf), hdr.length)
-      this.sendBinary(pkt.buffer)
-      offset += CHUNK
+    const ack = await ackPromise
+    let offset = Math.max(0, Math.min(ack.offset, file.size))
+    const resumed = ack.resumed && offset > 0
 
-      const now = Date.now()
-      const dt = now - lastSpeedTime
-      if (dt >= 300) {
-        speedBps = ((offset - lastSpeedBytes) / dt) * 1000
-        lastSpeedTime = now
-        lastSpeedBytes = offset
-      }
-      emitProgress(Math.min(offset, file.size), false)
-      await new Promise(r => setTimeout(r, 0))
+    let lastSpeedTime = Date.now()
+    let lastSpeedBytes = offset
+    let speedBps = 0
+
+    if (resumed) {
+      emitProgress(offset, 0, false, true)
     }
 
-    this.sendJson({ type: 'file_end', id })
-    emitProgress(file.size, true)
+    try {
+      const CHUNK = 64 * 1024
+      while (offset < file.size) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+          throw new Error('连接已断开')
+        }
+        const buf  = await file.slice(offset, offset + CHUNK).arrayBuffer()
+        const idB  = new TextEncoder().encode(id.padEnd(16, '\0').slice(0, 16))
+        const hdr  = new Uint8Array(1 + 16 + 4)
+        hdr[0] = FILE_CHUNK
+        hdr.set(idB, 1)
+        new DataView(hdr.buffer).setUint32(17, offset, false)
+        const pkt = new Uint8Array(hdr.length + buf.byteLength)
+        pkt.set(hdr)
+        pkt.set(new Uint8Array(buf), hdr.length)
+        this.sendBinary(pkt.buffer)
+        offset += buf.byteLength
+
+        const now = Date.now()
+        const dt = now - lastSpeedTime
+        if (dt >= 300) {
+          speedBps = ((offset - lastSpeedBytes) / dt) * 1000
+          lastSpeedTime = now
+          lastSpeedBytes = offset
+        }
+        emitProgress(Math.min(offset, file.size), speedBps, false, resumed)
+        await new Promise(r => setTimeout(r, 0))
+      }
+
+      const donePromise = new Promise<string | undefined>((resolve) => {
+        const timer = setTimeout(() => {
+          this.pendingFileDones.delete(id)
+          resolve(undefined)
+        }, 1500)
+        this.pendingFileDones.set(id, (path) => {
+          clearTimeout(timer)
+          resolve(path)
+        })
+      })
+
+      this.sendJson({ type: 'file_end', id })
+      const finalPath = await donePromise
+      emitProgress(file.size, 0, true, resumed)
+      return { id, path: finalPath, resumed }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      emitProgress(offset, 0, false, resumed, msg)
+      throw err
+    }
   }
 
   // MARK: - WebRTC 信令
@@ -1001,11 +1090,65 @@ export class Connection {
         break
       }
 
+      case 'file_ack': {
+        const id = msg.id as string
+        const offset = typeof msg.offset === 'number' ? msg.offset : 0
+        const resumed = Boolean(msg.resumed)
+        const resolver = this.pendingFileAcks.get(id)
+        if (resolver) {
+          this.pendingFileAcks.delete(id)
+          resolver({ offset, resumed })
+        }
+        this.emit({ type: 'file_ack', id, offset, resumed })
+        break
+      }
+
+      case 'file_done': {
+        const id = msg.id as string
+        const path = typeof msg.path === 'string' ? msg.path : undefined
+        const resolver = this.pendingFileDones.get(id)
+        if (resolver) {
+          this.pendingFileDones.delete(id)
+          resolver(path)
+        }
+        this.emit({ type: 'file_done', id, path })
+        break
+      }
+
       case 'dir_listing': {
         const dlPath    = msg.path    as string
         const dlEntries = msg.entries as DirEntry[]
         this.emit({ type: 'dir_listing', path: dlPath, entries: dlEntries })
         this.onDirListing?.(dlPath, dlEntries)
+        break
+      }
+
+      case 'dir_tree': {
+        const root = (msg.root as string) ?? ''
+        const files = Array.isArray(msg.files) ? (msg.files as DirTreeFile[]) : []
+        const resolver = this.pendingDirTrees.get(root)
+        if (resolver) {
+          this.pendingDirTrees.delete(root)
+          resolver({ root, files })
+        } else if (this.pendingDirTrees.size > 0) {
+          // Handle normalized root path mismatch (e.g. ~ expanded by server)
+          const firstKey = this.pendingDirTrees.keys().next().value
+          if (firstKey !== undefined) {
+            const fallbackResolver = this.pendingDirTrees.get(firstKey)
+            this.pendingDirTrees.delete(firstKey)
+            fallbackResolver?.({ root, files })
+          }
+        }
+        this.emit({ type: 'dir_tree', root, files })
+        break
+      }
+
+      case 'clipboard_files_from_target': {
+        if (!this.reverseClipboardActive) break
+        const files = Array.isArray(msg.files) ? (msg.files as ClipboardFileItem[]) : []
+        if (files.length > 0) {
+          this.emit({ type: 'clipboard_files_from_target', files })
+        }
         break
       }
 

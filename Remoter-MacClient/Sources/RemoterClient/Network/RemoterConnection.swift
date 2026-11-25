@@ -443,6 +443,7 @@ public final class RemoterConnection: @unchecked Sendable {
     private var _udpReceiver: UdpVideoReceiver?
     private var _udpActive = false
     private var _lastUdpKeyframeReqMs: UInt64 = 0
+    private var _dirTreeWaiters: [CheckedContinuation<(String, [DirTreeFile]), Error>] = []
 
     // Clipboard anti-loop state (FNV-1a 64-bit)
     private var _clipboardEnabled = true
@@ -544,6 +545,9 @@ public final class RemoterConnection: @unchecked Sendable {
     public var onServerStats: ((ServerStats) -> Void)?
     public var onFileTransferProgress: ((FileTransferProgress) -> Void)?
     public var onDirListing: ((_ path: String, _ entries: [RemoteFileEntry]) -> Void)?
+    public var onDirTree: ((_ root: String, _ files: [DirTreeFile]) -> Void)?
+    public var onClipboardFilesFromTarget: (([RemoteClipboardFile]) -> Void)?
+    public var onClipboardFilesReady: ((Int) -> Void)?
     public var onAuthSucceeded: ((_ username: String, _ token: String) -> Void)?
     public var onServerHello: ((ServerHello) -> Void)?
     public var onError: ((String) -> Void)?
@@ -620,8 +624,13 @@ public final class RemoterConnection: @unchecked Sendable {
         let udp = _udpReceiver
         _udpReceiver = nil
         _udpActive = false
+        let treeWaiters = _dirTreeWaiters
+        _dirTreeWaiters.removeAll()
         stateLock.unlock()
 
+        for waiter in treeWaiters {
+            waiter.resume(throwing: CancellationError())
+        }
         udp?.stop()
         queue?.close()
         task?.cancel()
@@ -1105,14 +1114,36 @@ public final class RemoterConnection: @unchecked Sendable {
         case .serverStats(let stats):
             onServerStats?(stats)
 
-        case .fileStart(let id, let name, let size):
-            fileTransfer.handleFileStart(id: id, name: name, size: size)
+        case .fileStart(let id, let name, let size, let offset):
+            fileTransfer.handleFileStart(id: id, name: name, size: size, offset: offset)
+
+        case .fileAck(let id, let offset, let resumed):
+            fileTransfer.handleFileAck(id: id, offset: offset, resumed: resumed)
+
+        case .fileDone(let id, let path):
+            fileTransfer.handleFileDone(id: id, path: path)
 
         case .fileEnd(let id):
             fileTransfer.handleFileEnd(id: id)
 
         case .dirListing(let path, let entries):
             onDirListing?(path, entries)
+
+        case .dirTree(let root, let files):
+            let waiter: CheckedContinuation<(String, [DirTreeFile]), Error>? = stateLock.withLock {
+                _dirTreeWaiters.isEmpty ? nil : _dirTreeWaiters.removeFirst()
+            }
+            waiter?.resume(returning: (root, files))
+            onDirTree?(root, files)
+
+        case .clipboardFilesFromTarget(let files):
+            let reverseActive = clipboardLock.withLock { _reverseClipboardActive }
+            if reverseActive {
+                onClipboardFilesFromTarget?(files)
+            }
+
+        case .clipboardFilesReady(let count):
+            onClipboardFilesReady?(count)
 
         case .clipboardFromTarget(let cb):
             clipboardLock.lock()
@@ -1655,12 +1686,118 @@ public final class RemoterConnection: @unchecked Sendable {
         enqueueControlJson(ClientMessages.listDir(path: path))
     }
 
-    public func sendRequestFile(remotePath: String) {
-        enqueueControlJson(ClientMessages.requestFile(path: remotePath))
+    public func sendListDirRecursive(path: String) {
+        enqueueControlJson(ClientMessages.listDirRecursive(path: path))
     }
 
-    public func uploadFile(at url: URL) async throws {
-        try await fileTransfer.uploadFile(at: url)
+    public func sendClipboardSetFiles(paths: [String]) {
+        guard !paths.isEmpty else { return }
+        enqueueControlJson(ClientMessages.clipboardSetFiles(paths: paths))
+    }
+
+    public func sendRequestFile(remotePath: String, offset: Int64? = nil, destURL: URL? = nil) {
+        let effectiveOffset: Int64
+        if let offset {
+            _ = fileTransfer.prepareDownloadTarget(remotePath: remotePath, destURL: destURL, overwriteExisting: destURL != nil)
+            effectiveOffset = max(0, offset)
+        } else {
+            effectiveOffset = fileTransfer.prepareDownloadTarget(remotePath: remotePath, destURL: destURL, overwriteExisting: destURL != nil)
+        }
+        enqueueControlJson(ClientMessages.requestFile(path: remotePath, offset: effectiveOffset))
+    }
+
+    @discardableResult
+    public func uploadFile(
+        at url: URL,
+        relPath: String? = nil,
+        destDir: String? = nil,
+        resume: Bool = true,
+        purpose: String? = nil,
+        waitForDone: Bool = false
+    ) async throws -> String? {
+        try await fileTransfer.uploadFile(
+            at: url,
+            relPath: relPath,
+            destDir: destDir,
+            resume: resume,
+            purpose: purpose,
+            waitForDone: waitForDone
+        )
+    }
+
+    @discardableResult
+    public func uploadItems(
+        at urls: [URL],
+        destDir: String? = nil,
+        resume: Bool = true,
+        purpose: String? = nil,
+        waitForDone: Bool = false
+    ) async throws -> [String] {
+        try await fileTransfer.uploadItems(
+            at: urls,
+            destDir: destDir,
+            resume: resume,
+            purpose: purpose,
+            waitForDone: waitForDone
+        )
+    }
+
+    /// Downloads a single remote file to `localURL` (resuming `.remoter.part` if present) and awaits completion.
+    @discardableResult
+    public func downloadFile(
+        remotePath: String,
+        to localURL: URL,
+        overwriteExisting: Bool = true
+    ) async throws -> String {
+        try await fileTransfer.downloadFile(
+            remotePath: remotePath,
+            to: localURL,
+            overwriteExisting: overwriteExisting
+        ) { [weak self] path, offset in
+            self?.enqueueControlJson(ClientMessages.requestFile(path: path, offset: offset))
+        }
+    }
+
+    /// Requests `list_dir_recursive` and downloads all files in `remotePath` into `localParentDir/<folderName>/...`.
+    @discardableResult
+    public func downloadDirectory(remotePath: String, to localParentDir: URL) async throws -> Int {
+        let (root, files) = try await requestDirTree(path: remotePath)
+        let folderName = FileTransferClient.sanitizeFileName(FileTransferClient.extractRemoteFileName(root.isEmpty ? remotePath : root))
+        let baseDir = localParentDir.appendingPathComponent(folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+
+        var count = 0
+        for file in files {
+            try Task.checkCancellation()
+            let comps = FileTransferClient.sanitizeRelativePathComponents(file.relPath)
+            guard !comps.isEmpty else { continue }
+            var targetURL = baseDir
+            for c in comps {
+                targetURL.appendPathComponent(c)
+            }
+            _ = try await downloadFile(remotePath: file.path, to: targetURL, overwriteExisting: true)
+            count += 1
+        }
+        return count
+    }
+
+    private func requestDirTree(path: String) async throws -> (String, [DirTreeFile]) {
+        try await withCheckedThrowingContinuation { cont in
+            stateLock.lock()
+            _dirTreeWaiters.append(cont)
+            stateLock.unlock()
+
+            enqueueControlJson(ClientMessages.listDirRecursive(path: path))
+
+            Task.detached { [weak self] in
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self else { return }
+                let timedOut: CheckedContinuation<(String, [DirTreeFile]), Error>? = self.stateLock.withLock {
+                    self._dirTreeWaiters.isEmpty ? nil : self._dirTreeWaiters.removeFirst()
+                }
+                timedOut?.resume(throwing: FileTransferClient.TransferError.timeout("获取远端目录树超时"))
+            }
+        }
     }
 
     // MARK: - Queue & State Helpers

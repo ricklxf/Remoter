@@ -276,6 +276,7 @@ final class Session {
     private var clipboardTimer: DispatchSourceTimer?
     private var lastSentClipboardText = ""
     private var lastSentClipboardImageSize = -1
+    private var lastSentClipboardFilesSig = ""
     private var lastAppliedPasteboardChangeCount = -1
     // Set once the first time startClipboardMonitor() ever captures a
     // baseline for this session — see there for why this must not happen
@@ -614,11 +615,55 @@ final class Session {
             }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_image_applied", detail: "bytes=\(imgData.count)")
 
-        case .fileStart(let fid, let name, let size):
-            fileReceiver?.start(id: fid, name: name, size: size)
+        case .clipboardSetFiles(let paths):
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let fm = FileManager.default
+                let urls: [URL] = paths.compactMap { raw in
+                    let expanded = (raw as NSString).expandingTildeInPath
+                    return fm.fileExists(atPath: expanded) ? URL(fileURLWithPath: expanded) : nil
+                }
+                guard !urls.isEmpty else {
+                    self.sendJson(["type": "clipboard_files_ready", "count": 0])
+                    return
+                }
+                self.lastSentClipboardFilesSig = Self.clipboardFilesSignature(urls: urls)
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.writeObjects(urls as [NSURL])
+                self.lastAppliedPasteboardChangeCount = pb.changeCount
+                ConnectionLogger.shared.logStep(
+                    sessionId: self.id.uuidString,
+                    step: "clipboard_set_files_applied",
+                    detail: "count=\(urls.count)"
+                )
+                self.sendJson(["type": "clipboard_files_ready", "count": urls.count])
+            }
+
+        case .fileStart(let fid, let name, let size, let relPath, let destDir, let resume, let purpose):
+            fileReceiver?.start(
+                id: fid,
+                name: name,
+                size: size,
+                relPath: relPath,
+                destDir: destDir,
+                resume: resume,
+                purpose: purpose
+            ) { [weak self] offset, resumed in
+                self?.sendJson([
+                    "type": "file_ack",
+                    "id": fid,
+                    "offset": offset,
+                    "resumed": resumed
+                ])
+            }
 
         case .fileEnd(let fid):
-            fileReceiver?.finish(id: fid)
+            fileReceiver?.finish(id: fid) { [weak self] finalPath in
+                var resp: [String: Any] = ["type": "file_done", "id": fid]
+                if let finalPath { resp["path"] = finalPath }
+                self?.sendJson(resp)
+            }
 
         case .fpsSet(let fps, let auto):
             autoFpsEnabled = auto
@@ -964,9 +1009,12 @@ final class Session {
         case .listDir(let path):
             handleListDir(path)
 
-        case .requestFile(let path):
+        case .listDirRecursive(let path):
+            handleListDirRecursive(path)
+
+        case .requestFile(let path, let offset):
             let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            sendFile(url)
+            sendFile(url, offset: max(0, offset))
 
         case .setMuted(let muted):
             setSystemMuted(muted)
@@ -2143,6 +2191,52 @@ final class Session {
         sendJson(["type": "dir_listing", "path": expandedPath, "entries": entries])
     }
 
+    private func handleListDirRecursive(_ path: String) {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let rootURL = URL(fileURLWithPath: expandedPath).standardizedFileURL
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: rootURL.path, isDirectory: &isDir), isDir.boolValue else {
+            sendJson(["type": "dir_tree", "root": rootURL.path, "files": [] as [[String: Any]]])
+            return
+        }
+
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        let rootPrefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        var files: [[String: Any]] = []
+        let maxEntries = 2000
+
+        if let enumerator = fm.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants]
+        ) {
+            for case let itemURL as URL in enumerator {
+                if files.count >= maxEntries { break }
+                guard let res = try? itemURL.resourceValues(forKeys: Set(keys)) else { continue }
+                if res.isSymbolicLink == true {
+                    enumerator.skipDescendants()
+                    continue
+                }
+                guard res.isRegularFile == true else { continue }
+                let fullPath = itemURL.standardizedFileURL.path
+                let relPath: String
+                if fullPath.hasPrefix(rootPrefix) {
+                    relPath = String(fullPath.dropFirst(rootPrefix.count))
+                } else {
+                    relPath = itemURL.lastPathComponent
+                }
+                files.append([
+                    "relPath": relPath,
+                    "path": fullPath,
+                    "size": res.fileSize ?? 0
+                ])
+            }
+        }
+
+        sendJson(["type": "dir_tree", "root": rootURL.path, "files": files])
+    }
+
     // MARK: - 保活定时器
 
     private func startKeepalive() {
@@ -2200,6 +2294,8 @@ final class Session {
         // forever, with no error and no way to tell anything went wrong.
         if !clipboardBaselineCaptured {
             clipboardBaselineCaptured = true
+            let baseFiles = Self.clipboardFileURLs()
+            lastSentClipboardFilesSig = baseFiles.isEmpty ? "" : Self.clipboardFilesSignature(urls: baseFiles)
             lastSentClipboardText = Self.clipboardPlainText() ?? ""
             lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
         }
@@ -2231,6 +2327,39 @@ final class Session {
         if lastAppliedPasteboardChangeCount >= 0 && currentChangeCount == lastAppliedPasteboardChangeCount {
             return
         }
+
+        // Check Finder file URLs first: skip text/image broadcast when files are on the
+        // pasteboard so copying a file in Finder doesn't send its filename as plain text!
+        let fileURLs = Self.clipboardFileURLs()
+        if !fileURLs.isEmpty {
+            let sig = Self.clipboardFilesSignature(urls: fileURLs)
+            if sig != lastSentClipboardFilesSig {
+                lastSentClipboardFilesSig = sig
+                let fm = FileManager.default
+                let filesPayload: [[String: Any]] = fileURLs.compactMap { url in
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return nil }
+                    let attrs = try? fm.attributesOfItem(atPath: url.path)
+                    let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                    return [
+                        "name": url.lastPathComponent,
+                        "path": url.path,
+                        "size": isDir.boolValue ? 0 : size,
+                        "isDir": isDir.boolValue
+                    ]
+                }
+                if !filesPayload.isEmpty {
+                    ConnectionLogger.shared.logStep(
+                        sessionId: id.uuidString,
+                        step: "clipboard_files_reverse_sent",
+                        detail: "count=\(filesPayload.count)"
+                    )
+                    sendJson(["type": "clipboard_files_from_target", "files": filesPayload])
+                }
+            }
+            return
+        }
+
         let text = Self.clipboardPlainText() ?? ""
         if !text.isEmpty && text != lastSentClipboardText {
             lastSentClipboardText = text
@@ -2244,6 +2373,28 @@ final class Session {
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_reverse_sent",
             detail: "image bytes=\(pngData.count)")
         sendJson(["type": "clipboard_from_target", "image": pngData.base64EncodedString()])
+    }
+
+    private static func clipboardFileURLs() -> [URL] {
+        DispatchQueue.main.sync {
+            let pb = NSPasteboard.general
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+            guard let objs = pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL] else {
+                return []
+            }
+            return objs.filter { $0.isFileURL }
+        }
+    }
+
+    private static func clipboardFilesSignature(urls: [URL]) -> String {
+        let fm = FileManager.default
+        let parts = urls.map { url -> String in
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let mtime = Int64((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
+            return "\(url.path)|\(size)|\(mtime)"
+        }.sorted()
+        return parts.joined(separator: "\n")
     }
 
     // Plain "public.utf8-plain-text" isn't always on the pasteboard — a
@@ -2323,44 +2474,57 @@ final class Session {
 
     // MARK: - 文件发送（Mac → 客户端）
 
-    func sendFile(_ url: URL) {
+    func sendFile(_ url: URL, offset startOffset: Int64 = 0) {
         guard authenticated else { return }
-        guard let fileData = try? Data(contentsOf: url) else {
+        guard let fh = try? FileHandle(forReadingFrom: url),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attrs[.size] as? NSNumber)?.int64Value else {
             print("[Session] sendFile: cannot read \(url.lastPathComponent)")
             return
         }
+        defer { try? fh.close() }
+
+        let clampedOffset = min(max(0, startOffset), size)
 
         // 16-byte ASCII ID（取 UUID 去掉连字符后前16位）
         let rawId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let idStr = String(rawId.prefix(16))
         let name  = url.lastPathComponent
-        let size  = fileData.count
 
-        sendJson(["type": "file_start", "id": idStr, "name": name, "size": size])
+        sendJson([
+            "type": "file_start",
+            "id": idStr,
+            "name": name,
+            "size": size,
+            "offset": clampedOffset
+        ])
+
+        var idBytes = [UInt8](repeating: 0, count: 16)
+        let idData  = idStr.data(using: .utf8)!
+        for (i, b) in idData.enumerated() where i < 16 { idBytes[i] = b }
 
         let CHUNK = 64 * 1024
-        var offset = 0
+        var offset = clampedOffset
+        if offset > 0 {
+            try? fh.seek(toOffset: UInt64(offset))
+        }
         while offset < size {
-            let end   = min(offset + CHUNK, size)
-            let chunk = fileData[offset..<end]
+            let chunk = fh.readData(ofLength: CHUNK)
+            if chunk.isEmpty { break }
 
             // 0x02 | 16-byte-id (padded) | 4-byte-offset (big-endian) | data
-            var idBytes = [UInt8](repeating: 0, count: 16)
-            let idData  = idStr.data(using: .utf8)!
-            for (i, b) in idData.enumerated() where i < 16 { idBytes[i] = b }
-
             var pkt = Data(capacity: 1 + 16 + 4 + chunk.count)
             pkt.append(0x02)
             pkt.append(contentsOf: idBytes)
-            var offBE = UInt32(offset).bigEndian
+            var offBE = UInt32(truncatingIfNeeded: offset).bigEndian
             withUnsafeBytes(of: &offBE) { pkt.append(contentsOf: $0) }
             pkt.append(chunk)
 
             connection.sendBinary(pkt)
-            offset += CHUNK
+            offset += Int64(chunk.count)
         }
 
         sendJson(["type": "file_end", "id": idStr])
-        print("[Session] sendFile: sent \(name) (\(size) bytes)")
+        print("[Session] sendFile: sent \(name) (\(size) bytes, startOffset=\(clampedOffset))")
     }
 }

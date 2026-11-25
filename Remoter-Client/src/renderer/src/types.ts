@@ -52,6 +52,26 @@ export interface DirEntry {
   modified: number  // ms timestamp
 }
 
+export interface DirTreeFile {
+  relPath: string
+  path: string
+  size: number
+}
+
+export interface ClipboardFileItem {
+  name: string
+  path: string
+  size: number
+  isDir: boolean
+}
+
+export interface FileStartOptions {
+  relPath?: string
+  destDir?: string
+  resume?: boolean
+  purpose?: string
+}
+
 export interface FileTransfer {
   id: string
   name: string
@@ -60,6 +80,8 @@ export interface FileTransfer {
   direction: 'upload' | 'download'
   speedBps: number
   done: boolean
+  resumed?: boolean
+  relPath?: string
   error?: string
 }
 

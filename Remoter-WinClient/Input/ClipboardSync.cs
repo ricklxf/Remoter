@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -34,6 +35,10 @@ public sealed class ClipboardSync : IDisposable
     private bool _hasInjectedImageHash;
     private bool _hasSentImageHash;
 
+    // Echo guard for bidirectional clipboard file drop lists
+    private string? _lastAppliedRemoteClipboardFilesSig;
+    private string? _lastSentFilesSig;
+
     // Win32 clipboard sequence counter for zero-allocation fast-skip after our own writes
     private uint _lastSequenceNumber;
 
@@ -48,6 +53,9 @@ public sealed class ClipboardSync : IDisposable
 
     /// <summary>Fired on the UI thread when local clipboard image changes (PNG base64).</summary>
     public event Action<string>? LocalImageChanged;
+
+    /// <summary>Fired on the UI thread when local clipboard file drop list changes.</summary>
+    public event Action<string[]>? LocalFilesChanged;
 
     [DllImport("user32.dll")]
     private static extern uint GetClipboardSequenceNumber();
@@ -162,7 +170,56 @@ public sealed class ClipboardSync : IDisposable
     }
 
     /// <summary>
-    /// Immediately inspects the local Windows clipboard and pushes any new text/image
+    /// Places downloaded remote clipboard files into the local Windows clipboard on the UI STA thread,
+    /// recording their signature in _lastAppliedRemoteClipboardFilesSig to prevent echo-back loops.
+    /// Safe to call from any thread.
+    /// </summary>
+    public void ApplyRemoteFiles(string[] localPaths)
+    {
+        if (_disposed || !_enabled || localPaths == null || localPaths.Length == 0) return;
+
+        var valid = new List<string>(localPaths.Length);
+        foreach (var raw in localPaths)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            if (File.Exists(raw) || Directory.Exists(raw))
+                valid.Add(raw);
+        }
+        if (valid.Count == 0) return;
+
+        string sig = ComputeFilesSignature(valid);
+
+        void Apply()
+        {
+            if (_disposed) return;
+            try
+            {
+                var col = new StringCollection();
+                foreach (var p in valid) col.Add(p);
+
+                _lastAppliedRemoteClipboardFilesSig = sig;
+                Clipboard.SetFileDropList(col);
+                _lastSequenceNumber = GetClipboardSequenceNumber();
+            }
+            catch
+            {
+                // Clipboard may be locked transiently by another process
+            }
+        }
+
+        if (_uiInvoker.InvokeRequired)
+        {
+            if (!_uiInvoker.IsDisposed && _uiInvoker.IsHandleCreated)
+                _uiInvoker.BeginInvoke(Apply);
+        }
+        else
+        {
+            Apply();
+        }
+    }
+
+    /// <summary>
+    /// Immediately inspects the local Windows clipboard and pushes any new text/image/files
     /// to the remote host (e.g. on connect or window activation). Protected by dual FNV-1a
     /// hash deduplication so previously synced or remote-injected content never echoes.
     /// </summary>
@@ -195,6 +252,31 @@ public sealed class ClipboardSync : IDisposable
     {
         try
         {
+            // Check file drop list first so Explorer file copies sync as files, not plain text paths.
+            if (Clipboard.ContainsFileDropList())
+            {
+                var drop = Clipboard.GetFileDropList();
+                if (drop != null && drop.Count > 0)
+                {
+                    var paths = new List<string>(drop.Count);
+                    foreach (string? item in drop)
+                    {
+                        if (!string.IsNullOrWhiteSpace(item) && (File.Exists(item) || Directory.Exists(item)))
+                            paths.Add(item);
+                    }
+                    if (paths.Count > 0)
+                    {
+                        string sig = ComputeFilesSignature(paths);
+                        if (sig != _lastAppliedRemoteClipboardFilesSig && sig != _lastSentFilesSig)
+                        {
+                            _lastSentFilesSig = sig;
+                            LocalFilesChanged?.Invoke(paths.ToArray());
+                        }
+                    }
+                }
+                return;
+            }
+
             if (Clipboard.ContainsText(TextDataFormat.UnicodeText))
             {
                 string text = Clipboard.GetText(TextDataFormat.UnicodeText);
@@ -251,6 +333,37 @@ public sealed class ClipboardSync : IDisposable
             hash *= prime;
         }
         return hash;
+    }
+
+    public static string ComputeFilesSignature(IEnumerable<string> paths)
+    {
+        var entries = new List<string>();
+        foreach (var raw in paths)
+        {
+            string full;
+            try { full = Path.GetFullPath(raw); }
+            catch { full = raw; }
+
+            long size = 0;
+            long mtime = 0;
+            try
+            {
+                if (Directory.Exists(full))
+                {
+                    mtime = Directory.GetLastWriteTimeUtc(full).Ticks;
+                }
+                else if (File.Exists(full))
+                {
+                    var fi = new FileInfo(full);
+                    size = fi.Length;
+                    mtime = fi.LastWriteTimeUtc.Ticks;
+                }
+            }
+            catch { }
+            entries.Add($"{full}|{size}|{mtime}");
+        }
+        entries.Sort(StringComparer.Ordinal);
+        return string.Join("\n", entries);
     }
 
     public void Dispose()

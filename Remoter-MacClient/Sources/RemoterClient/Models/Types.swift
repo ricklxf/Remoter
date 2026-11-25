@@ -622,6 +622,32 @@ public struct RemoteFileEntry: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct DirTreeFile: Equatable, Sendable {
+    public let relPath: String
+    public let path: String
+    public let size: Int64
+
+    public init(relPath: String, path: String, size: Int64) {
+        self.relPath = relPath
+        self.path = path
+        self.size = size
+    }
+}
+
+public struct RemoteClipboardFile: Equatable, Sendable {
+    public let name: String
+    public let path: String
+    public let size: Int64
+    public let isDir: Bool
+
+    public init(name: String, path: String, size: Int64, isDir: Bool) {
+        self.name = name
+        self.path = path
+        self.size = size
+        self.isDir = isDir
+    }
+}
+
 public struct FileTransferProgress: Identifiable, Equatable, Sendable {
     public let id: String
     public let name: String
@@ -630,6 +656,7 @@ public struct FileTransferProgress: Identifiable, Equatable, Sendable {
     public let direction: FileTransferDirection
     public let speedBps: Double
     public let done: Bool
+    public let resumed: Bool
     public let savedPath: String?
     public let error: String?
 
@@ -641,6 +668,7 @@ public struct FileTransferProgress: Identifiable, Equatable, Sendable {
         direction: FileTransferDirection,
         speedBps: Double,
         done: Bool,
+        resumed: Bool = false,
         savedPath: String? = nil,
         error: String? = nil
     ) {
@@ -651,6 +679,7 @@ public struct FileTransferProgress: Identifiable, Equatable, Sendable {
         self.direction = direction
         self.speedBps = speedBps
         self.done = done
+        self.resumed = resumed
         self.savedPath = savedPath
         self.error = error
     }

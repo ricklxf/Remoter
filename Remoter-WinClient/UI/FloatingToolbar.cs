@@ -32,6 +32,7 @@ public sealed class FloatingToolbar : Form
     private readonly Button _audioBtn;
     private readonly Button _micBtn;
     private readonly Button _clipboardBtn;
+    private readonly Button _fileManagerBtn;
     private readonly Button _privacyBtn;
     private readonly Button _pointerLockBtn;
     private readonly Button _powerBtn;
@@ -88,6 +89,7 @@ public sealed class FloatingToolbar : Form
     public event Action<bool>? AudioToggled;
     public event Action<bool>? MicToggled;
     public event Action<bool>? ClipboardToggled;
+    public event Action? FileManagerRequested;
     public event Action<bool>? PrivacyToggled;
     public event Action? PointerLockToggled;
     public event Action<int>? DisplaySelected;
@@ -168,6 +170,7 @@ public sealed class FloatingToolbar : Form
         _micBtn         = CreateBarButton("麦克风: 关", 82);
         _clipboardBtn   = CreateBarButton("剪贴板: 开", 82);
         SetToggleStyle(_clipboardBtn, _clipboardOn);
+        _fileManagerBtn = CreateBarButton("文件", 52);
         _privacyBtn     = CreateBarButton("隐私屏", 64);
         _pointerLockBtn = CreateBarButton("游戏鼠标", 74);
         _powerBtn       = CreateBarButton("电源 ▾", 68);
@@ -182,6 +185,7 @@ public sealed class FloatingToolbar : Form
         _audioBtn.Click += (_, _) => AudioToggled?.Invoke(!_audioOn);
         _micBtn.Click += (_, _) => MicToggled?.Invoke(!_micOn);
         _clipboardBtn.Click += (_, _) => ClipboardToggled?.Invoke(!_clipboardOn);
+        _fileManagerBtn.Click += (_, _) => FileManagerRequested?.Invoke();
         _privacyBtn.Click += (_, _) => PrivacyToggled?.Invoke(!_privacyOn);
         _pointerLockBtn.Click += (_, _) => PointerLockToggled?.Invoke();
         _imeCalibrateBtn.Click += (_, _) => ImeCalibrateToggled?.Invoke();
@@ -194,6 +198,7 @@ public sealed class FloatingToolbar : Form
         _barPanel.Controls.Add(_audioBtn);
         _barPanel.Controls.Add(_micBtn);
         _barPanel.Controls.Add(_clipboardBtn);
+        _barPanel.Controls.Add(_fileManagerBtn);
         _barPanel.Controls.Add(_privacyBtn);
         _barPanel.Controls.Add(_pointerLockBtn);
         _barPanel.Controls.Add(_powerBtn);

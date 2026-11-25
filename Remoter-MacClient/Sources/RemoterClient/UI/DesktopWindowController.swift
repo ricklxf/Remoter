@@ -45,8 +45,14 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     // Translucent Drag & Drop upload overlay
     private let dropOverlayView = NSView()
     private let dropOverlayCard = Theme.makeCard(background: Theme.surface.withAlphaComponent(0.92), cornerRadius: 14)
-    private let dropOverlayLabel = Theme.makeLabel("📁 松开即上传文件到远端", size: 16, weight: .semibold, color: Theme.textPrimary)
+    private let dropOverlayLabel = Theme.makeLabel("📁 松开即上传文件或文件夹到远端", size: 16, weight: .semibold, color: Theme.textPrimary)
     private var imeEchoBottomConstraint: NSLayoutConstraint?
+
+    // Clipboard file sync state
+    private var clipboardFileSyncTask: Task<Void, Never>?
+    private var remoteClipboardDownloadTask: Task<Void, Never>?
+    private static let maxLocalClipboardUploadBytes: Int64 = 100 * 1024 * 1024
+    private static let maxRemoteClipboardDownloadBytes: Int64 = 50 * 1024 * 1024
 
     // Session state
     private static let qualityPresetDefaultsKey = "remoter_quality_preset"
@@ -392,12 +398,18 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
             self?.connection.sendMicPcm(pcm)
         }
 
-        // Pointer lock feedback
+        // Pointer lock feedback & paste shortcut clipboard file sync
         inputManager.onPointerLockChanged = { [weak self] locked in
             DispatchQueue.main.async {
                 self?.toolbarPanel?.updateState(pointerLocked: locked)
                 self?.showToast(locked ? "已开启游戏鼠标 (⌃⌥↩ 退出)" : "已退出游戏鼠标")
             }
+        }
+        inputManager.onPasteShortcut = { [weak self] in
+            self?.clipboardSync.checkLocalClipboardFilesNow()
+        }
+        clipboardSync.onLocalClipboardFilesChanged = { [weak self] urls, _ in
+            self?.syncLocalClipboardFilesToRemote(urls: urls)
         }
 
         // Connection state
@@ -576,6 +588,12 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         connection.onClipboardReceived = { [weak self] data in
             self?.clipboardSync.applyRemoteClipboard(data)
+        }
+
+        connection.onClipboardFilesFromTarget = { [weak self] files in
+            DispatchQueue.main.async {
+                self?.handleRemoteClipboardFiles(files)
+            }
         }
 
         connection.onStatsUpdated = { [weak self] stats in
@@ -1030,23 +1048,119 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
     private func handleDroppedFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        showToast("开始上传 \(urls.count) 个文件…")
+        let items = FileTransferClient.enumerateUploadItems(from: urls)
+        guard !items.isEmpty else {
+            showToast("未找到可上传的文件")
+            return
+        }
+        let hasDir = urls.contains { url in
+            var isDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+        }
+        if hasDir {
+            showToast("开始递归上传 \(urls.count) 项（共 \(items.count) 个文件）…")
+        } else {
+            showToast("开始上传 \(items.count) 个文件…")
+        }
         Task { [weak self] in
             guard let self else { return }
-            for url in urls {
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                    await MainActor.run {
-                        self.showToast("暂不支持直接拖拽文件夹: \(url.lastPathComponent)")
-                    }
-                    continue
+            do {
+                _ = try await self.connection.uploadItems(at: urls, destDir: nil, resume: true)
+            } catch {
+                await MainActor.run {
+                    self.showToast("上传失败: \(error.localizedDescription)")
                 }
-                do {
-                    try await self.connection.uploadFile(at: url)
-                } catch {
-                    await MainActor.run {
-                        self.showToast("上传失败 (\(url.lastPathComponent)): \(error.localizedDescription)")
-                    }
+            }
+        }
+    }
+
+    // MARK: - Bidirectional Clipboard File Sync (Item 4)
+
+    private func syncLocalClipboardFilesToRemote(urls: [URL]) {
+        guard settings.clipboardSyncEnabled, connection.isConnected, !urls.isEmpty else { return }
+        let items = FileTransferClient.enumerateUploadItems(from: urls)
+        guard !items.isEmpty else { return }
+
+        var totalBytes: Int64 = 0
+        let fm = FileManager.default
+        for item in items {
+            if let attrs = try? fm.attributesOfItem(atPath: item.url.path),
+               let sz = (attrs[.size] as? NSNumber)?.int64Value {
+                totalBytes += sz
+            }
+        }
+        if totalBytes > Self.maxLocalClipboardUploadBytes {
+            showToast("剪贴板文件超过 100MB，请通过文件管理器上传")
+            return
+        }
+
+        clipboardFileSyncTask?.cancel()
+        clipboardFileSyncTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let remotePaths = try await self.connection.uploadItems(
+                    at: urls,
+                    destDir: nil,
+                    resume: true,
+                    purpose: "clipboard",
+                    waitForDone: true
+                )
+                guard !Task.isCancelled, !remotePaths.isEmpty else { return }
+                self.connection.sendClipboardSetFiles(paths: remotePaths)
+                await MainActor.run {
+                    self.showToast("已同步剪贴板文件到远端 (\(remotePaths.count) 个)")
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    self.showToast("剪贴板文件同步失败: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func handleRemoteClipboardFiles(_ files: [RemoteClipboardFile]) {
+        guard settings.clipboardSyncEnabled, !files.isEmpty else { return }
+        let hasDir = files.contains { $0.isDir }
+        let totalBytes = files.reduce(Int64(0)) { $0 + max(0, $1.size) }
+
+        if hasDir || totalBytes > Self.maxRemoteClipboardDownloadBytes {
+            showToast("远端剪贴板包含文件夹或超过 50MB，请通过文件管理器拉取")
+            return
+        }
+
+        let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches", isDirectory: true)
+        let clipboardDir = cacheBase.appendingPathComponent("Remoter/Clipboard", isDirectory: true)
+
+        remoteClipboardDownloadTask?.cancel()
+        remoteClipboardDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try FileManager.default.createDirectory(at: clipboardDir, withIntermediateDirectories: true)
+                var downloadedURLs: [URL] = []
+                for file in files {
+                    try Task.checkCancellation()
+                    let safeName = FileTransferClient.sanitizeFileName(file.name.isEmpty ? FileTransferClient.extractRemoteFileName(file.path) : file.name)
+                    let targetURL = clipboardDir.appendingPathComponent(safeName)
+                    let savedPath = try await self.connection.downloadFile(
+                        remotePath: file.path,
+                        to: targetURL,
+                        overwriteExisting: true
+                    )
+                    downloadedURLs.append(URL(fileURLWithPath: savedPath))
+                }
+                guard !Task.isCancelled, !downloadedURLs.isEmpty else { return }
+                await MainActor.run {
+                    self.clipboardSync.applyRemoteClipboardFiles(downloadedURLs)
+                    self.showToast("已同步远端剪贴板文件 (\(downloadedURLs.count) 个)，可直接 Cmd+V 粘贴")
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    self.showToast("拉取远端剪贴板文件失败: \(error.localizedDescription)")
                 }
             }
         }
@@ -1110,6 +1224,10 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
         toastTimer?.invalidate()
         toastTimer = nil
+        clipboardFileSyncTask?.cancel()
+        clipboardFileSyncTask = nil
+        remoteClipboardDownloadTask?.cancel()
+        remoteClipboardDownloadTask = nil
 
         rendererView.cancelImeComposition()
         inputManager.setPointerLocked(false)

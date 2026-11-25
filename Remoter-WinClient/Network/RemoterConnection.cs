@@ -1,5 +1,7 @@
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
@@ -55,6 +57,7 @@ public sealed class RemoterConnection : IDisposable
 
     private readonly E2ECrypto _e2e = new();
     private readonly FileTransferClient _fileTransfer;
+    private readonly ConcurrentQueue<TaskCompletionSource<DirTreeFile[]>> _pendingDirTrees = new();
     private readonly object _stateLock = new();
     private readonly object _coalesceLock = new();
 
@@ -137,11 +140,14 @@ public sealed class RemoterConnection : IDisposable
     public event Action<bool, int?>? VirtualDisplayActiveChanged;
     public event Action<CursorShapeInfo>? CursorShapeReceived;
     public event Action<ClipboardData>? ClipboardReceived;
+    public event Action<RemoteClipboardFile[]>? ClipboardFilesReceived;
+    public event Action<int>? ClipboardFilesReadyReceived;
     public event Action<bool>? InputLockChanged;
     public event Action<ClientStats>? StatsUpdated;
     public event Action<ServerStats>? ServerStatsReceived;
     public event Action<FileTransferProgress>? FileTransferProgress;
     public event Action<string, DirEntry[]>? DirListingReceived;
+    public event Action<string, DirTreeFile[]>? DirTreeReceived;
     public event Action<string, string>? AuthSucceeded;
     public event Action<string, string, string>? ServerHelloReceived;
     public event Action<string>? ErrorOccurred;
@@ -898,15 +904,42 @@ public sealed class RemoterConnection : IDisposable
                 break;
 
             case ServerMessage.FileStart fs:
-                _fileTransfer.HandleFileStart(fs.Id, fs.Name, fs.Size);
+                _fileTransfer.HandleFileStart(fs.Id, fs.Name, fs.Size, fs.Offset);
                 break;
 
             case ServerMessage.FileEnd fe:
                 _fileTransfer.HandleFileEnd(fe.Id);
                 break;
 
+            case ServerMessage.FileAck fa:
+                _fileTransfer.HandleFileAck(fa.Id, fa.Offset, fa.Resumed);
+                break;
+
+            case ServerMessage.FileDone fd:
+                _fileTransfer.HandleFileDone(fd.Id, fd.Path);
+                break;
+
             case ServerMessage.DirListing dl:
                 DirListingReceived?.Invoke(dl.Path, dl.Entries);
+                break;
+
+            case ServerMessage.DirTree dt:
+                if (_pendingDirTrees.TryDequeue(out var treeTcs))
+                {
+                    treeTcs.TrySetResult(dt.Files);
+                }
+                DirTreeReceived?.Invoke(dt.Root, dt.Files);
+                break;
+
+            case ServerMessage.ClipboardFilesFromTarget cbf:
+                if (_reverseClipboardActive)
+                {
+                    ClipboardFilesReceived?.Invoke(cbf.Files);
+                }
+                break;
+
+            case ServerMessage.ClipboardFilesReady cbr:
+                ClipboardFilesReadyReceived?.Invoke(cbr.Count);
                 break;
 
             case ServerMessage.ClipboardFromTarget cb:
@@ -1455,11 +1488,64 @@ public sealed class RemoterConnection : IDisposable
     public void SendListDir(string path) =>
         EnqueueControlJson(ClientMessages.ListDir(path));
 
-    public void SendRequestFile(string remotePath) =>
-        EnqueueControlJson(ClientMessages.RequestFile(remotePath));
+    public void SendListDirRecursive(string path) =>
+        EnqueueControlJson(ClientMessages.ListDirRecursive(path));
+
+    public async Task<DirTreeFile[]> ListDirRecursiveAsync(string path, CancellationToken ct = default)
+    {
+        var tcs = new TaskCompletionSource<DirTreeFile[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingDirTrees.Enqueue(tcs);
+        EnqueueControlJson(ClientMessages.ListDirRecursive(path));
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+    }
+
+    public void SendRequestFile(string remotePath, long? offset = null) =>
+        EnqueueControlJson(ClientMessages.RequestFile(remotePath, offset));
+
+    public void SendClipboardSetFiles(string[] paths)
+    {
+        if (!_clipboardEnabled || paths == null || paths.Length == 0) return;
+        EnqueueControlJson(ClientMessages.ClipboardSetFiles(paths));
+    }
 
     public Task UploadFileAsync(string localFilePath, CancellationToken ct = default) =>
         _fileTransfer.UploadFileAsync(localFilePath, ct);
+
+    public Task<string?> UploadFileExAsync(
+        string localFilePath,
+        string? relPath = null,
+        string? destDir = null,
+        bool resume = true,
+        string? purpose = null,
+        CancellationToken ct = default) =>
+        _fileTransfer.UploadFileExAsync(localFilePath, relPath, destDir, resume, purpose, ct);
+
+    public Task<List<string>> UploadFolderAsync(
+        string localFolderPath,
+        string? destDir = null,
+        bool resume = true,
+        string? purpose = null,
+        Action<int, int, string>? onFileStarted = null,
+        CancellationToken ct = default) =>
+        _fileTransfer.UploadFolderAsync(localFolderPath, destDir, resume, purpose, onFileStarted, ct);
+
+    public Task<string> DownloadFileAsync(
+        string remotePath,
+        string localDestPath,
+        bool resume = true,
+        CancellationToken ct = default) =>
+        _fileTransfer.DownloadFileAsync(remotePath, localDestPath, resume, ct);
+
+    public Task<int> DownloadFolderAsync(
+        string remoteFolderPath,
+        string localDestParentDir,
+        bool resume = true,
+        Action<int, int, string>? onFileStarted = null,
+        CancellationToken ct = default) =>
+        _fileTransfer.DownloadFolderAsync(remoteFolderPath, localDestParentDir, ListDirRecursiveAsync, resume, onFileStarted, ct);
 
     // ── Queue Helpers ────────────────────────────────────────────────────
 

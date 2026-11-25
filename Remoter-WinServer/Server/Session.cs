@@ -597,8 +597,8 @@ sealed class Session
                 AppLog.Write($"[Session] resolution tier '{r.Tier}' (scale={r.Scale}) ignored — Windows agent captures native resolution only");
                 break;
 
-            case ClientMsg.ChromaSet ch:
-                bool want444 = string.Equals(ch.Mode, "444", StringComparison.OrdinalIgnoreCase);
+            case ClientMsg.ChromaSet chroma:
+                bool want444 = string.Equals(chroma.Mode, "444", StringComparison.OrdinalIgnoreCase);
                 if (want444 != _chroma444)
                 {
                     _chroma444 = want444;

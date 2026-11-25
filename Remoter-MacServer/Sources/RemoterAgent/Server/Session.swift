@@ -701,8 +701,8 @@ final class Session {
                     autoFpsIndex = autoFpsTopIndex
                     autoFpsCleanStreak = 0
                     applyFps(Self.autoFpsTiers[autoFpsIndex])
-                } else if usingUdpVideo {
-                    autoFpsIndex = min(1, autoFpsTopIndex) // 60fps floor for direct UDP
+                } else if usingUdpVideo || !clientNotOnLan {
+                    autoFpsIndex = min(1, autoFpsTopIndex) // 60fps floor for direct UDP & LAN
                     autoFpsCleanStreak = 0
                     applyFps(max(60, Self.autoFpsTiers[autoFpsIndex]))
                 } else {

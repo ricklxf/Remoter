@@ -43,22 +43,22 @@
    - 使用中文 Conventional Commits 格式（`type(scope): 中文描述`）提交并推送到当前分支（`git push origin main`，若遇 HTTP/2 帧报错可用 `git -c http.version=HTTP/1.1 push origin main`）。
 2. **自动编译打包并重启本机 `Remoter-MacServer`（`RemoterAgent.app`）**：
    - `Remoter-MacServer/scripts/build-app.sh` 会自动编译 MacServer 并打包嵌入最新 Web 客户端产物。
-   - 执行命令重启本机服务，确保本机始终运行最新版本：
+   - **重启只能用 `pkill`，禁止再手动 `open`**：本机和 mac2 都有开机自启项 `com.remoter.agent`（LaunchAgent，`KeepAlive`），进程被结束后会被 launchd 自动拉起。再 `open` 会多出第二个进程，它因端口 7788 被占用而弹出 `bind … Address already in use (errno 48)`。
      ```bash
      cd /Users/lxf/Code/Remoter/Remoter-MacServer
      bash scripts/build-app.sh
      pkill RemoterAgent 2>/dev/null || true
-     sleep 1
-     open build/RemoterAgent.app
+     sleep 6
+     pgrep -fl RemoterAgent
      ```
-   - 启动后确认本机 `RemoterAgent` 进程已正常运行（`pgrep -fl RemoterAgent`）。
-3. **同步通过 SSH 让 `mac2` 拉取最新代码、编译并重启 `RemoterAgent.app`**：
+   - 确认**恰好一个** `RemoterAgent` 进程在运行；等 6 秒后仍没有，才说明自启项异常，此时再 `open build/RemoterAgent.app`。若出现两个进程，只结束手动打开的那个（按进程号），保留 launchd 拉起的。
+3. **同步通过 SSH 让 `mac2` 拉取最新代码、编译并重启 `RemoterAgent.app`**（同样只 `pkill`，不 `open`）：
    ```bash
    ssh -o ConnectTimeout=5 -o BatchMode=yes lxf@Ricks-Mac-mini-2.local '
      cd ~/Code/Remoter && git -c http.version=HTTP/1.1 pull --ff-only &&
      cd ~/Code/Remoter/Remoter-MacServer && bash scripts/build-app.sh &&
-     (pkill RemoterAgent 2>/dev/null || true) && sleep 1 &&
-     open build/RemoterAgent.app && sleep 1 && pgrep -fl RemoterAgent
+     (pkill RemoterAgent 2>/dev/null || true) && sleep 6 && pgrep -fl RemoterAgent
    '
    ```
-   - 确认 `mac2` 上 `RemoterAgent` 进程已成功重启运行。
+   - 确认 `mac2` 上 `RemoterAgent` 恰好一个进程在运行。
+   - mac2 的 `~/.ssh/config` 里 GitHub 的 `ProxyCommand` 已写成绝对路径 `/opt/homebrew/bin/connect`，非交互 SSH 下才能拉取。

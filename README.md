@@ -139,6 +139,7 @@ open Remoter-MacServer/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 - **码率保底不能被单次 RTT 样本撤销**：`currentRoundTripTime` 只在 STUN 检查时更新（几秒一次），一个零丢包的 49ms 样本就把 12Mbps 保底撤了，GCC 从 1.4Mbps 重爬，滚动糊成一片。撤销改看接收端丢包、单次极高 RTT 或连续两个新样本偏高，撤销后 30 秒冷却。客户端每 2 秒回传的 `client_rx`（收帧/丢包/冻结/抖动缓冲）是判断"卡在网络还是卡在被控端"的直接依据。
 - **防窥屏要先重建采集、遮罩要忽略鼠标**：遮罩窗口是开启后才创建的，而 `SCContentFilter` 只在采集启动时算一次，不重建的话远端看到的是遮罩；遮罩层级在屏保之上，不设 `ignoresMouseEvents` 的话远端注入的点击/滚轮会落在遮罩上。虚拟屏和防窥屏是进程级单例，只有最后一个会话关闭时才能销毁。
 - **隧道码率上限不能写成 `max(上限, 请求值)`**：自动档在 RTP 就绪时请求 25M，这样写等于没有上限，WireGuard 上又会冲过头丢包。非局域网且码率为自动档时固定 10Mbps 上限，手动选择不限制。
+- **mac2 反复弹屏幕录制授权框：ad-hoc 签名必须带 `-i com.remoter.agent`**：没有本地 "Remoter" 证书的机器回退 ad-hoc 签名，若不指定 `-i`，签名标识成 `RemoterAgent-<哈希>`，指定要求退化成内容 cdhash，每次重建都变，TCC 把每次构建当新应用，屏幕录制/辅助功能授权失效。改为 `-i com.remoter.agent -r="designated => identifier …"` 后按 Bundle ID 识别。有 "Remoter" 证书的机器（mac4）不受影响。修复后的第一次构建仍需重新授权一次。
 - **同一台被控端只允许一台电脑连接，新连接挤掉旧连接**：服务端在新会话认证后，对所有旧会话先发 `error`（`code=session_replaced`）再关闭；客户端识别该 code 后不再自动重连，否则被挤掉的一方会重连再把对方挤掉，两边反复抢。Web/Electron、macOS 原生已改，Windows 原生已改但未编译验证。
 - **远程重启 mac2 的 RemoterAgent 只能 `pkill`，不要再 `open`**：mac2 有 LaunchAgent `com.remoter.agent` 会自动拉起，再手动 `open` 会出现两个进程，第二个报 `bind … Address already in use (errno 48)`。
 - **远程（非交互）SSH 里 `ProxyCommand connect` 找不到命令**：PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin`，Homebrew 的 `connect` 要写绝对路径 `/opt/homebrew/bin/connect`。

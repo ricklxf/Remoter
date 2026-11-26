@@ -177,9 +177,12 @@ if security find-identity -p codesigning 2>/dev/null | grep -q '"Remoter"'; then
     fi
 fi
 if [ "$SIGNED_WITH_CERT" -eq 0 ]; then
-    DR='=designated => identifier "com.remoter.agent"'
+    DR='designated => identifier "com.remoter.agent"'
     echo "▶ Signing ad-hoc (designated req: bundle ID only)…"
-    codesign --force --deep --sign - --requirements "$DR" "$APP_DIR"
+    # -i is required: without it codesign names the signature RemoterAgent-<hash> and the
+    # designated requirement falls back to the content cdhash, which changes on every rebuild,
+    # so macOS re-asks for Screen Recording / Accessibility after each build (seen on mac2).
+    codesign --force --deep --sign - -i com.remoter.agent -r="$DR" "$APP_DIR"
     echo "✅ Signed ad-hoc"
 fi
 echo ""

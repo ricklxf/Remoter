@@ -139,6 +139,9 @@ open Remoter-MacServer/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 - **码率保底不能被单次 RTT 样本撤销**：`currentRoundTripTime` 只在 STUN 检查时更新（几秒一次），一个零丢包的 49ms 样本就把 12Mbps 保底撤了，GCC 从 1.4Mbps 重爬，滚动糊成一片。撤销改看接收端丢包、单次极高 RTT 或连续两个新样本偏高，撤销后 30 秒冷却。客户端每 2 秒回传的 `client_rx`（收帧/丢包/冻结/抖动缓冲）是判断"卡在网络还是卡在被控端"的直接依据。
 - **防窥屏要先重建采集、遮罩要忽略鼠标**：遮罩窗口是开启后才创建的，而 `SCContentFilter` 只在采集启动时算一次，不重建的话远端看到的是遮罩；遮罩层级在屏保之上，不设 `ignoresMouseEvents` 的话远端注入的点击/滚轮会落在遮罩上。虚拟屏和防窥屏是进程级单例，只有最后一个会话关闭时才能销毁。
 - **隧道码率上限不能写成 `max(上限, 请求值)`**：自动档在 RTP 就绪时请求 25M，这样写等于没有上限，WireGuard 上又会冲过头丢包。非局域网且码率为自动档时固定 10Mbps 上限，手动选择不限制。
+- **同一台被控端只允许一台电脑连接，新连接挤掉旧连接**：服务端在新会话认证后，对所有旧会话先发 `error`（`code=session_replaced`）再关闭；客户端识别该 code 后不再自动重连，否则被挤掉的一方会重连再把对方挤掉，两边反复抢。Web/Electron、macOS 原生已改，Windows 原生已改但未编译验证。
+- **远程重启 mac2 的 RemoterAgent 只能 `pkill`，不要再 `open`**：mac2 有 LaunchAgent `com.remoter.agent` 会自动拉起，再手动 `open` 会出现两个进程，第二个报 `bind … Address already in use (errno 48)`。
+- **远程（非交互）SSH 里 `ProxyCommand connect` 找不到命令**：PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin`，Homebrew 的 `connect` 要写绝对路径 `/opt/homebrew/bin/connect`。
 - **公网（WireGuard）访问 4K 无头机时，不能用原生 4K 配 1.5~3Mbps**：UDP 码控在隧道上丢包 ≥5% 就降码率并压低上限，而恢复要求丢包 <1% 持续 12 秒，这条链路丢包常年 0.5%~5%，上限长期卡在 1.5Mbps 底部（当天 68 次调整里 42 次）。现在：分辨率未被用户手动选择且客户端不在局域网时，采集长边限制为 2560（`wan_res_cap`），回到局域网或手动选择分辨率则不限制；隧道丢包阈值 5%→7%，恢复探测改为丢包 <2%、8 秒。
 - **Edge（Mac）没有可用的 H.264 解码配置会整屏无画面**：`VideoDecoder.configure` 对 `avc3.640034` 报 `Unsupported configuration`，解码器直接关闭，服务端发来的帧全被丢。现在初始化时依次探测放宽的配置，仍不支持就让服务端改发 JPEG；JPEG 画到独立的 2D canvas，因为主 canvas 已被 WebGL 占用，`getContext('2d')` 会返回 null。连接 4 秒仍无画面时底部会显示诊断行。
 - **发送层合并滚轮消息时必须保留 `px/py/isPrecise`**：`Connection.sendJson` 为防积压合并连续滚轮，只累加了 `dx/dy`（整格），被控端永远收不到像素值，鼠标滚一格不够 100px 就不动。现象是服务端日志里 `px=nil`。排查这类问题先看服务端收到的原始字段，再查客户端。

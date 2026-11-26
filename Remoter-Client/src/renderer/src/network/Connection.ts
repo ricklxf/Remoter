@@ -1074,7 +1074,13 @@ export class Connection {
 
       case 'error':
         this.emit({ type: 'error', message: (msg.message ?? msg.code) as string })
-        this.emit({ type: 'state', state: 'error' })
+        if (msg.code === 'session_replaced') {
+          // Another computer took over this host: do not auto-reconnect (it would kick them back out).
+          this.intentionalClose = true
+          this.emit({ type: 'state', state: 'disconnected' })
+        } else {
+          this.emit({ type: 'state', state: 'error' })
+        }
         break
 
       case 'pong': {

@@ -260,31 +260,33 @@ final class Session {
     private static var activeSessions: [UUID: Session] = [:]
 
     private static func registerAndReapStaleSessions(newSession: Session) {
+        // One controller per machine: a newly authenticated session replaces every older one
+        // (not only idle zombies). The old client is told why first (code=session_replaced) so it
+        // stops auto-reconnecting instead of kicking the new one back out.
+        var toClose: [(Session, Double)] = []
         let now = CFAbsoluteTimeGetCurrent()
-        var staleToClose: [(Session, Double)] = []
         activeSessionsLock.lock()
         activeSessions[newSession.id] = newSession
         for (sid, existing) in activeSessions where sid != newSession.id {
-            if existing.isClosed {
-                activeSessions.removeValue(forKey: sid)
-                continue
-            }
-            let idleSec = now - existing.lastClientActivityAt
-            if existing.authenticated && idleSec >= 3.0 {
-                staleToClose.append((existing, idleSec))
-                activeSessions.removeValue(forKey: sid)
-            }
+            activeSessions.removeValue(forKey: sid)
+            if existing.isClosed { continue }
+            if existing.authenticated { toClose.append((existing, now - existing.lastClientActivityAt)) }
         }
         activeSessionsLock.unlock()
 
-        for (stale, idleSec) in staleToClose {
+        for (old, idleSec) in toClose {
             ConnectionLogger.shared.logStep(
-                sessionId: stale.id.uuidString,
-                step: "session_zombie_reaped_on_reconnect",
+                sessionId: old.id.uuidString,
+                step: "session_replaced",
                 detail: "idleSec=\(String(format: "%.1f", idleSec)) replacedBy=\(newSession.id.uuidString.prefix(8))"
             )
-            stale.connection.close()
-            stale.close()
+            old.sendJson(["type": "error", "code": "session_replaced",
+                          "message": "此被控端已被另一台电脑连接，当前连接已断开"])
+            // Give the notice a moment to flush before the socket goes away.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4) {
+                old.connection.close()
+                old.close()
+            }
         }
     }
 

@@ -986,6 +986,13 @@ public sealed class RemoterConnection : IDisposable
 
             case ServerMessage.ErrorMsg err:
                 ErrorOccurred?.Invoke(err.Message);
+                if (err.Code == "session_replaced")
+                {
+                    // Another computer took over this host: stop auto-reconnect (it would kick them back out).
+                    _intentionalClose = true;
+                    SetState(ConnectionState.Disconnected);
+                    break;
+                }
                 if (_state == ConnectionState.Authenticating || _state == ConnectionState.Connecting)
                 {
                     SetState(ConnectionState.Error);

@@ -1179,8 +1179,14 @@ public final class RemoterConnection: @unchecked Sendable {
             setState(.disconnected)
             onDisconnected?("Host disconnected")
 
-        case .error(_, let message):
+        case .error(let code, let message):
             onError?(message)
+            if code == "session_replaced" {
+                // Another computer took over this host: stop auto-reconnect (it would kick them back out).
+                stateLock.withLock { _intentionalClose = true }
+                setState(.disconnected)
+                break
+            }
             let cur = state
             if cur == .authenticating || cur == .connecting {
                 setState(.error)

@@ -307,6 +307,7 @@ final class Session {
     // on the first user input event.
     private var lastUserInputAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var wanBgSaverActive = false
+    private var wanBgSaverArmedAt: CFAbsoluteTime? = nil
     private var scrollBurstGen = 0   // guarded by scrollBoostLock
     private var wanBgSavedFps: Int? = nil
     private var wanBgSavedBitrate: Int? = nil
@@ -2233,7 +2234,17 @@ final class Session {
         // cap it to 20fps / 1.5Mbps so it stops hogging the shared WAN tunnel from the active Mac.
         let now = CFAbsoluteTimeGetCurrent()
         if clientNotOnLan && !manualFpsSelected && !manualBitrateSelected {
-            if !wanBgSaverActive && (now - lastUserInputAt) >= 12.0 {
+            // Debounce: arm on the first idle tick and only activate on a later tick that is still
+            // idle. Input landing right on the activation tick used to switch the saver on and off
+            // within the same second (fps/bitrate reconfig + keyframe for nothing).
+            if (now - lastUserInputAt) < 12.0 {
+                wanBgSaverArmedAt = nil
+            } else if !wanBgSaverActive, wanBgSaverArmedAt == nil {
+                wanBgSaverArmedAt = now
+            }
+            if !wanBgSaverActive, let armed = wanBgSaverArmedAt, now - armed >= 1.5,
+               (now - lastUserInputAt) >= 12.0 {
+                wanBgSaverArmedAt = nil
                 wanBgSaverActive = true
                 wanBgSavedFps = udpSevereFpsGuard.savedFps ?? currentFps
                 wanBgSavedBitrate = currentBitrate

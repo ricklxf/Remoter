@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+# 非交互 SSH 的 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，找不到 Homebrew 的 npm/node，
+# 脚本会在构建 Web 客户端时中途退出、根本走不到签名（mac2 远程构建踩过）。
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # Remoter-MacServer/
 OUT_DIR="$PKG_DIR/build"

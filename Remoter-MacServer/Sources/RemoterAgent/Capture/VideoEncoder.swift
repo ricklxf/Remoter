@@ -25,6 +25,7 @@ final class VideoEncoder {
 
     // Cached VT properties to avoid redundant synchronous VTSessionSetProperty calls
     private var appliedBitrateBps: Int = 0
+    private var scrollBoost = false
     private var appliedExpectedFps: Int = 0
     private var appliedPrioritizeSpeed: Bool = true
     private var lastRateControlApplyTime: CFTimeInterval = 0
@@ -90,14 +91,27 @@ final class VideoEncoder {
     /// Guarantees >= 260 KB/s (~2.08 Mbps) burst headroom so VideoToolbox never silently drops
     /// frames after a keyframe at 1.2-1.5 Mbps, while capping scroll bursts at 1.35x target
     /// so a 2.0-2.5 Mbps WAN stream never spikes to 3.6-4.0 Mbps and triggers bufferbloat.
-    static func computeBurstByteLimit(bitrateBps: Int) -> Int64 {
-        Int64(max(Double(bitrateBps) * 1.35 / 8.0, 260_000.0))
+    static func computeBurstByteLimit(bitrateBps: Int, scrollBoost: Bool = false) -> Int64 {
+        let factor = scrollBoost ? 1.8 : 1.35
+        return Int64(max(Double(bitrateBps) * factor / 8.0, 260_000.0))
+    }
+
+    /// WAN scrolling: full-screen text scroll needs far more bytes per frame than the
+    /// 1.35x burst allows, so VideoToolbox drops frames (fps tracks bitrate, e.g. 18fps at
+    /// 1.2Mbps). While the user is scrolling, allow a larger 1s burst so frames are kept.
+    func setScrollBoost(_ on: Bool) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard on != scrollBoost else { return }
+        scrollBoost = on
+        guard let session, appliedBitrateBps > 0 else { return }
+        applyBitrateProperties(session, bitrateBps: appliedBitrateBps)
     }
 
     private func applyBitrateProperties(_ session: VTCompressionSession, bitrateBps: Int) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrateBps))
-        let burstByteLimit = Self.computeBurstByteLimit(bitrateBps: bitrateBps)
+        let burstByteLimit = Self.computeBurstByteLimit(bitrateBps: bitrateBps, scrollBoost: scrollBoost)
         let dataRateLimits: [Any] = [burstByteLimit, 1.0]
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         appliedBitrateBps = bitrateBps

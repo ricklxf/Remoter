@@ -307,6 +307,7 @@ final class Session {
     // on the first user input event.
     private var lastUserInputAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var wanBgSaverActive = false
+    private var scrollBurstGen = 0   // guarded by scrollBoostLock
     private var wanBgSavedFps: Int? = nil
     private var wanBgSavedBitrate: Int? = nil
 
@@ -1933,6 +1934,23 @@ final class Session {
         // start/end rewrites the sender's encoding parameters — churn for no
         // effect. The boost only means something for the local VT encoder.
         guard !usingRtpVideo else { return }
+        // Scroll burst allowance: independent of the bitrate boost below (which is skipped on a
+        // capped WAN link). Without it VideoToolbox drops frames while scrolling at low bitrate
+        // (fps tracks bitrate), which is what makes WAN scrolling look janky.
+        if udpLastLossRatio < 0.05 {
+            scrollBoostLock.lock()
+            scrollBurstGen += 1
+            let burstGen = scrollBurstGen
+            scrollBoostLock.unlock()
+            encoder?.setScrollBoost(true)
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self else { return }
+                self.scrollBoostLock.lock()
+                let latest = burstGen == self.scrollBurstGen
+                self.scrollBoostLock.unlock()
+                if latest { self.encoder?.setScrollBoost(false) }
+            }
+        }
         // Never boost above a congested or loss-capped WAN/tunnel link: doing
         // 1.5x bitrate on top of FEC during active scrolling blows past the
         // tunnel ceiling and causes 10-40% packet loss + keyframe freezes.
@@ -2179,12 +2197,25 @@ final class Session {
         let restoreBr = wanBgSavedBitrate
         wanBgSavedFps = nil
         wanBgSavedBitrate = nil
+        // Gentle restore: jumping straight back to 60fps right after idle made the first seconds
+        // burst into the tunnel and trigger loss. Come back at 30fps, then step up if clean.
         if let fps = restoreFps, !manualFpsSelected, fps != currentFps {
-            applyFps(fps, notify: false)
+            let first = clientNotOnLan ? min(fps, 30) : fps
+            applyFps(first, notify: false)
+            if first < fps {
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                    guard let self, !self.wanBgSaverActive, !self.manualFpsSelected,
+                          self.udpLastLossRatio < 0.03, self.currentFps == first else { return }
+                    self.applyFps(fps, notify: true)
+                }
+            }
         }
-        if let br = restoreBr, !manualBitrateSelected, br > currentBitrate {
+        // Restore to the last good rate, but at least 2.5Mbps (still under the learned ceiling)
+        // so the first scroll after idle doesn't start from the 1.2-1.5Mbps floor.
+        if let br = restoreBr, !manualBitrateSelected {
             let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : 40_000_000)
-            applyBitrate(min(br, cap), notify: false)
+            let target = min(max(br, 2_500_000), cap)
+            if target > currentBitrate { applyBitrate(target, notify: false) }
         }
         notifyQualityActive()
         ConnectionLogger.shared.logStep(

@@ -124,37 +124,31 @@ sealed class Session
 
     private static void RegisterAndReapStaleSessions(Session newSession)
     {
+        // One controller per machine: a newly authenticated session replaces every older one
+        // (not only idle zombies). The old client is told why first (code=session_replaced) so it
+        // stops auto-reconnecting instead of kicking the new one back out.
         long nowTicks = Environment.TickCount64;
-        List<(Session Stale, double IdleSec)>? staleList = null;
+        List<(Session Old, double IdleSec)>? replaced = null;
         lock (ActiveSessionsLock)
         {
-            ActiveSessions[newSession._id] = newSession;
-            List<string>? toRemove = null;
-            foreach (var kvp in ActiveSessions)
+            foreach (var kvp in ActiveSessions.ToList())
             {
                 if (kvp.Key == newSession._id) continue;
+                ActiveSessions.Remove(kvp.Key);
                 var existing = kvp.Value;
-                double idleSec = (nowTicks - Volatile.Read(ref existing._lastInboundTicks)) / 1000.0;
-                if (existing._authed && idleSec >= 3.0)
-                {
-                    staleList ??= new List<(Session, double)>();
-                    staleList.Add((existing, idleSec));
-                    toRemove ??= new List<string>();
-                    toRemove.Add(kvp.Key);
-                }
+                if (!existing._authed) continue;
+                replaced ??= new List<(Session, double)>();
+                replaced.Add((existing, (nowTicks - Volatile.Read(ref existing._lastInboundTicks)) / 1000.0));
             }
-            if (toRemove != null)
-            {
-                foreach (var key in toRemove) ActiveSessions.Remove(key);
-            }
+            ActiveSessions[newSession._id] = newSession;
         }
-        if (staleList != null)
+        if (replaced == null) return;
+        foreach (var (old, idleSec) in replaced)
         {
-            foreach (var (stale, idleSec) in staleList)
-            {
-                AppLog.Write($"[Session] session_zombie_reaped_on_reconnect idleSec={idleSec:F1} replacedBy={newSession._id[..Math.Min(8, newSession._id.Length)]}");
-                try { stale.Close(); } catch { }
-            }
+            AppLog.Write($"[Session] session_replaced idleSec={idleSec:F1} replacedBy={newSession._id[..Math.Min(8, newSession._id.Length)]}");
+            try { old.Send(new { type = "error", code = "session_replaced", message = "此被控端已被另一台电脑连接，当前连接已断开" }); } catch { }
+            // Give the notice a moment to flush before the socket goes away.
+            _ = Task.Delay(400).ContinueWith(_ => { try { old.Close(); } catch { } });
         }
     }
 

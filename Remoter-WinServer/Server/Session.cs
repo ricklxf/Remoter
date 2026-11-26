@@ -131,7 +131,7 @@ sealed class Session
         List<(Session Old, double IdleSec)>? replaced = null;
         lock (ActiveSessionsLock)
         {
-            foreach (var kvp in ActiveSessions.ToList())
+            foreach (var kvp in new List<KeyValuePair<string, Session>>(ActiveSessions))
             {
                 if (kvp.Key == newSession._id) continue;
                 ActiveSessions.Remove(kvp.Key);

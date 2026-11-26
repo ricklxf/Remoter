@@ -68,6 +68,7 @@ final class Session {
     // capture is held to wanMaxDimension. Home LAN and explicit picks are never capped.
     private var resolutionUserSet = false
     private var wanResCapApplied = false
+    private let wanResCapLock = NSLock()
     private static let wanMaxDimension = 2560
     private var effectiveMaxDimension: Int? {
         resolutionUserSet ? resolutionMaxDimension : (wanResCapApplied ? Self.wanMaxDimension : nil)
@@ -78,14 +79,19 @@ final class Session {
         guard !resolutionUserSet else { return }
         for _ in 0..<50 where capturer == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
         guard let c = capturer, !resolutionUserSet else { return }
+        // Two tasks (net_hint + rebuild paths) can get here at once: decide under a lock so only one rebuilds.
+        wanResCapLock.lock()
         let wantCap = clientNotOnLan && max(c.screenWidth, c.screenHeight) > Self.wanMaxDimension
-        if wantCap && !wanResCapApplied {
-            wanResCapApplied = true
+        let turnOn = wantCap && !wanResCapApplied
+        let turnOff = !clientNotOnLan && wanResCapApplied
+        if turnOn { wanResCapApplied = true }
+        if turnOff { wanResCapApplied = false }
+        wanResCapLock.unlock()
+        if turnOn {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "wan_res_cap",
                 detail: "on \(c.screenWidth)x\(c.screenHeight) -> max \(Self.wanMaxDimension)")
             await rebuildPipeline()
-        } else if !clientNotOnLan && wanResCapApplied {
-            wanResCapApplied = false
+        } else if turnOff {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "wan_res_cap", detail: "off (LAN)")
             await rebuildPipeline()
         }

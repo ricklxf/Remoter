@@ -63,6 +63,33 @@ final class Session {
     // screen forced down to 1920). 1080p/2K remain manual downscale options
     // for bandwidth-constrained links.
     private var resolutionMaxDimension: Int?
+    // Off-LAN (e.g. WireGuard from the office) + resolution never picked by the user:
+    // a 4K headless display was being sent at 1.5-3 Mbps (blurry and stuttering), so the
+    // capture is held to wanMaxDimension. Home LAN and explicit picks are never capped.
+    private var resolutionUserSet = false
+    private var wanResCapApplied = false
+    private static let wanMaxDimension = 2560
+    private var effectiveMaxDimension: Int? {
+        resolutionUserSet ? resolutionMaxDimension : (wanResCapApplied ? Self.wanMaxDimension : nil)
+    }
+    /// net_hint can land while the first capture is still starting, so wait for it
+    /// instead of tearing down a capturer that doesn't exist yet.
+    private func reconcileWanResolutionCap() async {
+        guard !resolutionUserSet else { return }
+        for _ in 0..<50 where capturer == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+        guard let c = capturer, !resolutionUserSet else { return }
+        let wantCap = clientNotOnLan && max(c.screenWidth, c.screenHeight) > Self.wanMaxDimension
+        if wantCap && !wanResCapApplied {
+            wanResCapApplied = true
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "wan_res_cap",
+                detail: "on \(c.screenWidth)x\(c.screenHeight) -> max \(Self.wanMaxDimension)")
+            await rebuildPipeline()
+        } else if !clientNotOnLan && wanResCapApplied {
+            wanResCapApplied = false
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "wan_res_cap", detail: "off (LAN)")
+            await rebuildPipeline()
+        }
+    }
     // nil = main display; switching also requires a full pipeline rebuild.
     private var selectedDisplayID: UInt32?
 
@@ -556,6 +583,7 @@ final class Session {
 
         case .netHint(let lan):
             clientNotOnLan = !lan
+            Task { await self.reconcileWanResolutionCap() }
             webrtc?.offLanHinted = clientNotOnLan
             webrtc?.lanFloorAllowed = lan
             webrtc?.tunnelCapActive = clientNotOnLan && autoBitrateEnabled
@@ -745,6 +773,7 @@ final class Session {
             }
 
         case .resolutionSet(let tier, let customW, let customH, let scale):
+            resolutionUserSet = true
             let effectiveScale = max(1.0, scale ?? 1.0)
             if tier == "native" {
                 if VirtualDisplayManager.shared.activeDisplayID != nil {
@@ -1567,7 +1596,7 @@ final class Session {
             // currentFps defaults to 30 (matches the client's default "自动"
             // preset) on a fresh session, or carries over whatever was
             // already active when this is a resolution-switch re-run.
-            try await c.start(fps: currentFps, maxDimension: resolutionMaxDimension,
+            try await c.start(fps: currentFps, maxDimension: effectiveMaxDimension,
                               displayID: selectedDisplayID,
                               chroma: currentChroma, hdr: currentHdr)
             ConnectionLogger.shared.logStep(sessionId: sid, step: "capturer_ready",
@@ -2034,7 +2063,9 @@ final class Session {
                 ? ((screenWidth >= 2560) ? 1_500_000 : 1_200_000)
                 : ((screenWidth >= 2560) ? 5_000_000 : 4_000_000)
             let minLossPackets: UInt64 = clientNotOnLan ? 80 : 400
-            let lossThreshold: Double = clientNotOnLan ? 0.05 : 0.08
+            // WireGuard here sits at a steady 0.5-5% loss that FEC already absorbs; 5% kept re-triggering
+            // cuts and the ceiling stayed pinned near the 1.5 Mbps floor (42 of 68 adapts on 11-26).
+            let lossThreshold: Double = clientNotOnLan ? 0.07 : 0.08
             // At low bitrate (< 3 Mbps), a single NACK out of ~60 packets is 1.67%, so allow
             // recovery whenever loss < 3% instead of locking the user at the blurry floor!
             let cleanLossThreshold: Double = (currentBitrate < 3_000_000) ? 0.03 : 0.015
@@ -2106,11 +2137,11 @@ final class Session {
                         }
                     } else {
                         let minProbePackets: UInt64 = (cap >= activeProbeThresholdBps) ? 320 : 60
-                        guard lossRatio < 0.01, sentPackets >= minProbePackets else {
+                        guard lossRatio < (clientNotOnLan ? 0.02 : 0.01), sentPackets >= minProbePackets else {
                             stableAtCapStreak = 0
                             return .hold
                         }
-                        guard now - lossCapSetAt >= 12.0 else { return .hold }
+                        guard now - lossCapSetAt >= (clientNotOnLan ? 8.0 : 12.0) else { return .hold }
                         stableAtCapStreak += 1
                         if stableAtCapStreak >= 3 {
                             stableAtCapStreak = 0

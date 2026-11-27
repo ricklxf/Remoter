@@ -150,6 +150,17 @@ open Remoter-MacServer/build/RemoterAgent.app --args --pin 123456  # 指定 PIN
 - **拥塞保护不能被单次丢包采样触发**：隧道上有一次 0.5s 内 16~25% 丢包、RTT 6ms、随后回到 0 的突发，单样本触发会让帧率在 24 与目标之间来回切（两天 307 次）。现在丢包必须连续两次采样才进入，只有 RTT≥250ms 才立即进入。
 - **平滑滚动引擎换向要清掉反方向的欠账**：快速转滚轮会积压几百像素的目标距离，换向只做减法的话页面还会往老方向走一段；只有一个 tick 就走完的动画也要补发 ended 相位。
 - **自动档帧率不能超过被采集显示器的刷新率**：60Hz 屏上爬到 120fps 只会白白加深采集队列。
+- **公网"偶发卡顿"的根因是 Wi‑Fi 抖动，不是丢包**：Windows 控制端走 Wi‑Fi 时，`ping -l 1200` 出现 0 丢包但最高 187ms 的延迟尖峰，1200B 的视频包排队后晚到，被 UDP 接收端按"丢失"处理（帧超时 220ms / 关键帧超时 350ms，再触发重传和关键帧请求）。32B 小包 ping 完全正常，所以只看小包 ping 会误判链路没问题。优先换有线或 5GHz，并关掉网卡省电；服务端侧只能降低突发（见下面三条）。
+- **公网码率上限 12Mbps → 8Mbps（`Session.wanMaxBitrateBps`）**：VideoToolbox 的 `DataRateLimits` 按 `[突发字节数, 1s]` 设置，VT 超出就直接丢帧，帧率随码率走。关键帧在 12Mbps 时最大约 164KB，一口气挤进 Wi‑Fi 就会抖。降到 8Mbps 后关键帧更小，画质损失不明显。
+- **滚动时放宽编码器突发上限，滚完立刻收回**：滚动是持续大面积变化，突发系数 1.35 会让 VT 丢帧导致不跟手；`setScrollBoost` 在公网且丢包 <5% 时临时提到 1.8，1.2s 无新滚动即恢复。
+- **省流模式（`wan_bg_saver`）不能一进一出地抖**：空闲 12s 才降到 20fps/1.5Mbps，但鼠标一动就恢复，反复开关会让码控来回震荡。现在进入前要"连续空闲再多等 1.5s"（`wanBgSaverArmedAt`），恢复时先回 30fps，4s 后再逐步爬回原帧率。
+- **帧率被锁死在 30fps 的自己人 bug**：温和恢复把"保存的帧率"覆盖成了刚恢复的 30，且升回条件依赖一个过期的丢包保护，导致一直升不回去。现在单独记 `wanBgBestFps`，升回条件放宽为"无丢包保护、丢包 <8%、当前仍是起步档"。
+- **关键帧大小要靠日志看，别靠猜**：曾经怀疑关键帧有 180KB，实测 20~98KB（12Mbps 时 164KB）。现在常驻记录 `keyframe_sent bytes=… frags=… backlog=…`，排查卡顿先 `grep keyframe_sent ~/Library/Logs/Remoter/connections.log`。
+- **UU 远程也没有"小包"秘诀**：`libstreamer.dylib` 里是 libwebrtc（FlexFEC、NACK、pacer、趋势线 BWE）+ QUIC，RTP 载荷同样约 1200B，它靠的是更成熟的拥塞控制，不是改小包。
+- **微信里复制的图片，被控端读不到文件**：微信把"复制图片"写成指向自己沙盒（`~/Library/Containers/com.tencent.xinWeChat/…`）里文件的 `file-url`，RemoterAgent 无权打开，客户端下载会无限等待，表现为"两个提示都没弹、什么都没粘过去"，日志里也没有错误。现在发送前用 `canReadFile` 检查，读不了就跳过文件、改发剪贴板里的图片数据，并记 `clipboard_files_unreadable`；`send_file_unreadable` 会回 `file_unreadable` 错误给客户端。
+- **剪贴板文本不能只按"内容相同"去重**：同一段文字再复制一次，内容没变就被当成没发生，控制端剪贴板里留着中间复制过的别的东西，粘出来对不上（日志里该次复制完全没有 `clipboard_reverse_sent`）。现在额外记录 `lastSentClipboardTextChangeCount`，内容相同但 `changeCount` 变了就重发；同时 3 秒内连续重复复制相同文本只算一次，吞掉的那次也会记下计数，不会事后补发。
+- **图片同步上限 4MB → 10MB**：Retina 截图经常超过 4MB，超限时同样是静默不发。
+- **临时诊断日志要成对清理**：排查时加的 `scroll_gesture`、`frame_after_scroll`、`text_input_received`、`client_rx`、`gcc_stats` 已删除；`gcc_stats` 只删了日志那一行，轮询要保留——`evaluateMinBitrateFloor / CongestionGuard / LossCap` 靠它驱动。
 
 ---
 
@@ -252,6 +263,8 @@ dotnet publish -c Release -r win-x64 --self-contained
 
 - **Electron 天然不支持 H.265/HEVC 解码**：标准 Electron 发行版不带 HEVC 软解码器（专利授权问题），硬解钩子（`enable_platform_hevc`）也没有编译进标准构建，不论系统/显卡实际是否支持硬解，`VideoDecoder.isConfigSupported` 探测永远返回不支持——这是 Electron 已知限制，不是本项目代码问题。浏览器（尤其 Chrome 官方版）不受此限制。画质菜单里的编码方式选项因此只在探测到支持时才显示。
 - **IME 候选框位置不能自动适配分辨率，只能手动校准**：候选框以本地暂存用的隐形 textarea 光标位置为锚点向右展开，浏览器既不暴露候选框实际宽度，也拿不到远端输入光标坐标，做不到自动精确定位；不同机器的分辨率/系统缩放比例不同，同一个像素偏移量在别的机器上位置就会偏。做法是把偏移量做成可拖拽调节（`utils/imeOffset.ts`，存在本机 `localStorage`）：打字出现候选词回显框后，直接按住它拖到跟系统候选框对齐的位置松手即可，换机器需要重新拖一次。
+- **钉钉里复制的图片粘过去只有上半截**：钉钉剪贴板里只有 `Bitmap`/`DeviceIndependentBitmap`/`Format17`（DIBV5）和 `FileDrop`/`FileName`，**没有 `PNG`**。`Clipboard.GetImage()` 对这份带透明通道的位图转换出来下半部分是纯白（画图读 DIBV5 却是完整的）。被控端日志里图片大小一致，说明传输没丢数据，是源头读错。现在剪贴板同时有位图和单个真实存在的图片文件时，直接读原图文件字节发送（png 原样、jpg/bmp/gif 转 png）；文件路径不存在时也不再直接放弃，继续按位图处理。若别的应用也截半，先让用户跑 `[Windows.Forms.Clipboard]::GetDataObject().GetFormats()` 看剪贴板格式，再决定读哪一种。
+- **点任务栏窗口按钮只响一声、窗口不弹出**：Windows 拒绝把该窗口切到前台。一度怀疑是断开提示的 `MessageBox` 模态框把主窗口禁用了，实际原因是另一块屏幕上开着全屏/独占应用，占着前台、限制别的程序激活窗口。规避：先点一下目标屏幕空白处、把全屏应用改成无边框窗口化，或用 Alt+Tab 切换。
 - **Windows 绿色版（portable exe）必须固定解压目录名**：`electron-builder` 的 `portable` 目标默认按打包文件名（含版本号）算解压目录的哈希，只要重新打包升了版本号，解压路径就会变；Windows 防火墙的放行规则是按可执行文件路径记的，路径一变就被当成新程序重新弹授权提示——对着"随时要改 bug、随时打新包"的绿色版工作流，几乎每次启动都会弹。修复：`electron-builder.yml` 里把 `portable.unpackDirName` 固定成常量，不再随文件名变化，不管打多少个新版本都解压到同一路径，防火墙规则只需要放行一次。
 
 ---

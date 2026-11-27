@@ -289,6 +289,11 @@ final class Session {
     // it as if it were a fresh local copy.
     private var clipboardTimer: DispatchSourceTimer?
     private var lastSentClipboardText = ""
+    // pasteboard changeCount at the time text was last sent/applied/baselined.
+    // Re-copying the SAME text bumps changeCount but not the text, so a
+    // text-only dedupe silently swallowed it (the controller's clipboard kept
+    // whatever was copied in between).
+    private var lastSentClipboardTextChangeCount = -1
     private var lastSentClipboardImageSize = -1
     private var lastSentClipboardFilesSig = ""
     private var lastAppliedPasteboardChangeCount = -1
@@ -619,6 +624,7 @@ final class Session {
                 pb.clearContents()
                 pb.setString(text, forType: .string)
                 self?.lastAppliedPasteboardChangeCount = pb.changeCount
+                self?.lastSentClipboardTextChangeCount = pb.changeCount
             }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_set_applied", detail: "len=\(text.count)")
 
@@ -2546,6 +2552,7 @@ final class Session {
             let baseFiles = Self.clipboardFileURLs()
             lastSentClipboardFilesSig = baseFiles.isEmpty ? "" : Self.clipboardFilesSignature(urls: baseFiles)
             lastSentClipboardText = Self.clipboardPlainText() ?? ""
+            lastSentClipboardTextChangeCount = DispatchQueue.main.sync { NSPasteboard.general.changeCount }
             lastSentClipboardImageSize = clipboardImagePNG()?.count ?? -1
         }
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_monitor_started")
@@ -2626,8 +2633,9 @@ final class Session {
         }
 
         let text = Self.clipboardPlainText() ?? ""
-        if !text.isEmpty && text != lastSentClipboardText {
+        if !text.isEmpty && (text != lastSentClipboardText || currentChangeCount != lastSentClipboardTextChangeCount) {
             lastSentClipboardText = text
+            lastSentClipboardTextChangeCount = currentChangeCount
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_reverse_sent",
                 detail: "len=\(text.count)")
             sendJson(["type": "clipboard_from_target", "text": text])

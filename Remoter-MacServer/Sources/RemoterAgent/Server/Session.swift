@@ -294,6 +294,7 @@ final class Session {
     // text-only dedupe silently swallowed it (the controller's clipboard kept
     // whatever was copied in between).
     private var lastSentClipboardTextChangeCount = -1
+    private var lastSentClipboardTextAt = Date.distantPast
     private var lastSentClipboardImageSize = -1
     private var lastSentClipboardFilesSig = ""
     private var lastAppliedPasteboardChangeCount = -1
@@ -2633,9 +2634,18 @@ final class Session {
         }
 
         let text = Self.clipboardPlainText() ?? ""
-        if !text.isEmpty && (text != lastSentClipboardText || currentChangeCount != lastSentClipboardTextChangeCount) {
+        // Same text re-copied repeatedly within 3s counts once.
+        let isRecopy = text == lastSentClipboardText && currentChangeCount != lastSentClipboardTextChangeCount
+        let shouldSend = !text.isEmpty
+            && (text != lastSentClipboardText
+                || (isRecopy && Date().timeIntervalSince(lastSentClipboardTextAt) >= 3.0))
+        if !text.isEmpty && isRecopy && !shouldSend {
+            lastSentClipboardTextChangeCount = currentChangeCount   // swallowed: remember it so it isn't sent later
+        }
+        if shouldSend {
             lastSentClipboardText = text
             lastSentClipboardTextChangeCount = currentChangeCount
+            lastSentClipboardTextAt = Date()
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_reverse_sent",
                 detail: "len=\(text.count)")
             sendJson(["type": "clipboard_from_target", "text": text])

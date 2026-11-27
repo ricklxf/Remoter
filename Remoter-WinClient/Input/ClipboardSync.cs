@@ -311,7 +311,21 @@ public sealed class ClipboardSync : IDisposable
 
             if (Clipboard.ContainsImage())
             {
-                using var img = Clipboard.GetImage();
+                // Prefer the app's own "PNG" clipboard format: Clipboard.GetImage() goes through
+                // the DIB conversion, which mangles 32bpp/alpha images from some apps (DingTalk
+                // images came out with the lower half blank while Paint showed them whole).
+                Image? img = null;
+                try
+                {
+                    if (Clipboard.GetData("PNG") is MemoryStream pngStream)
+                    {
+                        pngStream.Position = 0;
+                        img = Image.FromStream(pngStream);
+                    }
+                }
+                catch { img?.Dispose(); img = null; }
+                img ??= Clipboard.GetImage();
+                using var imgOwner = img;
                 if (img != null)
                 {
                     using var ms = new MemoryStream();

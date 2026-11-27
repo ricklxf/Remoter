@@ -308,6 +308,7 @@ final class Session {
     private var lastUserInputAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var wanBgSaverActive = false
     private var wanBgSaverArmedAt: CFAbsoluteTime? = nil
+    private var wanBgBestFps = 0
     private var scrollBurstGen = 0   // guarded by scrollBoostLock
     private var wanBgSavedFps: Int? = nil
     private var wanBgSavedBitrate: Int? = nil
@@ -2207,8 +2208,11 @@ final class Session {
             applyFps(first, notify: false)
             if first < fps {
                 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                    // udpLastLossRatio can be stale while idle, so only the severe-fps guard holding
+                    // 30 on purpose (or a clearly lossy last window) blocks the step-up.
                     guard let self, !self.wanBgSaverActive, !self.manualFpsSelected,
-                          self.udpLastLossRatio < 0.03, self.currentFps == first else { return }
+                          self.udpSevereFpsGuard.savedFps == nil,
+                          self.udpLastLossRatio < 0.08, self.currentFps == first else { return }
                     self.applyFps(fps, notify: true)
                 }
             }
@@ -2248,7 +2252,10 @@ final class Session {
                (now - lastUserInputAt) >= 12.0 {
                 wanBgSaverArmedAt = nil
                 wanBgSaverActive = true
-                wanBgSavedFps = udpSevereFpsGuard.savedFps ?? currentFps
+                // Remember the best fps seen across saver cycles: after a gentle restore the live
+                // fps is 30 until the step-up fires, and saving that would pin the session at 30.
+                wanBgSavedFps = udpSevereFpsGuard.savedFps ?? max(currentFps, wanBgBestFps)
+                wanBgBestFps = wanBgSavedFps ?? currentFps
                 wanBgSavedBitrate = currentBitrate
                 if currentFps > 20 { applyFps(20, notify: false) }
                 if currentBitrate > 1_500_000 { applyBitrate(1_500_000, notify: false) }

@@ -220,6 +220,9 @@ final class Session {
     // Both ordered safest-first so "自动" starts conservative and only
     // climbs after proving stable, rather than starting high and visibly
     // stuttering before settling.
+    /// Off-LAN bitrate ceiling. 12 Mbps made 2560-wide keyframes ~160KB, whose burst queued up on
+    /// Wi-Fi/tunnel paths; 8 Mbps keeps them ~100KB with little visible loss for desktop content.
+    static let wanMaxBitrateBps = 8_000_000
     private static let autoFpsTiers:     [Int] = [30, 60, 90, 120]
     /// Highest auto tier the captured display can actually deliver — on a
     /// 60Hz panel, climbing to 90/120 only costs a deeper capture queue and a
@@ -612,8 +615,8 @@ final class Session {
                     autoFpsCleanStreak = 0
                     applyFps(60, notify: true)
                 }
-            } else if usingUdpVideo && !manualBitrateSelected && currentBitrate > 12_000_000 {
-                applyBitrate(12_000_000, notify: true)
+            } else if usingUdpVideo && !manualBitrateSelected && currentBitrate > Self.wanMaxBitrateBps {
+                applyBitrate(Self.wanMaxBitrateBps, notify: true)
             }
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "net_hint", detail: "lan=\(lan)")
 
@@ -1840,7 +1843,7 @@ final class Session {
         let dt = Date().timeIntervalSince(sentTick)
         if dt >= 5 {
             let transportLabel = usingRtpVideo ? "rtp" : (usingUdpVideo ? "udp" : (usingWebRTCVideo ? "webrtc" : "ws"))
-            let capKbps = (udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 40_000_000))) / 1000
+            let capKbps = (udpLearnedCeilingBps ?? (clientNotOnLan ? Self.wanMaxBitrateBps : (Self.autoBitrateTiers.last ?? 40_000_000))) / 1000
             let lossPct = String(format: "%.1f%%", udpLastLossRatio * 100.0)
             ConnectionLogger.shared.logStep(sessionId: id.uuidString,
                 step: "sent_5s", detail: "sent=\(sentFrames) fps=\(String(format: "%.0f", Double(sentFrames)/dt)) transport=\(transportLabel) br=\(currentBitrate/1000)k cap=\(capKbps)k loss=\(lossPct) bpDrops=\(backpressureDrops) kfForced=\(keyframesForced) kfReq=\(keyframeRequests)")
@@ -1967,7 +1970,7 @@ final class Session {
         scrollBoostLock.unlock()
 
         if starting {
-            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : 50_000_000)
+            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? Self.wanMaxBitrateBps : 50_000_000)
             let boosted = min(Int(Double(currentBitrate) * 1.5), cap)
             if boosted > currentBitrate {
                 encoder?.setBitrate(boosted)
@@ -2086,7 +2089,7 @@ final class Session {
             screenWidth: Int,
             scrollBoostActive: Bool
         ) -> StepAction {
-            let hardCeilingBps = clientNotOnLan ? 12_000_000 : 40_000_000
+            let hardCeilingBps = clientNotOnLan ? Session.wanMaxBitrateBps : 40_000_000
             // Keep WAN floor readable (1.5M 2K / 1.2M 1080p) so text stays legible and
             // VideoToolbox never starves, while still cutting WAN traffic 4-5x under congestion.
             let floorBps = clientNotOnLan
@@ -2220,7 +2223,7 @@ final class Session {
         // Restore to the last good rate, but at least 2.5Mbps (still under the learned ceiling)
         // so the first scroll after idle doesn't start from the 1.2-1.5Mbps floor.
         if let br = restoreBr, !manualBitrateSelected {
-            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? 12_000_000 : 40_000_000)
+            let cap = udpLearnedCeilingBps ?? (clientNotOnLan ? Self.wanMaxBitrateBps : 40_000_000)
             let target = min(max(br, 2_500_000), cap)
             if target > currentBitrate { applyBitrate(target, notify: false) }
         }
@@ -2312,7 +2315,7 @@ final class Session {
         udpCleanBitrateStreak = state.cleanStreak
         udpStableAtCapStreak = state.stableAtCapStreak
 
-        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 40_000_000)
+        let hardCeilingBps = clientNotOnLan ? Self.wanMaxBitrateBps : (Self.autoBitrateTiers.last ?? 40_000_000)
         switch action {
         case .down(let nextBps):
             cancelScrollBoost()
@@ -2365,7 +2368,7 @@ final class Session {
     ) {
         guard usingUdpVideo, (autoBitrateEnabled || !manualBitrateSelected) else { return }
 
-        let hardCeilingBps = clientNotOnLan ? 12_000_000 : (Self.autoBitrateTiers.last ?? 40_000_000)
+        let hardCeilingBps = clientNotOnLan ? Self.wanMaxBitrateBps : (Self.autoBitrateTiers.last ?? 40_000_000)
         let floorBps = clientNotOnLan
             ? (((capturer?.screenWidth ?? 1920) >= 2560) ? 1_500_000 : 1_200_000)
             : (((capturer?.screenWidth ?? 1920) >= 2560) ? 5_000_000 : 4_000_000)

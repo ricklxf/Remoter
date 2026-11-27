@@ -1027,7 +1027,7 @@ final class Session {
             // goes out per second regardless of which path asked for it.
             keyframeRequests += 1
             let now = Date()
-            let cooldown = Self.computeKeyframeCooldown(usingUdpVideo: usingUdpVideo, lossRatio: udpLastLossRatio)
+            let cooldown = Self.computeKeyframeCooldown(usingUdpVideo: usingUdpVideo, lossRatio: udpLastLossRatio, clientNotOnLan: clientNotOnLan)
             guard now.timeIntervalSince(lastForcedKeyframeAt) > cooldown else { break }
             lastForcedKeyframeAt = now
             keyframesForced += 1
@@ -1996,11 +1996,13 @@ final class Session {
     /// Pure keyframe throttle shared by `requestKeyframe` and regression self-tests:
     /// 0.4s when clean, 0.8s under moderate loss (>=3%), 1.5s under heavy loss (>=15%)
     /// so a 20-40% WAN burst never triggers a self-inflicted keyframe storm.
-    static func computeKeyframeCooldown(usingUdpVideo: Bool, lossRatio: Double) -> TimeInterval {
+    static func computeKeyframeCooldown(usingUdpVideo: Bool, lossRatio: Double, clientNotOnLan: Bool = false) -> TimeInterval {
         guard usingUdpVideo else { return 1.0 }
         if lossRatio >= 0.15 { return 1.5 }
         if lossRatio >= 0.03 { return 0.8 }
-        return 0.4
+        // Off-LAN: a keyframe needs ~0.2-0.3s to drain and the client re-requests every 450ms
+        // while it waits, so a 0.4s cooldown let requests stack up into back-to-back keyframes.
+        return clientNotOnLan ? 0.8 : 0.4
     }
 
     /// Extreme-congestion survival guard: never let the user freeze under severe WAN loss.

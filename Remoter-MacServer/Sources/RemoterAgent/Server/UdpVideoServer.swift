@@ -467,6 +467,11 @@ final class UdpVideoServer {
         let supportsInterleavedFec = session.supportsInterleavedFec
         let pacerHasBacklog = session.pacingReadIndex < session.pacingQueue.count
         lock.unlock()
+        if isKeyframe {
+            // Diagnostic: real keyframe sizes (the pacer/timeouts were tuned for ~40KB).
+            ConnectionLogger.shared.logStep(sessionId: "udp", step: "keyframe_sent",
+                detail: "bytes=\(totalLen) frags=\((totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload) backlog=\(pacerHasBacklog)")
+        }
 
         let fragCount = (totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload
         guard fragCount >= 1, fragCount <= Self.maxFragments else { return false }
@@ -1246,8 +1251,14 @@ final class UdpVideoServer {
             // WAN / tunnel mode: pace tightly at 1.35x target bitrate (floor 2.5 Mbps,
             // ceiling 10 Mbps, max 3 pkts/ms) so scroll bursts stay below a 3.4 Mbps
             // WAN/VPN cliff while a 40KB keyframe still drains in ~128ms (< 350ms timeout).
+            // A queued keyframe backlog must still drain inside the client's 350ms keyframe
+            // timeout (220ms for P-frames, which sit FIFO behind it). At 2560 wide a keyframe is
+            // ~100-200KB: paced at 2.5 Mbps it took 0.4-0.7s, the client timed it out, asked for
+            // another one, and that loop (kfReq storms) looked like heavy "loss". So raise the
+            // rate only as far as needed to finish in ~220ms; normal P-frames stay on the gentle rate.
             let targetBps = max(Double(pacingBitrateBps) * 1.35, 2_500_000.0)
-            return (min(targetBps, 10_000_000.0), 3)
+            let drainBps = estQueuedBytes * 8.0 / 0.22
+            return (min(max(targetBps, drainBps), 10_000_000.0), 3)
         } else {
             // LAN mode: drain large frames within 14ms for sub-frame latency
             let drainTargetBps = (estQueuedBytes / 0.014) * 8.0

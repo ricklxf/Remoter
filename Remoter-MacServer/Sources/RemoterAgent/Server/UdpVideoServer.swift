@@ -470,6 +470,11 @@ final class UdpVideoServer {
 
         let fragCount = (totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload
         guard fragCount >= 1, fragCount <= Self.maxFragments else { return false }
+        if isKeyframe {
+            // Permanent: one line per keyframe (size vs bitrate shows burst size on the wire).
+            ConnectionLogger.shared.logStep(sessionId: "udp", step: "keyframe_sent",
+                detail: "bytes=\(totalLen) frags=\(fragCount) backlog=\(pacerHasBacklog)")
+        }
 
         let fecGroupSize: UInt8
         if fragCount == 1 {

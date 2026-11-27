@@ -311,6 +311,7 @@ final class Session {
     private var lastUserInputAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var wanBgSaverActive = false
     private var wanBgSaverArmedAt: CFAbsoluteTime? = nil
+    private var lastUnreadableClipboardFilesSig = ""
     private var wanBgBestFps = 0
     private var scrollBurstGen = 0   // guarded by scrollBoostLock
     private var wanBgSavedFps: Int? = nil
@@ -2661,7 +2662,23 @@ final class Session {
 
         // Check Finder file URLs first: skip text/image broadcast when files are on the
         // pasteboard so copying a file in Finder doesn't send its filename as plain text!
-        let fileURLs = Self.clipboardFileURLs()
+        // Files the agent cannot actually open (another app's sandbox container, e.g. an image
+        // copied from WeChat's viewer, or a TCC-protected folder) can never be downloaded by the
+        // client: the request used to hang silently on the Windows side. Skip them so the image
+        // data on the pasteboard is sent instead.
+        let allFileURLs = Self.clipboardFileURLs()
+        let fileURLs = allFileURLs.filter { Self.canReadFile($0) }
+        if fileURLs.isEmpty && !allFileURLs.isEmpty {
+            let sig = Self.clipboardFilesSignature(urls: allFileURLs)
+            if sig != lastUnreadableClipboardFilesSig {
+                lastUnreadableClipboardFilesSig = sig
+                ConnectionLogger.shared.logStep(
+                    sessionId: id.uuidString,
+                    step: "clipboard_files_unreadable",
+                    detail: "count=\(allFileURLs.count) path=\(allFileURLs[0].path)"
+                )
+            }
+        }
         if !fileURLs.isEmpty {
             let sig = Self.clipboardFilesSignature(urls: fileURLs)
             if sig != lastSentClipboardFilesSig {
@@ -2715,6 +2732,15 @@ final class Session {
             }
             return objs.filter { $0.isFileURL }
         }
+    }
+
+    private static func canReadFile(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return false }
+        if isDir.boolValue { return true }
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return false }
+        try? fh.close()
+        return true
     }
 
     private static func clipboardFilesSignature(urls: [URL]) -> String {
@@ -2811,6 +2837,10 @@ final class Session {
               let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = (attrs[.size] as? NSNumber)?.int64Value else {
             print("[Session] sendFile: cannot read \(url.lastPathComponent)")
+            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "send_file_unreadable",
+                detail: "path=\(url.path)")
+            sendJson(["type": "error", "code": "file_unreadable",
+                      "message": "被控端无法读取该文件（可能没有权限）：\(url.lastPathComponent)"])
             return
         }
         defer { try? fh.close() }

@@ -1,6 +1,6 @@
 {
   "name": "remoter-server",
-  "version": "3.0.77",
+  "version": "3.0.78",
   "private": true,
   "scripts": {
     "dev": "ts-node src/index.ts",

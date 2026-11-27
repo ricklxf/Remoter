@@ -597,8 +597,6 @@ final class WebRTCAgent: NSObject, @unchecked Sendable {
                     pairDetail = "rttMs=\(String(format: "%.1f", rttMs ?? -1)) availBps=\(avail.map(String.init) ?? "?")"
                 }
             }
-            ConnectionLogger.shared.logStep(sessionId: "webrtc", step: "gcc_stats",
-                detail: "\(outboundDetail) | \(pairDetail) floor=\(self.minBitrateFloorActive ? "on" : "off") loss=\(String(format: "%.3f", lossFraction))")
             self.evaluateMinBitrateFloor(rttMs: rttMs, rttSamples: rttSamples, lossFraction: lossFraction)
             self.evaluateCongestionGuard(rttMs: rttMs, lossFraction: lossFraction)
             self.evaluateLossCap(lossFraction: lossFraction, targetBps: targetBps, rttMs: rttMs)

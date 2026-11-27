@@ -467,11 +467,6 @@ final class UdpVideoServer {
         let supportsInterleavedFec = session.supportsInterleavedFec
         let pacerHasBacklog = session.pacingReadIndex < session.pacingQueue.count
         lock.unlock()
-        if isKeyframe {
-            // Diagnostic: real keyframe sizes (the pacer/timeouts were tuned for ~40KB).
-            ConnectionLogger.shared.logStep(sessionId: "udp", step: "keyframe_sent",
-                detail: "bytes=\(totalLen) frags=\((totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload) backlog=\(pacerHasBacklog)")
-        }
 
         let fragCount = (totalLen + Self.maxFragmentPayload - 1) / Self.maxFragmentPayload
         guard fragCount >= 1, fragCount <= Self.maxFragments else { return false }

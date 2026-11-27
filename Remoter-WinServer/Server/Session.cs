@@ -69,7 +69,7 @@ sealed class Session
     private bool  _hasLastClipboardImageHash = false;
     private string? _lastSentClipboardFilesSig = null;
     private int   _clipboardPollRunning = 0;
-    private const int MaxReverseClipboardImageBytes = 4 * 1024 * 1024;
+    private const int MaxReverseClipboardImageBytes = 10 * 1024 * 1024;
 
     // Adaptive quality control - 延迟优先配置
     private int    _currentFps = 60;  // 提高默认FPS到60，最大限度减少延迟

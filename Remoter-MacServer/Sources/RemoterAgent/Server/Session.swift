@@ -152,7 +152,6 @@ final class Session {
     private var udpSessionTokenHex: String {
         udpSessionToken.map { String(format: "%02x", $0) }.joined()
     }
-    private var pendingTextInputSince: Date?   // TEMP DIAGNOSTIC — see .textInput case
     // Client-reported: none of its network interfaces share a subnet with the
     // address it dialed (i.e. it's coming in through a tunnel/router, e.g.
     // WireGuard). RTT can't tell that apart from a real LAN — the tunnel
@@ -164,43 +163,6 @@ final class Session {
     private let scrollBoostLock = NSLock()
     private var scrollBoostGen = 0
     private var scrollBoostActive = false
-    // TEMP DIAGNOSTIC — "scrolling keeps coasting ~1s after reversing". Whether
-    // that tail is already in the wheel stream the client sends (e.g. a
-    // Windows precision touchpad's own inertia) or is added on this side can't
-    // be told from the frame logs. Summarises each scroll gesture: how long
-    // events kept arriving after the peak delta, direction flips, last deltas.
-    private let scrollDiagLock = NSLock()
-    private var sgStart = Date.distantPast, sgLast = Date.distantPast, sgPeakAt = Date.distantPast
-    private var sgCount = 0, sgSum = 0, sgPeak = 0, sgFlips = 0, sgLastSign = 0
-    private var sgRecent: [Int] = []
-    private var sgPrecise: Bool?
-    private func recordScrollForDiag(py: Int, isPrecise: Bool?) {
-        let now = Date()
-        scrollDiagLock.lock()
-        if now.timeIntervalSince(sgLast) > 0.35 {
-            sgStart = now; sgPeakAt = now; sgCount = 0; sgSum = 0; sgPeak = 0; sgFlips = 0; sgLastSign = 0; sgRecent = []
-        }
-        sgLast = now; sgCount += 1; sgSum += py; sgPrecise = isPrecise
-        if abs(py) >= sgPeak { sgPeak = abs(py); sgPeakAt = now }
-        let sign = py > 0 ? 1 : (py < 0 ? -1 : 0)
-        if sign != 0 { if sgLastSign != 0 && sign != sgLastSign { sgFlips += 1 }; sgLastSign = sign }
-        sgRecent.append(py); if sgRecent.count > 4 { sgRecent.removeFirst() }
-        let stamp = now
-        scrollDiagLock.unlock()
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            self.scrollDiagLock.lock()
-            guard self.sgLast == stamp else { self.scrollDiagLock.unlock(); return }
-            let d = "events=\(self.sgCount) durMs=\(Int(self.sgLast.timeIntervalSince(self.sgStart) * 1000)) " +
-                "peakPx=\(self.sgPeak) peakToEndMs=\(Int(self.sgLast.timeIntervalSince(self.sgPeakAt) * 1000)) " +
-                "netPx=\(self.sgSum) flips=\(self.sgFlips) precise=\(self.sgPrecise.map { String($0) } ?? "nil") last=\(self.sgRecent)"
-            self.scrollDiagLock.unlock()
-            ConnectionLogger.shared.logStep(sessionId: self.id.uuidString, step: "scroll_gesture", detail: d)
-        }
-    }
-
-    private var pendingScrollSince: Date?      // TEMP DIAGNOSTIC — see .mouseScroll case, mirrors pendingTextInputSince
-
     // Auto quality: fps and bitrate step on separate ladders — collapsing
     // them into one combined tier meant any problem (network congestion OR
     // decode overload) dragged *both* down together, even when only one
@@ -591,8 +553,6 @@ final class Session {
         case .mouseScroll(let dx, let dy, let px, let py, let isPrecise):
             guard inputEnabled else { break }
             noteUserInputActivity()
-            pendingScrollSince = Date()
-            recordScrollForDiag(py: py ?? dy * 100, isPrecise: isPrecise)
             input?.mouseScroll(dx: dx, dy: dy, px: px, py: py, isPrecise: isPrecise)
             boostBitrateWhileScrolling()
 
@@ -643,14 +603,6 @@ final class Session {
 
         case .textInput(let text):
             guard inputEnabled else { break }
-            // TEMP DIAGNOSTIC — tracking down a report that composed CJK text
-            // takes 1-2s to actually show up in the video feed even though
-            // the CGEvent injection itself measures in single-digit ms
-            // (post_5s stats). Marks the moment injection happens so onFrame
-            // below can log how long it takes the *next* captured frame to
-            // follow. Remove once root-caused.
-            pendingTextInputSince = Date()
-            ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "text_input_received", detail: "len=\(text.count)")
             input?.typeText(text)
 
         case .clipboardSet(let text):
@@ -1056,16 +1008,8 @@ final class Session {
             ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "udp_punch", detail: "\(ip):\(port)")
             UdpVideoServer.shared.sendHolePunch(token: udpSessionToken, ip: ip, port: port)
 
-        case .clientStats(_, _, let rx):
-            // TEMP DIAGNOSTIC — the sender side measures healthy during
-            // scrolling (55-58fps encoded, ~12Mbps, 7-13ms scroll→frame) while
-            // the user still sees stutter, so whatever is wrong sits after
-            // the encoder: loss, jitter buffer, decode or render. The client
-            // forwards its inbound-rtp deltas here so they land in
-            // connections.log next to gcc_stats.
-            if !rx.isEmpty {
-                ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "client_rx", detail: String(rx.prefix(300)))
-            }
+        case .clientStats:
+            break
 
         case .setCodec(let codec):
             manualCodecSelected = true
@@ -1717,33 +1661,6 @@ final class Session {
             c.onFrame = { [weak self] pixelBuffer, _, _ in
                 guard let self else { return }
                 self.lastFrame = pixelBuffer
-                // TEMP DIAGNOSTIC — logs how long after a text_input the next
-                // captured frame follows, to localize the reported 1-2s
-                // "composed text doesn't show up on screen" delay. Fires once
-                // per pending text input, not on every subsequent frame.
-                if let since = self.pendingTextInputSince {
-                    self.pendingTextInputSince = nil
-                    let ms = Date().timeIntervalSince(since) * 1000
-                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                        step: "frame_after_text_input", detail: "delayMs=\(String(format: "%.1f", ms))")
-                }
-                // TEMP DIAGNOSTIC — same idea as frame_after_text_input, for
-                // scroll. Single-shot per scroll message like the text-input
-                // one (cleared right after logging), not left to log forever
-                // after scrolling stops — but since a sustained scroll
-                // re-arms this on every throttled scroll message (~16ms
-                // apart, see InputHandler.sendScrollThrottled), a continuous
-                // scroll gesture still yields one measurement per frame
-                // while it's happening, which is enough to see whether
-                // latency grows over the gesture (buffer filling up
-                // somewhere downstream — queueDepth, GCC's pacer, the
-                // client's own jitter buffer) or stays flat.
-                if let since = self.pendingScrollSince {
-                    self.pendingScrollSince = nil
-                    let ms = Date().timeIntervalSince(since) * 1000
-                    ConnectionLogger.shared.logStep(sessionId: self.id.uuidString,
-                        step: "frame_after_scroll", detail: "delayMs=\(String(format: "%.1f", ms))")
-                }
                 // RTP media track first: raw buffer straight into libwebrtc
                 // (it encodes + paces + congestion-controls internally). Our
                 // own VT encoder + WS/DataChannel path stays as the fallback
@@ -2716,7 +2633,7 @@ final class Session {
             sendJson(["type": "clipboard_from_target", "text": text])
         }
         guard let pngData = clipboardImagePNG(), pngData.count != lastSentClipboardImageSize else { return }
-        guard pngData.count <= 4 * 1024 * 1024 else { return }
+        guard pngData.count <= 10 * 1024 * 1024 else { return }
         lastSentClipboardImageSize = pngData.count
         ConnectionLogger.shared.logStep(sessionId: id.uuidString, step: "clipboard_reverse_sent",
             detail: "image bytes=\(pngData.count)")

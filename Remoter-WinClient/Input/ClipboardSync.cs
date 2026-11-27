@@ -278,6 +278,11 @@ public sealed class ClipboardSync : IDisposable
                         if (!string.IsNullOrWhiteSpace(item) && (File.Exists(item) || Directory.Exists(item)))
                             paths.Add(item);
                     }
+                    // DingTalk (and similar) put the original image file in FileDrop next to a bitmap.
+                    // Send that file's own pixels as an image: the DIB conversion path below
+                    // returned images with the lower half blank.
+                    if (paths.Count == 1 && Clipboard.ContainsImage() && TryEmitImageFile(paths[0]))
+                        return;
                     if (paths.Count > 0)
                     {
                         string sig = ComputeFilesSignature(paths);
@@ -286,9 +291,11 @@ public sealed class ClipboardSync : IDisposable
                             _lastSentFilesSig = sig;
                             LocalFilesChanged?.Invoke(paths.ToArray());
                         }
+                        return;
                     }
                 }
-                return;
+                // No usable file on disk: fall through so a bitmap on the clipboard is still synced.
+                if (!Clipboard.ContainsImage()) return;
             }
 
             if (Clipboard.ContainsText(TextDataFormat.UnicodeText))
@@ -331,24 +338,55 @@ public sealed class ClipboardSync : IDisposable
                     using var ms = new MemoryStream();
                     img.Save(ms, ImageFormat.Png);
                     if (ms.Length > 0 && ms.Length <= MaxImageBytes)
-                    {
-                        byte[] bytes = ms.ToArray();
-                        ulong hash = ComputeFnv1a64(bytes);
-                        if ((!_hasInjectedImageHash || _lastInjectedImageHash != hash) &&
-                            (!_hasSentImageHash || _lastSentImageHash != hash))
-                        {
-                            _lastSentImageHash = hash;
-                            _hasSentImageHash = true;
-                            _hasInjectedImageHash = false;
-                            LocalImageChanged?.Invoke(Convert.ToBase64String(bytes));
-                        }
-                    }
+                        EmitLocalImage(ms.ToArray());
                 }
             }
         }
         catch
         {
             // Ignore transient ExternalException when another app holds clipboard open
+        }
+    }
+
+    private void EmitLocalImage(byte[] pngBytes)
+    {
+        ulong hash = ComputeFnv1a64(pngBytes);
+        if ((!_hasInjectedImageHash || _lastInjectedImageHash != hash) &&
+            (!_hasSentImageHash || _lastSentImageHash != hash))
+        {
+            _lastSentImageHash = hash;
+            _hasSentImageHash = true;
+            _hasInjectedImageHash = false;
+            LocalImageChanged?.Invoke(Convert.ToBase64String(pngBytes));
+        }
+    }
+
+    private bool TryEmitImageFile(string path)
+    {
+        try
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".bmp" && ext != ".gif") return false;
+            if (!File.Exists(path)) return false;
+            byte[] bytes;
+            if (ext == ".png")
+            {
+                bytes = File.ReadAllBytes(path);
+            }
+            else
+            {
+                using var img = Image.FromFile(path);
+                using var ms = new MemoryStream();
+                img.Save(ms, ImageFormat.Png);
+                bytes = ms.ToArray();
+            }
+            if (bytes.Length == 0 || bytes.Length > MaxImageBytes) return false;
+            EmitLocalImage(bytes);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 /// Advertises this Remoter Mac host on the local network via Bonjour / mDNS (`_remoter._tcp.`)
 /// so native clients can auto-discover LAN machines with one click.
@@ -25,12 +26,17 @@ final class LanDiscoveryAdvertiser: NSObject, NetServiceDelegate, @unchecked Sen
             let svc = NetService(domain: "local.", type: "_remoter._tcp.", name: serviceName, port: Int32(wsPort))
             svc.delegate = self
 
-            let txtDict: [String: Data] = [
+            var txtDict: [String: Data] = [
                 "os": Data("macos".utf8),
                 "wsPort": Data(String(wsPort).utf8),
                 "udpPort": Data(String(udpPort).utf8),
                 "ver": Data(kAppVersion.utf8)
             ]
+            // A host with two NICs on one subnet (e.g. en0 + en1) resolves to several addresses and
+            // clients used to pick an arbitrary one (the secondary NIC). Say which one is the primary.
+            if let ip = Self.primaryIPv4() {
+                txtDict["ip"] = Data(ip.utf8)
+            }
             svc.setTXTRecord(NetService.data(fromTXTRecord: txtDict))
             svc.schedule(in: .main, forMode: .common)
             svc.publish()
@@ -39,7 +45,7 @@ final class LanDiscoveryAdvertiser: NSObject, NetServiceDelegate, @unchecked Sen
             ConnectionLogger.shared.logStep(
                 sessionId: "mdns",
                 step: "advertise_start",
-                detail: "name=\(serviceName) wsPort=\(wsPort) udpPort=\(udpPort) ver=\(kAppVersion)"
+                detail: "name=\(serviceName) wsPort=\(wsPort) udpPort=\(udpPort) ver=\(kAppVersion) ip=\(txtDict["ip"].flatMap { String(data: $0, encoding: .utf8) } ?? "-")"
             )
         }
 
@@ -48,6 +54,14 @@ final class LanDiscoveryAdvertiser: NSObject, NetServiceDelegate, @unchecked Sen
         } else {
             DispatchQueue.main.async(execute: work)
         }
+    }
+
+    /// IPv4 of the interface the system routes default traffic through (System Settings service order).
+    private static func primaryIPv4() -> String? {
+        guard let store = SCDynamicStoreCreate(nil, "remoter-primary-ip" as CFString, nil, nil),
+              let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+              let primary = dict["PrimaryInterface"] as? String else { return nil }
+        return getIfaceAddresses().first { $0.ifname == primary }?.ip
     }
 
     func stop() {

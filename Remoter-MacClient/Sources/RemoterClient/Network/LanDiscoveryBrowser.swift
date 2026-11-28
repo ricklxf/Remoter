@@ -117,7 +117,10 @@ public final class LanDiscoveryBrowser: NSObject, ObservableObject, NetServiceBr
             return String(data: data, encoding: .utf8)
         }
 
-        let host = Self.extractIPv4(from: sender.addresses)
+        // Hosts with several NICs resolve to several addresses; the server names its primary one in TXT `ip`.
+        let advertisedIp = txtString("ip").flatMap { Self.isIPv4Literal($0) ? $0 : nil }
+        let host = advertisedIp
+            ?? Self.extractIPv4(from: sender.addresses)
             ?? sender.hostName?.trimmingCharacters(in: CharacterSet(charactersIn: "."))
             ?? ""
         guard !host.isEmpty else { return }
@@ -152,6 +155,11 @@ public final class LanDiscoveryBrowser: NSObject, ObservableObject, NetServiceBr
         }
         peers = sorted
         onPeersChanged?(sorted)
+    }
+
+    private static func isIPv4Literal(_ s: String) -> Bool {
+        var addr = in_addr()
+        return inet_pton(AF_INET, s, &addr) == 1
     }
 
     private static func serviceKey(_ service: NetService) -> String {

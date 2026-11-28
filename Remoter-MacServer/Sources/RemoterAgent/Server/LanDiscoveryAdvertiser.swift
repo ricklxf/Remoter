@@ -56,12 +56,22 @@ final class LanDiscoveryAdvertiser: NSObject, NetServiceDelegate, @unchecked Sen
         }
     }
 
-    /// IPv4 of the interface the system routes default traffic through (System Settings service order).
+    /// IPv4 to advertise: the system's primary interface if it is a real NIC, otherwise the lowest-numbered
+    /// physical `enN`. Tunnels (Surge/WireGuard/Tailscale utun*, 198.18.0.0/15) and link-local 169.254.x.x are
+    /// skipped — with Surge's enhanced mode the "primary interface" is its utun, not the LAN.
     private static func primaryIPv4() -> String? {
-        guard let store = SCDynamicStoreCreate(nil, "remoter-primary-ip" as CFString, nil, nil),
-              let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
-              let primary = dict["PrimaryInterface"] as? String else { return nil }
-        return getIfaceAddresses().first { $0.ifname == primary }?.ip
+        let nics = getIfaceAddresses().filter {
+            $0.ifname.hasPrefix("en") && !$0.ip.hasPrefix("169.254.") && !isVPNIface($0.ifname, $0.ip)
+        }
+        guard !nics.isEmpty else { return nil }
+        if let store = SCDynamicStoreCreate(nil, "remoter-primary-ip" as CFString, nil, nil),
+           let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+           let primary = dict["PrimaryInterface"] as? String,
+           let hit = nics.first(where: { $0.ifname == primary }) {
+            return hit.ip
+        }
+        func index(_ name: String) -> Int { Int(name.dropFirst(2)) ?? Int.max }
+        return nics.min { index($0.ifname) < index($1.ifname) }?.ip
     }
 
     func stop() {

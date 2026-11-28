@@ -147,16 +147,20 @@ public final class InputManager {
     public func handleScrollWheel(_ event: NSEvent) {
         guard !isViewOnly, let connection else { return }
 
+        // The host follows the DOM wheel convention (positive = scroll down/right, same as the web client).
+        // NSEvent.scrollingDelta* has the opposite sign (negative = content moves up), so flip both axes.
+        let deltaX = -event.scrollingDeltaX
+        let deltaY = -event.scrollingDeltaY
         let isPrecise = event.hasPreciseScrollingDeltas
         let phase = Int(event.phase.rawValue)
         let momentumPhase = Int(event.momentumPhase.rawValue)
 
         if isPrecise {
-            let px = Int((event.scrollingDeltaX * 2.0).rounded())
-            let py = Int((event.scrollingDeltaY * 2.0).rounded())
+            let px = Int((deltaX * 2.0).rounded())
+            let py = Int((deltaY * 2.0).rounded())
             // Keep dx/dy populated for hosts that ignore px/py while preserving pixel precision
-            let dx = Int(event.scrollingDeltaX.rounded())
-            let dy = Int(event.scrollingDeltaY.rounded())
+            let dx = Int(deltaX.rounded())
+            let dy = Int(deltaY.rounded())
             guard px != 0 || py != 0 || phase != 0 || momentumPhase != 0 else { return }
 
             connection.sendMouseScroll(
@@ -172,8 +176,8 @@ public final class InputManager {
             // Discrete mouse wheel. `scrollingDelta*` is already in lines (~1 per notch), which is what the
             // host expects for dx/dy ("notches"; it injects notches * 100px). Sending *120 here (the Windows
             // unit) made the host scroll 12000px per notch, i.e. straight to the end of the page.
-            let lineX = event.scrollingDeltaX
-            let lineY = event.scrollingDeltaY
+            let lineX = deltaX
+            let lineY = deltaY
             func notches(_ v: CGFloat) -> Int { v == 0 ? 0 : (v > 0 ? max(1, Int(v.rounded())) : min(-1, Int(v.rounded()))) }
             let dx = notches(lineX)
             let dy = notches(lineY)

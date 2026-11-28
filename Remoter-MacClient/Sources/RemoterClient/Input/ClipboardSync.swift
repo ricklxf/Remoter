@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 
 /// Bidirectional macOS `NSPasteboard.general` text & PNG image synchronization
 /// using 64-bit FNV-1a (`ProtocolHelpers.fnv1a64`) anti-loop hash deduplication.
@@ -221,6 +222,17 @@ public final class ClipboardSync {
         }
         lastChangeCount = currentCount
 
+        // 0a. 微信等 App 把"复制图片"写成指向自身缓存文件的 file-url（同时常带 png/tiff 数据）。
+        // 单个图片文件按图片发送，让对端直接粘贴出图片，而不是走文件传输。
+        if let png = singleImageFilePNG(from: pb), png.count <= Self.maxImageBytes {
+            let hash = ProtocolHelpers.fnv1a64(png)
+            if hash != lastInjectedImageHash && hash != lastSentImageHash {
+                lastSentImageHash = hash
+                connection.sendClipboardImage(png)
+            }
+            return
+        }
+
         // 0. Check Finder file URLs first (Finder also writes filename strings to .string)
         if checkPasteboardFileURLs(pb) {
             return
@@ -244,6 +256,20 @@ public final class ClipboardSync {
                 connection.sendClipboardImage(pngData)
             }
         }
+    }
+
+    /// 剪贴板里恰好是一个存在的图片文件时，返回其 PNG 数据（优先用剪贴板自带的图片数据，其次读文件）。
+    private func singleImageFilePNG(from pb: NSPasteboard) -> Data? {
+        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              urls.count == 1, let url = urls.first,
+              FileManager.default.fileExists(atPath: url.path),
+              let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) else {
+            return nil
+        }
+        if let png = extractPNGImage(from: pb) { return png }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        if type.conforms(to: .png) { return data }
+        return NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:])
     }
 
     private func extractPNGImage(from pasteboard: NSPasteboard) -> Data? {

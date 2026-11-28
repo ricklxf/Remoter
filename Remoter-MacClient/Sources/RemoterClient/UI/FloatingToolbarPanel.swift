@@ -289,8 +289,15 @@ public final class FloatingToolbarPanel: NSPanel {
             targetSize = NSSize(width: pillW, height: Self.pillHeight)
         }
 
-        let x = contentScreenRect.minX + max(0, (contentScreenRect.width - targetSize.width) / 2.0)
-        let y = contentScreenRect.maxY - targetSize.height - 6
+        var x = contentScreenRect.minX + max(0, (contentScreenRect.width - targetSize.width) / 2.0)
+        var y = contentScreenRect.maxY - targetSize.height - 6
+        // The window can hang partly off its screen (several displays, dragged to an edge, bigger than the
+        // screen). Keep the bar inside the visible area (below the menu bar, above the Dock) so it stays reachable.
+        if let vis = (owner.screen ?? NSScreen.main)?.visibleFrame {
+            let margin: CGFloat = 6
+            y = max(vis.minY + margin, min(y, vis.maxY - targetSize.height - margin))
+            x = max(vis.minX + margin, min(x, vis.maxX - targetSize.width - margin))
+        }
         setFrame(NSRect(x: round(x), y: round(y), width: round(targetSize.width), height: round(targetSize.height)), display: true)
     }
 

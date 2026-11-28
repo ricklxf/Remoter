@@ -149,8 +149,30 @@ public final class LanDiscoveryBrowser: NSObject, ObservableObject, NetServiceBr
 
     // MARK: - Helpers
 
+    /// This Mac's own IPv4 addresses (all interfaces) — it advertises itself too, but is never a remote to pick.
+    private static func localIPv4Addresses() -> Set<String> {
+        var result = Set<String>()
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return result }
+        defer { freeifaddrs(ifaddr) }
+        var ptr = ifaddr
+        while let p = ptr {
+            let fa = p.pointee
+            if let sa = fa.ifa_addr, sa.pointee.sa_family == sa_family_t(AF_INET) {
+                var addr = sa.pointee
+                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(&addr, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    result.insert(String(cString: host))
+                }
+            }
+            ptr = fa.ifa_next
+        }
+        return result
+    }
+
     private func publishPeers() {
-        let sorted = peersByKey.values.sorted {
+        let own = Self.localIPv4Addresses()
+        let sorted = peersByKey.values.filter { !own.contains($0.host) }.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
         peers = sorted

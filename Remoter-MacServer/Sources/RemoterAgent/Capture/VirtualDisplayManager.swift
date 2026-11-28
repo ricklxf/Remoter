@@ -8,6 +8,10 @@ public final class VirtualDisplayManager: @unchecked Sendable {
     private let lock = NSLock()
     private var activeVirtualDisplay: AnyObject?
     public private(set) var activeDisplayID: CGDirectDisplayID?
+    // Last successfully applied mode. Re-applying identical settings to a live display is skipped:
+    // two controller connections a second apart both asked for the same HiDPI match and the second
+    // applySettings: crashed inside CoreGraphics (EXC_BAD_ACCESS), freezing every client's picture.
+    private var lastAppliedKey: String?
 
     private let allocSel = NSSelectorFromString("alloc")
     private lazy var msgSendAlloc: (@convention(c) (AnyClass, Selector) -> AnyObject)? = {
@@ -96,6 +100,12 @@ public final class VirtualDisplayManager: @unchecked Sendable {
         let backingWidth = UInt((Double(logicalWidth) * backingScale).rounded())
         let backingHeight = UInt((Double(logicalHeight) * backingScale).rounded())
 
+        let modeKey = "\(logicalWidth)x\(logicalHeight) hiDPI=\(hiDPI) scale=\(scaleFactor)"
+        if activeVirtualDisplay != nil, let id = activeDisplayID, lastAppliedKey == modeKey {
+            ConnectionLogger.shared.logStep(sessionId: "display", step: "virtual_display_unchanged", detail: "\(modeKey) id=\(id)")
+            return id
+        }
+
         let displayObj: AnyObject
         if let existing = activeVirtualDisplay {
             displayObj = existing
@@ -152,6 +162,7 @@ public final class VirtualDisplayManager: @unchecked Sendable {
         let isUpdate = (self.activeVirtualDisplay != nil)
         self.activeVirtualDisplay = displayObj
         self.activeDisplayID = displayID
+        self.lastAppliedKey = modeKey
 
         ConnectionLogger.shared.logStep(sessionId: "display",
             step: isUpdate ? "virtual_display_updated" : "virtual_display_created",
@@ -172,6 +183,7 @@ public final class VirtualDisplayManager: @unchecked Sendable {
 
         activeVirtualDisplay = nil
         activeDisplayID = nil
+        lastAppliedKey = nil
         ConnectionLogger.shared.logStep(sessionId: "display", step: "virtual_display_destroyed")
     }
 }

@@ -69,7 +69,6 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
             defer: false
         )
         window.title = "文件管理器 — 双向文件传输"
-        window.appearance = Theme.darkAppearance
         window.backgroundColor = Theme.background
         window.minSize = NSSize(width: 760, height: 480)
         super.init(window: window)
@@ -141,8 +140,7 @@ public final class FileTransferSheetController: NSWindowController, NSTableViewD
 
     private func buildUI() {
         guard let contentView = window?.contentView else { return }
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = Theme.background.cgColor
+        window?.backgroundColor = Theme.background
 
         let splitView = NSSplitView()
         splitView.isVertical = true

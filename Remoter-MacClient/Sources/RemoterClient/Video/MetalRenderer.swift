@@ -405,7 +405,7 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         if let metalLayer = self.layer as? CAMetalLayer {
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         }
-        self.clearColor = MTLClearColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1.0)
+        updateClearColor()
         self.isPaused = true
         self.enableSetNeedsDisplay = true
         self.framebufferOnly = true
@@ -435,6 +435,20 @@ public final class MetalRendererView: MTKView, MTKViewDelegate, NSTextInputClien
         } catch {
             NSLog("MetalRendererView: Failed to compile MSL pipelines: %@", error.localizedDescription)
         }
+    }
+
+    /// Letterbox color follows the theme (Web `--canvas-surround`): near-black in dark, pale teal in light.
+    private func updateClearColor() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        self.clearColor = isDark
+            ? MTLClearColor(red: 0.043, green: 0.051, blue: 0.067, alpha: 1.0)
+            : MTLClearColor(red: 0.902, green: 0.969, blue: 0.961, alpha: 1.0)
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateClearColor()
+        needsDisplay = true
     }
 
     // MARK: - Public Frame & Coordinate API

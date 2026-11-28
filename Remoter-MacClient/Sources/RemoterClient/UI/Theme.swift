@@ -4,27 +4,42 @@ import AppKit
 /// Matches `#121419` background, `#1A1E26` surface, `#252A36` elevated, and `#0FB8AB` teal accent.
 public enum Theme {
     // MARK: - Color Palette
+    // Follows the system appearance like the Web client (`system` theme): dark values are the
+    // original palette, light values are the Web light theme (global.css `:root`).
 
-    public static let background      = NSColor(hex: 0x121419)
-    public static let surface         = NSColor(hex: 0x1A1E26)
-    public static let elevated        = NSColor(hex: 0x252A36)
-    public static let inputBackground = NSColor(hex: 0x151820)
-    public static let hover           = NSColor(hex: 0x2C3240)
-    public static let border          = NSColor(hex: 0x2E3545)
-    public static let accent          = NSColor(hex: 0x0FB8AB)
-    public static let accentHover     = NSColor(hex: 0x0DA094)
-    public static let accentDim       = NSColor(hex: 0x0FB8AB, alpha: 0.18)
-    public static let danger          = NSColor(hex: 0xE04848)
-    public static let dangerHover     = NSColor(hex: 0xC63838)
-    public static let warning         = NSColor(hex: 0xF5B441)
-    public static let warningDim      = NSColor(hex: 0xF5B441, alpha: 0.18)
-    public static let info            = NSColor(hex: 0x38BDF8)
-    public static let infoDim         = NSColor(hex: 0x38BDF8, alpha: 0.18)
-    public static let textPrimary     = NSColor(hex: 0xE8ECF2)
-    public static let textMuted       = NSColor(hex: 0x8C95A6)
-    public static let videoBackground = NSColor(hex: 0x0B0D11)
-    public static let hudBackground   = NSColor(hex: 0x161A22, alpha: 0.92)
+    private static func dyn(dark: UInt32, light: UInt32, darkAlpha: CGFloat = 1, lightAlpha: CGFloat = 1) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return isDark ? NSColor(hex: dark, alpha: darkAlpha) : NSColor(hex: light, alpha: lightAlpha)
+        }
+    }
 
+    public static let background      = dyn(dark: 0x121419, light: 0xF0F4F8)
+    public static let surface         = dyn(dark: 0x1A1E26, light: 0xFFFFFF)
+    public static let elevated        = dyn(dark: 0x252A36, light: 0xF1F5F9)
+    public static let inputBackground = dyn(dark: 0x151820, light: 0xF1F5F9)
+    public static let hover           = dyn(dark: 0x2C3240, light: 0xE2E8F0)
+    public static let border          = dyn(dark: 0x2E3545, light: 0xD1D5DB)
+    public static let accent          = dyn(dark: 0x0FB8AB, light: 0x0D9488)
+    public static let accentHover     = dyn(dark: 0x0DA094, light: 0x0F766E)
+    public static let accentDim       = dyn(dark: 0x0FB8AB, light: 0x0D9488, darkAlpha: 0.18, lightAlpha: 0.14)
+    /// Text on top of a solid accent fill (primary buttons).
+    public static let onAccent        = dyn(dark: 0x0A1014, light: 0xFFFFFF)
+    public static let danger          = dyn(dark: 0xE04848, light: 0xDC2626)
+    public static let dangerHover     = dyn(dark: 0xC63838, light: 0xB91C1C)
+    public static let dangerBackground = dyn(dark: 0xE04848, light: 0xFEF2F2, darkAlpha: 0.12, lightAlpha: 1)
+    public static let dangerBorder    = dyn(dark: 0xE04848, light: 0xFECACA, darkAlpha: 0.45, lightAlpha: 1)
+    public static let warning         = dyn(dark: 0xF5B441, light: 0xD97706)
+    public static let warningDim      = dyn(dark: 0xF5B441, light: 0xD97706, darkAlpha: 0.18, lightAlpha: 0.14)
+    public static let info            = dyn(dark: 0x38BDF8, light: 0x0284C7)
+    public static let infoDim         = dyn(dark: 0x38BDF8, light: 0x0284C7, darkAlpha: 0.18, lightAlpha: 0.14)
+    public static let textPrimary     = dyn(dark: 0xE8ECF2, light: 0x1A1A2E)
+    public static let textMuted       = dyn(dark: 0x8C95A6, light: 0x64748B)
+    /// Letterbox area around the remote picture (Web `--canvas-surround`).
+    public static let videoBackground = dyn(dark: 0x0B0D11, light: 0xE6F7F5)
+    public static let hudBackground   = dyn(dark: 0x161A22, light: 0xFFFFFF, darkAlpha: 0.92, lightAlpha: 0.92)
+
+    /// Only for overlays drawn on top of the video (stats HUD), which stay dark in both themes.
     public static var darkAppearance: NSAppearance? {
         NSAppearance(named: .darkAqua)
     }
@@ -61,7 +76,7 @@ public enum Theme {
         text: String = "",
         secure: Bool = false
     ) -> NSTextField {
-        let field: NSTextField = secure ? NSSecureTextField() : NSTextField()
+        let field: NSTextField = secure ? ThemedSecureTextField() : ThemedTextField()
         field.stringValue = text
         field.placeholderString = placeholder
         field.font = font(size: 13)
@@ -71,8 +86,7 @@ public enum Theme {
         field.isBezeled = false
         field.focusRingType = .exterior
         field.wantsLayer = true
-        field.layer?.backgroundColor = inputBackground.cgColor
-        field.layer?.borderColor = border.cgColor
+        applyFieldColors(field)
         field.layer?.borderWidth = 1
         field.layer?.cornerRadius = 7
         field.translatesAutoresizingMaskIntoConstraints = false
@@ -117,21 +131,19 @@ public enum Theme {
         return badge
     }
 
-    public static func makeCard(background: NSColor = surface, cornerRadius: CGFloat = 10) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = background.cgColor
-        view.layer?.borderColor = border.cgColor
-        view.layer?.borderWidth = 1
-        view.layer?.cornerRadius = cornerRadius
+    public static func makeCard(background: NSColor = surface, cornerRadius: CGFloat = 10) -> ThemedLayerView {
+        let view = ThemedLayerView()
+        view.fillColor = background
+        view.strokeColor = border
+        view.strokeWidth = 1
+        view.cornerRadius = cornerRadius
         view.translatesAutoresizingMaskIntoConstraints = false
         return view
     }
 
     public static func makeSeparator(vertical: Bool = false) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = border.cgColor
+        let view = ThemedLayerView()
+        view.fillColor = border
         view.translatesAutoresizingMaskIntoConstraints = false
         if vertical {
             view.widthAnchor.constraint(equalToConstant: 1).isActive = true
@@ -139,6 +151,13 @@ public enum Theme {
             view.heightAnchor.constraint(equalToConstant: 1).isActive = true
         }
         return view
+    }
+
+    static func applyFieldColors(_ field: NSTextField) {
+        field.effectiveAppearance.performAsCurrentDrawingAppearance {
+            field.layer?.backgroundColor = inputBackground.cgColor
+            field.layer?.borderColor = border.cgColor
+        }
     }
 
     public static func makeCheckbox(
@@ -200,10 +219,6 @@ public extension NSColor {
 
 public final class ThemedButton: NSButton {
     public var buttonStyle: Theme.ButtonStyle {
-        didSet { applyStyle() }
-    }
-    /// Light (Web-style) palette, used by the Connect window; the rest of the client stays dark.
-    public var lightPalette = false {
         didSet { applyStyle() }
     }
     private var fontSize: CGFloat
@@ -277,17 +292,31 @@ public final class ThemedButton: NSButton {
         }
     }
 
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyStyle()
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyStyle()
+    }
+
     private func applyStyle() {
-        var bg: NSColor
-        var fg: NSColor
-        var borderColor: NSColor
-        var borderWidth: CGFloat
+        effectiveAppearance.performAsCurrentDrawingAppearance { applyStyleResolved() }
+    }
+
+    private func applyStyleResolved() {
+        let bg: NSColor
+        let fg: NSColor
+        let borderColor: NSColor
+        let borderWidth: CGFloat
         let radius: CGFloat
 
         switch buttonStyle {
         case .primary:
             bg = isHovered ? Theme.accentHover : Theme.accent
-            fg = NSColor(hex: 0x0A1014)
+            fg = Theme.onAccent
             borderColor = .clear
             borderWidth = 0
             radius = 8
@@ -323,29 +352,6 @@ public final class ThemedButton: NSButton {
             radius = 6
         }
 
-        if lightPalette {
-            switch buttonStyle {
-            case .primary:
-                bg = NSColor(hex: isHovered ? 0x0F766E : 0x0D9488)
-                fg = .white
-                borderColor = .clear; borderWidth = 0
-            case .secondary:
-                bg = NSColor(hex: isHovered ? 0xE2E8F0 : 0xF1F5F9)
-                fg = NSColor(hex: 0x64748B)
-                borderColor = .clear; borderWidth = 0
-            case .toolbar:
-                bg = NSColor(hex: isHovered ? 0xE2E8F0 : 0xF1F5F9)
-                fg = NSColor(hex: 0x64748B)
-                borderColor = NSColor(hex: 0xD1D5DB); borderWidth = 1
-            case .toolbarActive:
-                bg = NSColor(hex: 0xF0F4F8)
-                fg = NSColor(hex: 0x1A1A2E)
-                borderColor = NSColor(hex: 0x0D9488); borderWidth = 1
-            default:
-                break
-            }
-        }
-
         layer?.backgroundColor = bg.cgColor
         layer?.borderColor = borderColor.cgColor
         layer?.borderWidth = borderWidth
@@ -374,12 +380,15 @@ public final class BadgeView: NSView {
         set { label.stringValue = newValue }
     }
 
+    private var backgroundFill: NSColor
+
     public init(text: String, background: NSColor, foreground: NSColor) {
         self.label = Theme.makeLabel(text, size: 10.5, weight: .semibold, color: foreground)
+        self.backgroundFill = background
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = background.cgColor
         layer?.cornerRadius = 4
+        applyBackground()
 
         addSubview(label)
         NSLayoutConstraint.activate([
@@ -396,7 +405,89 @@ public final class BadgeView: NSView {
     }
 
     public func updateColors(background: NSColor, foreground: NSColor) {
-        layer?.backgroundColor = background.cgColor
+        backgroundFill = background
+        applyBackground()
         label.textColor = foreground
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyBackground()
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyBackground()
+    }
+
+    private func applyBackground() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = backgroundFill.cgColor
+        }
+    }
+}
+
+// MARK: - ThemedLayerView
+
+/// Layer-backed view whose fill / stroke colors are dynamic `NSColor`s: `cgColor` snapshots go stale
+/// when the system switches between light and dark, so they are re-resolved on every appearance change.
+public final class ThemedLayerView: NSView {
+    public var fillColor: NSColor? { didSet { refresh() } }
+    public var strokeColor: NSColor? { didSet { refresh() } }
+    public var strokeWidth: CGFloat = 0 { didSet { refresh() } }
+    public var cornerRadius: CGFloat = 0 { didSet { refresh() } }
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refresh()
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refresh()
+    }
+
+    private func refresh() {
+        guard let layer else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer.backgroundColor = fillColor?.cgColor
+            layer.borderColor = strokeColor?.cgColor
+        }
+        layer.borderWidth = strokeWidth
+        layer.cornerRadius = cornerRadius
+    }
+}
+
+// MARK: - Themed text fields
+
+final class ThemedTextField: NSTextField {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        Theme.applyFieldColors(self)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        Theme.applyFieldColors(self)
+    }
+}
+
+final class ThemedSecureTextField: NSSecureTextField {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        Theme.applyFieldColors(self)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        Theme.applyFieldColors(self)
     }
 }

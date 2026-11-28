@@ -13,20 +13,6 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     private static let outerY: CGFloat = 24
     private static let otherAccountTitle = "+ 使用其他账户…"
 
-    /// Web light theme (global.css `:root`).
-    private enum Light {
-        static let bg      = NSColor(hex: 0xF0F4F8)
-        static let card    = NSColor.white
-        static let bg3     = NSColor(hex: 0xF1F5F9)
-        static let border  = NSColor(hex: 0xD1D5DB)
-        static let primary = NSColor(hex: 0x0D9488)
-        static let text    = NSColor(hex: 0x1A1A2E)
-        static let text2   = NSColor(hex: 0x64748B)
-        static let danger  = NSColor(hex: 0xDC2626)
-        static let dangerBg = NSColor(hex: 0xFEF2F2)
-        static let dangerBorder = NSColor(hex: 0xFECACA)
-    }
-
     // State
     private var devices: [SavedDevice] = []
     private var selectedDevice: SavedDevice?
@@ -34,7 +20,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     private var isCredentials = false
     private var isEditingNote = false
 
-    private let card = Theme.makeCard(background: Light.card, cornerRadius: 16)
+    private let card = Theme.makeCard(background: Theme.surface, cornerRadius: 16)
 
     // Mode tabs
     private let directTab = Theme.makeButton(title: "🔌 直连 (局域网)", style: .primary, fontSize: 13)
@@ -49,10 +35,10 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     private let lanBrowser = LanDiscoveryBrowser()
 
     // Saved-account banner
-    private let savedBanner = NSView()
+    private let savedBanner = ThemedLayerView()
     private let machineHeader = NSStackView()
-    private let machineNameLabel = Theme.makeLabel("", size: 15, weight: .bold, color: Light.text)
-    private let modelBadge = Theme.makeBadge(text: "", background: Light.card, foreground: Light.text2)
+    private let machineNameLabel = Theme.makeLabel("", size: 15, weight: .bold, color: Theme.textPrimary)
+    private let modelBadge = Theme.makeBadge(text: "", background: Theme.surface, foreground: Theme.textMuted)
     private let bannerDivider = Theme.makeSeparator()
     private let accountRow = NSStackView()
     private let accountPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -79,8 +65,8 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     private let sessionIdField = Theme.makeTextField(placeholder: "A1B2C3")
 
     // Footer
-    private let errorBox = NSView()
-    private let statusLabel = Theme.makeLabel("", size: 13, color: Light.text2)
+    private let errorBox = ThemedLayerView()
+    private let statusLabel = Theme.makeLabel("", size: 13, color: Theme.textMuted)
     private let connectButton = Theme.makeButton(title: "连接", style: .primary, fontSize: 15, weight: .semibold)
 
     public init() {
@@ -91,8 +77,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
             defer: false
         )
         window.title = "Remoter v\(kAppVersion)"
-        window.appearance = NSAppearance(named: .aqua)
-        window.backgroundColor = Light.bg
+        window.backgroundColor = Theme.background
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.center()
@@ -131,10 +116,10 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
 
     public func setStatus(_ message: String, isError: Bool = false) {
         statusLabel.stringValue = message
-        statusLabel.textColor = isError ? Light.danger : Light.text2
+        statusLabel.textColor = isError ? Theme.danger : Theme.textMuted
         errorBox.isHidden = message.isEmpty
-        errorBox.layer?.backgroundColor = (isError ? Light.dangerBg : NSColor.clear).cgColor
-        errorBox.layer?.borderColor = (isError ? Light.dangerBorder : NSColor.clear).cgColor
+        errorBox.fillColor = isError ? Theme.dangerBackground : .clear
+        errorBox.strokeColor = isError ? Theme.dangerBorder : .clear
         fitWindow()
     }
 
@@ -153,8 +138,6 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
 
     private func buildUI() {
         guard let contentView = window?.contentView else { return }
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = Light.bg.cgColor
 
         // Logo + title
         let logo = NSImageView()
@@ -163,14 +146,14 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         logo.translatesAutoresizingMaskIntoConstraints = false
         logo.widthAnchor.constraint(equalToConstant: 36).isActive = true
         logo.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        let title = Theme.makeLabel("Remoter", size: 28, weight: .bold, color: Light.text)
+        let title = Theme.makeLabel("Remoter", size: 28, weight: .bold, color: Theme.textPrimary)
         let logoRow = NSStackView(views: [logo, title])
         logoRow.orientation = .horizontal
         logoRow.spacing = 12
         logoRow.alignment = .centerY
         logoRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let subtitle = Theme.makeLabel("远程控制 · 超清 2K · 60fps", size: 13, color: Light.text2)
+        let subtitle = Theme.makeLabel("远程控制 · 超清 2K · 60fps", size: 13, color: Theme.textMuted)
 
         // Mode tabs
         directTab.target = self
@@ -185,9 +168,8 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         buildRelayContainer()
 
         // Error / status box
-        errorBox.wantsLayer = true
-        errorBox.layer?.cornerRadius = 6
-        errorBox.layer?.borderWidth = 1
+        errorBox.cornerRadius = 6
+        errorBox.strokeWidth = 1
         errorBox.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.maximumNumberOfLines = 3
         statusLabel.lineBreakMode = .byWordWrapping
@@ -206,7 +188,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         connectButton.keyEquivalent = "\r"
         connectButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
-        let version = Theme.makeLabel("v\(kAppVersion)", size: 11, color: Light.text2)
+        let version = Theme.makeLabel("v\(kAppVersion)", size: 11, color: Theme.textMuted)
         version.alphaValue = 0.6
         version.alignment = .center
 
@@ -234,27 +216,11 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         for field in [addressField, pinField, usernameField, passwordField, relayUrlField, sessionIdField, noteField] {
             field.delegate = self
         }
-        applyLightStyle()
-    }
-
-    /// `Theme` factories build dark controls; recolor everything on this window to the Web light theme.
-    private func applyLightStyle() {
-        card.layer?.borderColor = NSColor(hex: 0xE2E8F0).cgColor
-        bannerDivider.layer?.backgroundColor = Light.border.cgColor
-        for field in [addressField, pinField, usernameField, passwordField, relayUrlField, sessionIdField, noteField] {
-            field.textColor = Light.text
-            field.backgroundColor = Light.bg3
-            field.layer?.backgroundColor = Light.bg3.cgColor
-            field.layer?.borderColor = Light.border.cgColor
-        }
-        for b in [directTab, relayTab, noteButton, forgetButton, noteDoneButton, pinTab, credentialsTab, connectButton] {
-            b.lightPalette = true
-        }
     }
 
     private func buildDirectContainer() {
         // LAN quick-pick pills (hidden when nothing discovered)
-        let lanLabel = Theme.makeLabel("局域网设备 (点击自动填入)", size: 11.5, weight: .medium, color: Light.primary)
+        let lanLabel = Theme.makeLabel("局域网设备 (点击自动填入)", size: 11.5, weight: .medium, color: Theme.accent)
         lanPillsStack.orientation = .horizontal
         lanPillsStack.alignment = .centerY
         lanPillsStack.spacing = 6
@@ -295,11 +261,10 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     private func buildSavedBanner() {
-        savedBanner.wantsLayer = true
-        savedBanner.layer?.backgroundColor = Light.bg3.cgColor
-        savedBanner.layer?.borderColor = Light.primary.cgColor
-        savedBanner.layer?.borderWidth = 1
-        savedBanner.layer?.cornerRadius = 10
+        savedBanner.fillColor = Theme.elevated
+        savedBanner.strokeColor = Theme.accent
+        savedBanner.strokeWidth = 1
+        savedBanner.cornerRadius = 10
         savedBanner.translatesAutoresizingMaskIntoConstraints = false
 
         machineHeader.orientation = .horizontal
@@ -400,7 +365,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     private func labeled(_ text: String, _ field: NSView) -> NSStackView {
-        let label = Theme.makeLabel(text, size: 13, color: Light.text2)
+        let label = Theme.makeLabel(text, size: 13, color: Theme.textMuted)
         field.heightAnchor.constraint(equalToConstant: 34).isActive = true
         return column([label, field], spacing: 6)
     }
@@ -580,7 +545,6 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         for (idx, peer) in peers.prefix(4).enumerated() {
             let btn = Theme.makeButton(title: "📡 \(peer.name)", style: .toolbar, fontSize: 11.5, weight: .medium)
             btn.tag = idx
-            btn.lightPalette = true
             btn.target = self
             btn.action = #selector(lanPeerPillClicked(_:))
             btn.toolTip = "\(peer.name) — \(peer.host):\(peer.wsPort)"

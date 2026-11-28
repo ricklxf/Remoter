@@ -112,7 +112,6 @@ public final class FloatingToolbarPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        appearance = Theme.darkAppearance
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
@@ -786,8 +785,17 @@ public final class FloatingToolbarPanel: NSPanel {
 // MARK: - HoverTrackingView
 
 private final class HoverTrackingView: NSView {
-    private static let backdropColor = NSColor(calibratedRed: 0.08, green: 0.09, blue: 0.12, alpha: 0.88)
-    private static let borderStrokeColor = NSColor.white.withAlphaComponent(0.12)
+    // Web `--ov-bg` / `--ov-border`: translucent white in light, translucent dark in dark.
+    private static let backdropColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.08, green: 0.09, blue: 0.12, alpha: 0.88)
+            : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.92)
+    }
+    private static let borderStrokeColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor.white.withAlphaComponent(0.12)
+            : NSColor.black.withAlphaComponent(0.09)
+    }
 
     var onMouseEntered: (() -> Void)?
     var onMouseExited: (() -> Void)?
@@ -802,7 +810,6 @@ private final class HoverTrackingView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        appearance = Theme.darkAppearance
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         needsDisplay = true

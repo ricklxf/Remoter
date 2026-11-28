@@ -95,7 +95,6 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         )
         let label = params.label ?? (params.mode == .relay ? "Relay" : "\(params.host):\(params.port)")
         window.title = "Remoter — \(label)"
-        window.appearance = Theme.darkAppearance
         window.backgroundColor = Theme.videoBackground
         window.minSize = NSSize(width: 640, height: 420)
         window.collectionBehavior = [.fullScreenPrimary]
@@ -152,8 +151,7 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
 
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = Theme.videoBackground.cgColor
+        window?.backgroundColor = Theme.videoBackground
 
         canvasContainer.translatesAutoresizingMaskIntoConstraints = false
         canvasContainer.inputManager = inputManager
@@ -265,8 +263,8 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func setupImeEcho(in container: NSView) {
-        imeEchoCard.layer?.borderColor = Theme.accent.withAlphaComponent(0.6).cgColor
-        imeEchoCard.layer?.borderWidth = 1
+        imeEchoCard.strokeColor = Theme.accent.withAlphaComponent(0.6)
+        imeEchoCard.strokeWidth = 1
         imeEchoCard.addSubview(imeEchoLabel)
         imeEchoCard.isHidden = true
         container.addSubview(imeEchoCard)
@@ -291,8 +289,8 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
         dropOverlayView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
         dropOverlayView.isHidden = true
 
-        dropOverlayCard.layer?.borderColor = Theme.accent.cgColor
-        dropOverlayCard.layer?.borderWidth = 2
+        dropOverlayCard.strokeColor = Theme.accent
+        dropOverlayCard.strokeWidth = 2
         dropOverlayCard.addSubview(dropOverlayLabel)
         dropOverlayView.addSubview(dropOverlayCard)
         container.addSubview(dropOverlayView)
@@ -1429,7 +1427,9 @@ private final class RemoteCanvasContainerView: NSView {
     private func setDragHighlight(_ highlighted: Bool) {
         guard isDragHighlighted != highlighted else { return }
         isDragHighlighted = highlighted
-        layer?.borderColor = highlighted ? Theme.accent.cgColor : NSColor.clear.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = highlighted ? Theme.accent.cgColor : NSColor.clear.cgColor
+        }
         layer?.borderWidth = highlighted ? 3 : 0
     }
 }

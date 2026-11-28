@@ -263,10 +263,14 @@ public final class FloatingToolbarPanel: NSPanel {
             pillButton.bottomAnchor.constraint(equalTo: rootContainer.bottomAnchor),
 
             barStack.leadingAnchor.constraint(equalTo: rootContainer.leadingAnchor),
-            barStack.trailingAnchor.constraint(equalTo: rootContainer.trailingAnchor),
             barStack.topAnchor.constraint(equalTo: rootContainer.topAnchor),
             barStack.bottomAnchor.constraint(equalTo: rootContainer.bottomAnchor),
         ])
+
+        // 右侧约束降为低优先级：否则折叠时被隐藏的按钮栏仍会把窗口撑到展开宽度。
+        let barTrailing = barStack.trailingAnchor.constraint(equalTo: rootContainer.trailingAnchor)
+        barTrailing.priority = .defaultLow
+        barTrailing.isActive = true
 
         rebuildQualityMenu()
         rebuildPowerMenu()

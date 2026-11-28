@@ -392,15 +392,14 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         credentialsTab.buttonStyle = isCredentials ? .toolbarActive : .toolbar
         directContainer.isHidden = isRelay
         relayContainer.isHidden = !isRelay
-        pinSection.isHidden = isCredentials
-        credentialsSection.isHidden = !isCredentials
+        updateAuthVisibility()
         refreshBanner()
         fitWindow()
     }
 
     private func refreshBanner() {
         savedBanner.isHidden = devices.isEmpty
-        rememberCheckbox.isHidden = usesStoredToken
+        updateAuthVisibility()
 
         accountPopup.removeAllItems()
         for d in devices {
@@ -427,6 +426,22 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
 
         accountRow.isHidden = isEditingNote
         noteRow.isHidden = !isEditingNote
+    }
+
+    /// A saved account that can log in without typing anything (stored token, or stored PIN): the
+    /// credential fields are only needed for "+ 使用其他账户…" (web: selecting a saved account hides them).
+    private var savedLoginReady: Bool {
+        guard let device = selectedDevice else { return false }
+        if isCredentials { return !(device.token ?? "").isEmpty }
+        return !(device.pin ?? "").isEmpty
+    }
+
+    private func updateAuthVisibility() {
+        let hide = savedLoginReady
+        authTabsRow.isHidden = hide
+        pinSection.isHidden = hide || isCredentials
+        credentialsSection.isHidden = hide || !isCredentials
+        rememberCheckbox.isHidden = hide || usesStoredToken
     }
 
     /// A saved device with a stored token connects without typing a password (web "token" auth).
@@ -644,7 +659,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
             }
         }
         // Token login always keeps the device (web: rememberDevice = true for saved accounts).
-        let remember = (authMode == .token) || rememberCheckbox.state == .on
+        let remember = savedLoginReady || (authMode == .token) || rememberCheckbox.state == .on
 
         let params = ConnectParams(
             mode: .direct,
@@ -707,7 +722,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
             let upper = String(field.stringValue.uppercased().prefix(6))
             if upper != field.stringValue { field.stringValue = upper }
         } else if field === passwordField {
-            rememberCheckbox.isHidden = usesStoredToken
+            updateAuthVisibility()
             fitWindow()
         }
     }

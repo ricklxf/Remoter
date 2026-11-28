@@ -1,59 +1,82 @@
 import AppKit
 
-/// Native dark macOS Connect window (`780x540`).
-/// Left pane: Saved Devices (`DeviceStore.shared`) with OS icon, double-click quick connect, and delete.
-/// Right pane: Direct vs Relay mode switch, Direct (Host/Port/TLS/PIN or Credentials/Remember) & Relay fields, Connect button, status/error label.
-public final class ConnectWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+/// Native macOS Connect window — a single centered card mirroring the Web / Windows login page:
+/// bee logo + "Remoter" + subtitle, direct/relay tabs, one address field (`wss://host:port`),
+/// saved-account banner (machine name + model badge, account picker, 备注 / 忘记),
+/// PIN / 账户密码 tabs, 记住登录状态, red error box, 连接 button and version.
+public final class ConnectWindowController: NSWindowController, NSTextFieldDelegate {
     public var onConnectRequested: ((ConnectParams) -> Void)?
 
-    // Saved devices state
+    private static let cardWidth: CGFloat = 420
+    private static let padX: CGFloat = 34
+    private static let outerX: CGFloat = 28
+    private static let outerY: CGFloat = 24
+    private static let otherAccountTitle = "+ 使用其他账户…"
+
+    // State
     private var devices: [SavedDevice] = []
-    private let devicesTableView = NSTableView()
-    private let emptyDevicesLabel = Theme.makeLabel("暂无已保存设备", size: 12.5, color: Theme.textMuted)
-    private let quickConnectButton = Theme.makeButton(title: "快速连接", style: .secondary, fontSize: 12)
-    private let deleteDeviceButton = Theme.makeButton(title: "删除", style: .danger, fontSize: 12)
+    private var selectedDevice: SavedDevice?
+    private var isRelay = false
+    private var isCredentials = false
+    private var isEditingNote = false
 
-    // Mode switch
-    private let modeSegmented = NSSegmentedControl(labels: ["直连 (Direct)", "中继 (Relay)"], trackingMode: .selectOne, target: nil, action: nil)
+    private let card = Theme.makeCard(background: Theme.surface, cornerRadius: 16)
 
-    // Direct mode fields
-    private let directContainer = NSView()
-    private let hostField = Theme.makeTextField(placeholder: "192.168.1.100 或主机名")
-    private let portField = Theme.makeTextField(placeholder: "7788", text: "7788")
-    private let tlsCheckbox = Theme.makeCheckbox(title: "启用 TLS 加密 (wss://)", checked: true)
-    private let authSegmented = NSSegmentedControl(labels: ["PIN 码", "账号密码"], trackingMode: .selectOne, target: nil, action: nil)
-    private let usernameLabel = Theme.makeLabel("用户名", size: 12, weight: .medium, color: Theme.textMuted)
-    private let usernameField = Theme.makeTextField(placeholder: "系统用户名")
-    private let secretLabel = Theme.makeLabel("PIN 码", size: 12, weight: .medium, color: Theme.textMuted)
-    private let secretField = Theme.makeTextField(placeholder: "输入访问 PIN 码", secure: true)
-    private let rememberCheckbox = Theme.makeCheckbox(title: "记住此设备（保存至本地列表）", checked: true)
+    // Mode tabs
+    private let directTab = Theme.makeButton(title: "🔌 直连 (局域网)", style: .primary, fontSize: 13)
+    private let relayTab = Theme.makeButton(title: "🌐 中继 (公网)", style: .secondary, fontSize: 13)
 
-    // Relay mode fields
-    private let relayContainer = NSView()
-    private let relayUrlField = Theme.makeTextField(placeholder: "ws://relay.example.com:7789", text: "ws://127.0.0.1:7789")
-    private let sessionIdField = Theme.makeTextField(placeholder: "输入会话 ID")
-    private let relayPinField = Theme.makeTextField(placeholder: "输入 PIN 码", secure: true)
-
-    // Action & status
-    private let connectButton = Theme.makeButton(title: "连  接", style: .primary, fontSize: 14, weight: .semibold)
-    private let statusLabel = Theme.makeLabel("", size: 12, color: Theme.textMuted)
-
-    // LAN mDNS auto-discovery quick-pick pills
-    private let lanBrowser = LanDiscoveryBrowser()
-    private var lanPeers: [DiscoveredLanPeer] = []
+    // Direct
+    private let directContainer = NSStackView()
+    private let addressField = Theme.makeTextField(placeholder: "wss://192.168.1.100:7788")
     private let lanSection = NSStackView()
     private let lanPillsStack = NSStackView()
+    private var lanPeers: [DiscoveredLanPeer] = []
+    private let lanBrowser = LanDiscoveryBrowser()
 
-    private var selectedDevice: SavedDevice?
+    // Saved-account banner
+    private let savedBanner = NSView()
+    private let machineHeader = NSStackView()
+    private let machineNameLabel = Theme.makeLabel("", size: 15, weight: .bold, color: Theme.textPrimary)
+    private let modelBadge = Theme.makeBadge(text: "", background: Theme.background, foreground: Theme.textMuted)
+    private let bannerDivider = Theme.makeSeparator()
+    private let accountRow = NSStackView()
+    private let accountPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let noteButton = Theme.makeButton(title: "备注", style: .toolbar, fontSize: 12)
+    private let forgetButton = Theme.makeButton(title: "忘记", style: .toolbar, fontSize: 12)
+    private let noteRow = NSStackView()
+    private let noteField = Theme.makeTextField(placeholder: "输入备注名称…")
+    private let noteDoneButton = Theme.makeButton(title: "完成", style: .toolbar, fontSize: 12)
+
+    // Auth
+    private let authTabsRow = NSStackView()
+    private let pinTab = Theme.makeButton(title: "PIN 码", style: .toolbarActive, fontSize: 12)
+    private let credentialsTab = Theme.makeButton(title: "账户密码", style: .toolbar, fontSize: 12)
+    private let pinField = Theme.makeTextField(placeholder: "输入 6 位 PIN", secure: true)
+    private let usernameField = Theme.makeTextField(placeholder: "Windows / macOS 账户名")
+    private let passwordField = Theme.makeTextField(placeholder: "账户密码", secure: true)
+    private var pinSection = NSStackView()
+    private var credentialsSection = NSStackView()
+    private let rememberCheckbox = Theme.makeCheckbox(title: "记住登录状态", checked: false)
+
+    // Relay
+    private let relayContainer = NSStackView()
+    private let relayUrlField = Theme.makeTextField(placeholder: "wss://your-relay:7789")
+    private let sessionIdField = Theme.makeTextField(placeholder: "A1B2C3")
+
+    // Footer
+    private let errorBox = NSView()
+    private let statusLabel = Theme.makeLabel("", size: 13, color: Theme.textMuted)
+    private let connectButton = Theme.makeButton(title: "连接", style: .primary, fontSize: 15, weight: .semibold)
 
     public init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: Self.cardWidth + Self.outerX * 2, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Remoter Client v\(kAppVersion)"
+        window.title = "Remoter v\(kAppVersion)"
         window.appearance = Theme.darkAppearance
         window.backgroundColor = Theme.background
         window.titlebarAppearsTransparent = true
@@ -62,10 +85,12 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
         super.init(window: window)
         buildUI()
         reloadDevices()
+        if let latest = devices.max(by: { $0.lastConnectedAt < $1.lastConnectedAt }) {
+            selectDevice(latest)
+        }
+        refreshAll()
         lanBrowser.onPeersChanged = { [weak self] peers in
-            DispatchQueue.main.async {
-                self?.updateLanPeers(peers)
-            }
+            DispatchQueue.main.async { self?.updateLanPeers(peers) }
         }
         lanBrowser.start()
     }
@@ -83,19 +108,20 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
 
     public func reloadDevices() {
         devices = DeviceStore.shared.getDevices()
-        devicesTableView.reloadData()
-        emptyDevicesLabel.isHidden = !devices.isEmpty
-        if let selected = selectedDevice, let idx = devices.firstIndex(where: { $0.id == selected.id }) {
-            devicesTableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-        } else {
-            selectedDevice = nil
-            updateDeviceActionButtons()
+        if let selected = selectedDevice {
+            selectedDevice = devices.first(where: { $0.id == selected.id })
         }
+        refreshBanner()
+        fitWindow()
     }
 
     public func setStatus(_ message: String, isError: Bool = false) {
         statusLabel.stringValue = message
         statusLabel.textColor = isError ? Theme.danger : Theme.textMuted
+        errorBox.isHidden = message.isEmpty
+        errorBox.layer?.backgroundColor = (isError ? Theme.danger.withAlphaComponent(0.12) : NSColor.clear).cgColor
+        errorBox.layer?.borderColor = (isError ? Theme.danger.withAlphaComponent(0.45) : NSColor.clear).cgColor
+        fitWindow()
     }
 
     public func showAndFocus(errorMessage: String? = nil) {
@@ -116,228 +142,93 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = Theme.background.cgColor
 
-        let leftCard = buildLeftPane()
-        let rightCard = buildRightPane()
+        // Logo + title
+        let logo = NSImageView()
+        logo.image = NSApp.applicationIconImage
+        logo.imageScaling = .scaleProportionallyUpOrDown
+        logo.translatesAutoresizingMaskIntoConstraints = false
+        logo.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        logo.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let title = Theme.makeLabel("Remoter", size: 28, weight: .bold, color: Theme.textPrimary)
+        let logoRow = NSStackView(views: [logo, title])
+        logoRow.orientation = .horizontal
+        logoRow.spacing = 12
+        logoRow.alignment = .centerY
+        logoRow.translatesAutoresizingMaskIntoConstraints = false
 
-        contentView.addSubview(leftCard)
-        contentView.addSubview(rightCard)
+        let subtitle = Theme.makeLabel("远程控制 · 超清 2K · 60fps", size: 13, color: Theme.textMuted)
 
-        NSLayoutConstraint.activate([
-            leftCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            leftCard.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 18),
-            leftCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
-            leftCard.widthAnchor.constraint(equalToConstant: 290),
-
-            rightCard.leadingAnchor.constraint(equalTo: leftCard.trailingAnchor, constant: 16),
-            rightCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            rightCard.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 18),
-            rightCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
-        ])
-
-        updateModeVisibility()
-        updateAuthVisibility()
-        updateDeviceActionButtons()
-    }
-
-    private func buildLeftPane() -> NSView {
-        let card = Theme.makeCard(background: Theme.surface, cornerRadius: 12)
-
-        let headerTitle = Theme.makeLabel("已保存设备", size: 15, weight: .semibold, color: Theme.textPrimary)
-        let headerSub = Theme.makeLabel("双击设备快速连接", size: 11.5, color: Theme.textMuted)
-
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("DeviceColumn"))
-        column.resizingMask = .autoresizingMask
-        devicesTableView.addTableColumn(column)
-        devicesTableView.headerView = nil
-        devicesTableView.backgroundColor = .clear
-        devicesTableView.rowHeight = 56
-        devicesTableView.intercellSpacing = NSSize(width: 0, height: 4)
-        devicesTableView.selectionHighlightStyle = .regular
-        devicesTableView.dataSource = self
-        devicesTableView.delegate = self
-        devicesTableView.target = self
-        devicesTableView.doubleAction = #selector(handleDeviceDoubleClick)
-
-        let scrollView = NSScrollView()
-        scrollView.documentView = devicesTableView
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.borderType = .noBorder
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-
-        emptyDevicesLabel.alignment = .center
-
-        quickConnectButton.target = self
-        quickConnectButton.action = #selector(handleQuickConnect)
-        deleteDeviceButton.target = self
-        deleteDeviceButton.action = #selector(handleDeleteDevice)
-
-        let footerStack = NSStackView(views: [quickConnectButton, deleteDeviceButton])
-        footerStack.orientation = .horizontal
-        footerStack.spacing = 8
-        footerStack.distribution = .fill
-        footerStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let sep = Theme.makeSeparator(vertical: false)
-
-        card.addSubview(headerTitle)
-        card.addSubview(headerSub)
-        card.addSubview(sep)
-        card.addSubview(scrollView)
-        card.addSubview(emptyDevicesLabel)
-        card.addSubview(footerStack)
-
-        NSLayoutConstraint.activate([
-            headerTitle.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            headerTitle.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
-            headerTitle.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-
-            headerSub.leadingAnchor.constraint(equalTo: headerTitle.leadingAnchor),
-            headerSub.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 2),
-            headerSub.trailingAnchor.constraint(equalTo: headerTitle.trailingAnchor),
-
-            sep.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            sep.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            sep.topAnchor.constraint(equalTo: headerSub.bottomAnchor, constant: 10),
-
-            scrollView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
-            scrollView.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
-            scrollView.topAnchor.constraint(equalTo: sep.bottomAnchor, constant: 8),
-            scrollView.bottomAnchor.constraint(equalTo: footerStack.topAnchor, constant: -10),
-
-            emptyDevicesLabel.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            emptyDevicesLabel.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
-
-            footerStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            footerStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            footerStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            quickConnectButton.heightAnchor.constraint(equalToConstant: 30),
-            deleteDeviceButton.heightAnchor.constraint(equalToConstant: 30),
-            deleteDeviceButton.widthAnchor.constraint(equalToConstant: 68),
-        ])
-
-        return card
-    }
-
-    private func buildRightPane() -> NSView {
-        let card = Theme.makeCard(background: Theme.surface, cornerRadius: 12)
-
-        let titleLabel = Theme.makeLabel("Remoter", size: 22, weight: .bold, color: Theme.textPrimary)
-        let subtitleLabel = Theme.makeLabel("Native Metal & VideoToolbox Remote Desktop", size: 12, weight: .medium, color: Theme.accent)
-        let versionBadge = Theme.makeBadge(text: "v\(kAppVersion)", background: Theme.elevated, foreground: Theme.textMuted)
-
-        modeSegmented.selectedSegment = 0
-        modeSegmented.segmentStyle = .rounded
-        modeSegmented.target = self
-        modeSegmented.action = #selector(modeChanged)
-        modeSegmented.translatesAutoresizingMaskIntoConstraints = false
+        // Mode tabs
+        directTab.target = self
+        directTab.action = #selector(modeTabClicked(_:))
+        relayTab.target = self
+        relayTab.action = #selector(modeTabClicked(_:))
+        let modeRow = row([directTab, relayTab], spacing: 8, equal: true)
+        directTab.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        relayTab.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
         buildDirectContainer()
         buildRelayContainer()
 
+        // Error / status box
+        errorBox.wantsLayer = true
+        errorBox.layer?.cornerRadius = 6
+        errorBox.layer?.borderWidth = 1
+        errorBox.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.maximumNumberOfLines = 3
+        statusLabel.lineBreakMode = .byWordWrapping
+        statusLabel.preferredMaxLayoutWidth = Self.cardWidth - Self.padX * 2 - 24
+        errorBox.addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            statusLabel.leadingAnchor.constraint(equalTo: errorBox.leadingAnchor, constant: 12),
+            statusLabel.trailingAnchor.constraint(equalTo: errorBox.trailingAnchor, constant: -12),
+            statusLabel.topAnchor.constraint(equalTo: errorBox.topAnchor, constant: 8),
+            statusLabel.bottomAnchor.constraint(equalTo: errorBox.bottomAnchor, constant: -8),
+        ])
+        errorBox.isHidden = true
+
         connectButton.target = self
         connectButton.action = #selector(handleConnect)
+        connectButton.keyEquivalent = "\r"
+        connectButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
-        statusLabel.maximumNumberOfLines = 2
-        statusLabel.lineBreakMode = .byWordWrapping
+        let version = Theme.makeLabel("v\(kAppVersion)", size: 11, color: Theme.textMuted)
+        version.alphaValue = 0.6
+        version.alignment = .center
 
-        card.addSubview(titleLabel)
-        card.addSubview(versionBadge)
-        card.addSubview(subtitleLabel)
-        card.addSubview(modeSegmented)
-        card.addSubview(directContainer)
-        card.addSubview(relayContainer)
-        card.addSubview(connectButton)
-        card.addSubview(statusLabel)
+        let root = column(
+            [logoRow, subtitle, modeRow, directContainer, relayContainer, errorBox, connectButton, version],
+            spacing: 14
+        )
+        root.setCustomSpacing(4, after: logoRow)
+        root.setCustomSpacing(12, after: subtitle)
+        root.setCustomSpacing(8, after: connectButton)
 
+        card.addSubview(root)
+        contentView.addSubview(card)
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
+            root.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: Self.padX),
+            root.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -Self.padX),
+            root.topAnchor.constraint(equalTo: card.topAnchor, constant: 28),
+            root.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
 
-            versionBadge.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 10),
-            versionBadge.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-
-            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
-
-            modeSegmented.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            modeSegmented.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
-            modeSegmented.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 16),
-
-            directContainer.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            directContainer.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
-            directContainer.topAnchor.constraint(equalTo: modeSegmented.bottomAnchor, constant: 16),
-            directContainer.bottomAnchor.constraint(equalTo: connectButton.topAnchor, constant: -14),
-
-            relayContainer.leadingAnchor.constraint(equalTo: directContainer.leadingAnchor),
-            relayContainer.trailingAnchor.constraint(equalTo: directContainer.trailingAnchor),
-            relayContainer.topAnchor.constraint(equalTo: directContainer.topAnchor),
-            relayContainer.bottomAnchor.constraint(equalTo: directContainer.bottomAnchor),
-
-            connectButton.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            connectButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
-            connectButton.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -10),
-            connectButton.heightAnchor.constraint(equalToConstant: 40),
-
-            statusLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            statusLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
-            statusLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
-            statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
+            card.widthAnchor.constraint(equalToConstant: Self.cardWidth),
+            card.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.outerY),
         ])
 
-        for field in [hostField, portField, usernameField, secretField, relayUrlField, sessionIdField, relayPinField] {
+        for field in [addressField, pinField, usernameField, passwordField, relayUrlField, sessionIdField, noteField] {
             field.delegate = self
         }
-
-        return card
     }
 
     private func buildDirectContainer() {
-        directContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        let hostLabel = Theme.makeLabel("主机 / IP 地址", size: 12, weight: .medium, color: Theme.textMuted)
-        let portLabel = Theme.makeLabel("端口", size: 12, weight: .medium, color: Theme.textMuted)
-        let authLabel = Theme.makeLabel("认证方式", size: 12, weight: .medium, color: Theme.textMuted)
-
-        authSegmented.selectedSegment = 0
-        authSegmented.segmentStyle = .rounded
-        authSegmented.target = self
-        authSegmented.action = #selector(authModeChanged)
-        authSegmented.translatesAutoresizingMaskIntoConstraints = false
-
-        let hostCol = makeVerticalField(label: hostLabel, field: hostField)
-        let portCol = makeVerticalField(label: portLabel, field: portField)
-        portCol.widthAnchor.constraint(equalToConstant: 96).isActive = true
-
-        let hostPortRow = NSStackView(views: [hostCol, portCol])
-        hostPortRow.orientation = .horizontal
-        hostPortRow.spacing = 10
-        hostPortRow.alignment = .top
-        hostPortRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let authRow = NSStackView(views: [authSegmented, tlsCheckbox])
-        authRow.orientation = .horizontal
-        authRow.spacing = 14
-        authRow.alignment = .centerY
-        authRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let authSection = NSStackView(views: [authLabel, authRow])
-        authSection.orientation = .vertical
-        authSection.alignment = .leading
-        authSection.spacing = 5
-        authSection.translatesAutoresizingMaskIntoConstraints = false
-
-        let userSection = makeVerticalField(label: usernameLabel, field: usernameField)
-        let secretSection = makeVerticalField(label: secretLabel, field: secretField)
-
-        // Compact "局域网设备" quick-pick pill list (hidden when no LAN peers discovered)
+        // LAN quick-pick pills (hidden when nothing discovered)
         let lanLabel = Theme.makeLabel("局域网设备 (点击自动填入)", size: 11.5, weight: .medium, color: Theme.accent)
         lanPillsStack.orientation = .horizontal
         lanPillsStack.alignment = .centerY
         lanPillsStack.spacing = 6
         lanPillsStack.translatesAutoresizingMaskIntoConstraints = false
-
         lanSection.orientation = .vertical
         lanSection.alignment = .leading
         lanSection.spacing = 4
@@ -346,36 +237,316 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
         lanSection.addArrangedSubview(lanPillsStack)
         lanSection.isHidden = true
 
-        let mainStack = NSStackView(views: [lanSection, hostPortRow, authSection, userSection, secretSection, rememberCheckbox])
-        mainStack.orientation = .vertical
-        mainStack.alignment = .leading
-        mainStack.spacing = 10
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
+        buildSavedBanner()
 
-        directContainer.addSubview(mainStack)
-        NSLayoutConstraint.activate([
-            mainStack.leadingAnchor.constraint(equalTo: directContainer.leadingAnchor),
-            mainStack.trailingAnchor.constraint(equalTo: directContainer.trailingAnchor),
-            mainStack.topAnchor.constraint(equalTo: directContainer.topAnchor),
+        authTabsRow.orientation = .horizontal
+        authTabsRow.distribution = .fillEqually
+        authTabsRow.spacing = 6
+        authTabsRow.translatesAutoresizingMaskIntoConstraints = false
+        for tab in [pinTab, credentialsTab] {
+            tab.target = self
+            tab.action = #selector(authTabClicked(_:))
+            tab.heightAnchor.constraint(equalToConstant: 30).isActive = true
+            authTabsRow.addArrangedSubview(tab)
+        }
 
-            lanSection.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
-            hostPortRow.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
-            userSection.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
-            secretSection.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
-        ])
+        pinSection = labeled("PIN 码", pinField)
+        credentialsSection = column([labeled("用户名", usernameField), labeled("密码", passwordField)], spacing: 14)
+
+        rememberCheckbox.font = Theme.font(size: 13)
+
+        let stack = column(
+            [labeled("被控端地址", addressField), lanSection, savedBanner, authTabsRow,
+             pinSection, credentialsSection, rememberCheckbox],
+            spacing: 14,
+            into: directContainer
+        )
+        _ = stack
     }
 
+    private func buildSavedBanner() {
+        savedBanner.wantsLayer = true
+        savedBanner.layer?.backgroundColor = Theme.elevated.cgColor
+        savedBanner.layer?.borderColor = Theme.accent.cgColor
+        savedBanner.layer?.borderWidth = 1
+        savedBanner.layer?.cornerRadius = 10
+        savedBanner.translatesAutoresizingMaskIntoConstraints = false
+
+        machineHeader.orientation = .horizontal
+        machineHeader.spacing = 8
+        machineHeader.alignment = .centerY
+        machineHeader.translatesAutoresizingMaskIntoConstraints = false
+        machineNameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        machineHeader.addArrangedSubview(machineNameLabel)
+        machineHeader.addArrangedSubview(modelBadge)
+
+        let icon = Theme.makeLabel("👤", size: 18)
+        accountPopup.isBordered = false
+        accountPopup.font = Theme.font(size: 13, weight: .semibold)
+        accountPopup.target = self
+        accountPopup.action = #selector(accountPopupChanged)
+        accountPopup.translatesAutoresizingMaskIntoConstraints = false
+        accountPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        noteButton.target = self
+        noteButton.action = #selector(startEditNote)
+        forgetButton.target = self
+        forgetButton.action = #selector(forgetAccount)
+        for b in [noteButton, forgetButton] {
+            b.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            b.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        }
+        accountRow.orientation = .horizontal
+        accountRow.spacing = 8
+        accountRow.alignment = .centerY
+        accountRow.translatesAutoresizingMaskIntoConstraints = false
+        for v in [icon, accountPopup, noteButton, forgetButton] { accountRow.addArrangedSubview(v) }
+
+        noteDoneButton.target = self
+        noteDoneButton.action = #selector(finishEditNote)
+        noteDoneButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        noteDoneButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        noteField.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        noteRow.orientation = .horizontal
+        noteRow.spacing = 8
+        noteRow.alignment = .centerY
+        noteRow.translatesAutoresizingMaskIntoConstraints = false
+        noteRow.addArrangedSubview(noteField)
+        noteRow.addArrangedSubview(noteDoneButton)
+        noteRow.isHidden = true
+
+        let inner = NSStackView(views: [machineHeader, bannerDivider, accountRow, noteRow])
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 6
+        inner.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        savedBanner.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: savedBanner.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: savedBanner.trailingAnchor),
+            inner.topAnchor.constraint(equalTo: savedBanner.topAnchor),
+            inner.bottomAnchor.constraint(equalTo: savedBanner.bottomAnchor),
+            machineHeader.widthAnchor.constraint(equalTo: inner.widthAnchor, constant: -24),
+            bannerDivider.widthAnchor.constraint(equalTo: inner.widthAnchor, constant: -24),
+            accountRow.widthAnchor.constraint(equalTo: inner.widthAnchor, constant: -24),
+            noteRow.widthAnchor.constraint(equalTo: inner.widthAnchor, constant: -24),
+        ])
+        savedBanner.isHidden = true
+    }
+
+    private func buildRelayContainer() {
+        sessionIdField.placeholderString = "A1B2C3"
+        _ = column(
+            [labeled("中继服务器地址", relayUrlField), labeled("会话 ID", sessionIdField)],
+            spacing: 14,
+            into: relayContainer
+        )
+    }
+
+    // MARK: - Layout helpers
+
+    /// Vertical stack whose children are all as wide as the stack itself.
+    @discardableResult
+    private func column(_ views: [NSView], spacing: CGFloat, into existing: NSStackView? = nil) -> NSStackView {
+        let stack = existing ?? NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = spacing
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        for v in views {
+            stack.addArrangedSubview(v)
+            v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return stack
+    }
+
+    private func row(_ views: [NSView], spacing: CGFloat, equal: Bool) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.spacing = spacing
+        if equal { stack.distribution = .fillEqually }
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
+    private func labeled(_ text: String, _ field: NSView) -> NSStackView {
+        let label = Theme.makeLabel(text, size: 13, color: Theme.textMuted)
+        field.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        return column([label, field], spacing: 6)
+    }
+
+    /// Resize the window to the card's natural height, keeping the top edge where it is.
+    private func fitWindow() {
+        guard let window, let content = window.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        let contentSize = NSSize(width: Self.cardWidth + Self.outerX * 2,
+                                 height: card.fittingSize.height + Self.outerY * 2)
+        let target = window.frameRect(forContentRect: NSRect(origin: .zero, size: contentSize))
+        var frame = window.frame
+        frame.origin.y += frame.height - target.height
+        frame.size = target.size
+        window.setFrame(frame, display: true, animate: false)
+    }
+
+    // MARK: - State refresh
+
+    private func refreshAll() {
+        directTab.buttonStyle = isRelay ? .secondary : .primary
+        relayTab.buttonStyle = isRelay ? .primary : .secondary
+        pinTab.buttonStyle = isCredentials ? .toolbar : .toolbarActive
+        credentialsTab.buttonStyle = isCredentials ? .toolbarActive : .toolbar
+        directContainer.isHidden = isRelay
+        relayContainer.isHidden = !isRelay
+        pinSection.isHidden = isCredentials
+        credentialsSection.isHidden = !isCredentials
+        refreshBanner()
+        fitWindow()
+    }
+
+    private func refreshBanner() {
+        savedBanner.isHidden = devices.isEmpty
+        rememberCheckbox.isHidden = usesStoredToken
+
+        accountPopup.removeAllItems()
+        for d in devices {
+            accountPopup.addItem(withTitle: "\(d.displayName) (\(d.host))")
+        }
+        accountPopup.addItem(withTitle: Self.otherAccountTitle)
+        if let selected = selectedDevice, let idx = devices.firstIndex(where: { $0.id == selected.id }) {
+            accountPopup.selectItem(at: idx)
+        } else {
+            accountPopup.selectItem(at: devices.count)
+        }
+
+        let hasSelection = selectedDevice != nil
+        for b in [noteButton, forgetButton] { b.isEnabled = hasSelection }
+
+        let comp = selectedDevice?.computerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = selectedDevice?.modelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let showInfo = hasSelection && (!comp.isEmpty || !model.isEmpty)
+        machineNameLabel.stringValue = comp
+        modelBadge.text = model
+        modelBadge.isHidden = model.isEmpty
+        machineHeader.isHidden = !showInfo
+        bannerDivider.isHidden = !showInfo
+
+        accountRow.isHidden = isEditingNote
+        noteRow.isHidden = !isEditingNote
+    }
+
+    /// A saved device with a stored token connects without typing a password (web "token" auth).
+    private var usesStoredToken: Bool {
+        guard isCredentials, let token = selectedDevice?.token, !token.isEmpty else { return false }
+        return passwordField.stringValue.isEmpty
+    }
+
+    // MARK: - Address helpers
+
+    private func formatAddress(_ device: SavedDevice) -> String {
+        "\(device.useTls ? "wss" : "ws")://\(device.host):\(device.port)"
+    }
+
+    /// Accepts `wss://host:port`, `ws://host:port`, `https://…`, `http://…` or a bare `host[:port]` (→ wss, 7788).
+    private func parseAddress(_ raw: String) -> (host: String, port: Int, tls: Bool)? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        var tls = true
+        if let r = s.range(of: "://") {
+            switch s[..<r.lowerBound].lowercased() {
+            case "wss", "https": tls = true
+            case "ws", "http": tls = false
+            default: return nil
+            }
+            s = String(s[r.upperBound...])
+        }
+        if let slash = s.firstIndex(of: "/") { s = String(s[..<slash]) }
+        var host = s
+        var port = 7788
+        if let colon = s.lastIndex(of: ":") {
+            host = String(s[..<colon])
+            guard let p = Int(s[s.index(after: colon)...]), (1...65535).contains(p) else { return nil }
+            port = p
+        }
+        guard !host.isEmpty else { return nil }
+        return (host, port, tls)
+    }
+
+    // MARK: - Selecting / editing saved devices
+
+    private func selectDevice(_ device: SavedDevice) {
+        selectedDevice = device
+        isEditingNote = false
+        addressField.stringValue = formatAddress(device)
+        if device.authMode == .credentials || device.authMode == .token {
+            isCredentials = true
+            usernameField.stringValue = device.username ?? ""
+            passwordField.stringValue = ""
+            pinField.stringValue = ""
+        } else {
+            isCredentials = false
+            pinField.stringValue = device.pin ?? ""
+        }
+    }
+
+    @objc private func accountPopupChanged() {
+        let idx = accountPopup.indexOfSelectedItem
+        setStatus("")
+        if idx >= 0, idx < devices.count {
+            selectDevice(devices[idx])
+        } else {
+            selectedDevice = nil
+            isEditingNote = false
+            isCredentials = false
+            pinField.stringValue = ""
+            passwordField.stringValue = ""
+        }
+        refreshAll()
+    }
+
+    @objc private func startEditNote() {
+        guard let device = selectedDevice else { return }
+        noteField.stringValue = device.name
+        isEditingNote = true
+        refreshBanner()
+        fitWindow()
+        window?.makeFirstResponder(noteField)
+    }
+
+    @objc private func finishEditNote() {
+        guard isEditingNote else { return }
+        isEditingNote = false
+        if var device = selectedDevice {
+            let name = noteField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                device.name = name
+                DeviceStore.shared.upsertDevice(device)
+                selectedDevice = device
+            }
+        }
+        reloadDevices()
+    }
+
+    @objc private func forgetAccount() {
+        guard let device = selectedDevice else { return }
+        DeviceStore.shared.removeDevice(id: device.id)
+        selectedDevice = nil
+        isCredentials = false
+        pinField.stringValue = ""
+        passwordField.stringValue = ""
+        reloadDevices()
+        refreshAll()
+        setStatus("已忘记 \(device.displayName)")
+    }
+
+    // MARK: - LAN discovery
+
     private func updateLanPeers(_ peers: [DiscoveredLanPeer]) {
-        self.lanPeers = peers
+        lanPeers = peers
         for view in lanPillsStack.arrangedSubviews {
             lanPillsStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        guard !peers.isEmpty else {
-            lanSection.isHidden = true
-            return
-        }
-        lanSection.isHidden = false
+        lanSection.isHidden = peers.isEmpty
         for (idx, peer) in peers.prefix(4).enumerated() {
             let btn = Theme.makeButton(title: "📡 \(peer.name)", style: .toolbar, fontSize: 11.5, weight: .medium)
             btn.tag = idx
@@ -385,114 +556,57 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
             btn.heightAnchor.constraint(equalToConstant: 24).isActive = true
             lanPillsStack.addArrangedSubview(btn)
         }
+        fitWindow()
     }
 
     @objc private func lanPeerPillClicked(_ sender: NSButton) {
-        let idx = sender.tag
-        guard idx >= 0 && idx < lanPeers.count else { return }
-        let peer = lanPeers[idx]
-        modeSegmented.selectedSegment = 0
-        updateModeVisibility()
-        hostField.stringValue = peer.host
-        portField.stringValue = "\(peer.wsPort)"
+        guard sender.tag >= 0, sender.tag < lanPeers.count else { return }
+        let peer = lanPeers[sender.tag]
+        isRelay = false
+        selectedDevice = nil
+        addressField.stringValue = "wss://\(peer.host):\(peer.wsPort)"
+        refreshAll()
         setStatus("已填入局域网设备: \(peer.name) (\(peer.host):\(peer.wsPort))")
-        window?.makeFirstResponder(secretField)
+        window?.makeFirstResponder(isCredentials ? passwordField : pinField)
     }
 
-    private func buildRelayContainer() {
-        relayContainer.translatesAutoresizingMaskIntoConstraints = false
+    // MARK: - Tabs
 
-        let relayUrlLabel = Theme.makeLabel("中继服务器地址 (Relay URL)", size: 12, weight: .medium, color: Theme.textMuted)
-        let sessionLabel = Theme.makeLabel("会话 ID (Session ID)", size: 12, weight: .medium, color: Theme.textMuted)
-        let pinLabel = Theme.makeLabel("PIN 码", size: 12, weight: .medium, color: Theme.textMuted)
-
-        let urlSection = makeVerticalField(label: relayUrlLabel, field: relayUrlField)
-        let sidSection = makeVerticalField(label: sessionLabel, field: sessionIdField)
-        let pinSection = makeVerticalField(label: pinLabel, field: relayPinField)
-
-        let stack = NSStackView(views: [urlSection, sidSection, pinSection])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        relayContainer.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: relayContainer.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: relayContainer.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: relayContainer.topAnchor),
-
-            urlSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            sidSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            pinSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-    }
-
-    private func makeVerticalField(label: NSTextField, field: NSTextField) -> NSStackView {
-        field.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        let stack = NSStackView(views: [label, field])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return stack
-    }
-
-    // MARK: - Actions & State
-
-    @objc private func modeChanged() {
-        updateModeVisibility()
+    @objc private func modeTabClicked(_ sender: NSButton) {
+        isRelay = (sender === relayTab)
         setStatus("")
+        refreshAll()
     }
 
-    @objc private func authModeChanged() {
-        updateAuthVisibility()
+    @objc private func authTabClicked(_ sender: NSButton) {
+        isCredentials = (sender === credentialsTab)
+        // Picking a tab by hand means "not the stored-token login of the selected account".
+        if !isCredentials { selectedDevice = nil }
         setStatus("")
+        refreshAll()
     }
 
-    private func updateModeVisibility() {
-        let isRelay = modeSegmented.selectedSegment == 1
-        directContainer.isHidden = isRelay
-        relayContainer.isHidden = !isRelay
-    }
-
-    private func updateAuthVisibility() {
-        let isCredentials = authSegmented.selectedSegment == 1
-        usernameLabel.superview?.isHidden = !isCredentials
-        secretLabel.stringValue = isCredentials ? "密码" : "PIN 码"
-        secretField.placeholderString = isCredentials ? "输入系统登录密码" : "输入访问 PIN 码"
-    }
-
-    private func updateDeviceActionButtons() {
-        let hasSelection = selectedDevice != nil
-        quickConnectButton.isEnabled = hasSelection
-        deleteDeviceButton.isEnabled = hasSelection
-    }
+    // MARK: - Connect
 
     @objc private func handleConnect() {
         setStatus("")
-        let isRelay = modeSegmented.selectedSegment == 1
 
         if isRelay {
             let relayUrl = relayUrlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             let sessionId = sessionIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let pin = relayPinField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-
             guard !relayUrl.isEmpty else {
-                setStatus("请输入中继服务器地址（如 ws://host:7789）", isError: true)
+                setStatus("请输入中继服务器地址（如 wss://host:7789）", isError: true)
                 return
             }
             guard !sessionId.isEmpty else {
                 setStatus("请输入会话 ID", isError: true)
                 return
             }
-
             let params = ConnectParams(
                 mode: .relay,
                 relayUrl: relayUrl,
                 sessionId: sessionId,
-                pin: pin,
+                pin: "",
                 label: "Relay \(sessionId)",
                 authMode: .pin,
                 rememberDevice: false
@@ -504,223 +618,102 @@ public final class ConnectWindowController: NSWindowController, NSTableViewDataS
                 return
             }
             onConnectRequested?(params)
-        } else {
-            let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !host.isEmpty else {
-                setStatus("请输入目标主机 IP 或域名", isError: true)
+            return
+        }
+
+        guard let addr = parseAddress(addressField.stringValue) else {
+            setStatus("请输入有效的被控端地址，例如 wss://192.168.1.144:7788", isError: true)
+            return
+        }
+        let host = addr.host
+        let port = addr.port
+        let useTls = addr.tls
+
+        let secret = isCredentials ? passwordField.stringValue : pinField.stringValue
+        let username = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = DeviceStore.shared.findByHost(host, port: port)
+
+        var authMode: AuthMode = isCredentials ? .credentials : .pin
+        var savedToken: String? = nil
+        if isCredentials {
+            guard !username.isEmpty else {
+                setStatus("请输入用户名", isError: true)
                 return
             }
-
-            let portText = portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let port = Int(portText) ?? 7788
-            guard (1...65535).contains(port) else {
-                setStatus("端口号必须在 1 - 65535 之间", isError: true)
+            if secret.isEmpty, let token = stored?.token, !token.isEmpty {
+                authMode = .token
+                savedToken = token
+            } else if secret.isEmpty {
+                setStatus("请输入密码", isError: true)
                 return
             }
+        }
+        // Token login always keeps the device (web: rememberDevice = true for saved accounts).
+        let remember = (authMode == .token) || rememberCheckbox.state == .on
 
-            let useTls = tlsCheckbox.state == .on
-            let isCredentials = authSegmented.selectedSegment == 1
-            let secret = secretField.stringValue
-            let username = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let remember = rememberCheckbox.state == .on
+        let params = ConnectParams(
+            mode: .direct,
+            host: host,
+            port: port,
+            useTls: useTls,
+            pin: isCredentials ? "" : secret,
+            label: selectedDevice?.displayName ?? "\(host):\(port)",
+            authMode: authMode,
+            username: isCredentials ? username : nil,
+            password: isCredentials ? secret : nil,
+            token: savedToken,
+            rememberDevice: remember
+        )
+        do {
+            _ = try params.buildWebSocketURL()
+        } catch {
+            setStatus(error.localizedDescription, isError: true)
+            return
+        }
 
-            var authMode: AuthMode = isCredentials ? .credentials : .pin
-            var savedToken: String? = nil
-
-            if isCredentials {
-                guard !username.isEmpty else {
-                    setStatus("请输入用户名", isError: true)
-                    return
-                }
-                if secret.isEmpty,
-                   let existing = DeviceStore.shared.findByHost(host, port: port),
-                   let token = existing.token, !token.isEmpty {
-                    authMode = .token
-                    savedToken = token
-                } else if secret.isEmpty {
-                    setStatus("请输入密码", isError: true)
-                    return
-                }
-            }
-
-            let params = ConnectParams(
-                mode: .direct,
+        if remember {
+            let device = SavedDevice(
+                id: selectedDevice?.id ?? stored?.id ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+                name: selectedDevice?.name ?? "",
                 host: host,
                 port: port,
                 useTls: useTls,
-                pin: isCredentials ? "" : secret,
-                label: selectedDevice?.displayName ?? "\(host):\(port)",
-                authMode: authMode,
+                authMode: isCredentials ? .credentials : .pin,
+                pin: isCredentials ? nil : secret,
                 username: isCredentials ? username : nil,
-                password: isCredentials ? secret : nil,
                 token: savedToken,
-                rememberDevice: remember
+                computerName: selectedDevice?.computerName,
+                modelId: selectedDevice?.modelId,
+                serverOs: selectedDevice?.serverOs,
+                lastConnectedAt: Date()
             )
-
-            do {
-                _ = try params.buildWebSocketURL()
-            } catch {
-                setStatus(error.localizedDescription, isError: true)
-                return
-            }
-
-            if remember {
-                let device = SavedDevice(
-                    id: selectedDevice?.id ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
-                    name: selectedDevice?.name ?? "",
-                    host: host,
-                    port: port,
-                    useTls: useTls,
-                    authMode: isCredentials ? .credentials : .pin,
-                    pin: isCredentials ? nil : secret,
-                    username: isCredentials ? username : nil,
-                    token: savedToken,
-                    computerName: selectedDevice?.computerName,
-                    modelId: selectedDevice?.modelId,
-                    serverOs: selectedDevice?.serverOs,
-                    lastConnectedAt: Date()
-                )
-                DeviceStore.shared.upsertDevice(device)
-                reloadDevices()
-            }
-
-            onConnectRequested?(params)
+            DeviceStore.shared.upsertDevice(device)
+            reloadDevices()
         }
+
+        onConnectRequested?(params)
     }
 
-    @objc private func handleQuickConnect() {
-        guard let device = selectedDevice else { return }
-        populateForm(from: device)
-        handleConnect()
-    }
-
-    @objc private func handleDeviceDoubleClick() {
-        let row = devicesTableView.clickedRow
-        guard row >= 0, row < devices.count else { return }
-        selectedDevice = devices[row]
-        updateDeviceActionButtons()
-        populateForm(from: devices[row])
-        handleConnect()
-    }
-
-    @objc private func handleDeleteDevice() {
-        guard let device = selectedDevice else { return }
-        DeviceStore.shared.removeDevice(id: device.id)
-        selectedDevice = nil
-        reloadDevices()
-        setStatus("已删除设备 \(device.displayName)")
-    }
-
-    private func populateForm(from device: SavedDevice) {
-        modeSegmented.selectedSegment = 0
-        updateModeVisibility()
-
-        hostField.stringValue = device.host
-        portField.stringValue = "\(device.port)"
-        tlsCheckbox.state = device.useTls ? .on : .off
-
-        if device.authMode == .credentials || device.authMode == .token {
-            authSegmented.selectedSegment = 1
-            usernameField.stringValue = device.username ?? ""
-            secretField.stringValue = ""
-        } else {
-            authSegmented.selectedSegment = 0
-            secretField.stringValue = device.pin ?? ""
-        }
-        updateAuthVisibility()
-        rememberCheckbox.state = .on
-    }
-
-    // MARK: - NSTextFieldDelegate (Enter to connect)
+    // MARK: - NSTextFieldDelegate
 
     public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            handleConnect()
-            return true
-        }
-        return false
-    }
-
-    // MARK: - NSTableViewDataSource & Delegate
-
-    public func numberOfRows(in tableView: NSTableView) -> Int {
-        devices.count
-    }
-
-    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row >= 0, row < devices.count else { return nil }
-        let device = devices[row]
-        let cellId = NSUserInterfaceItemIdentifier("SavedDeviceCell")
-        let cell = (tableView.makeView(withIdentifier: cellId, owner: self) as? SavedDeviceCellView)
-            ?? SavedDeviceCellView(identifier: cellId)
-        cell.configure(with: device)
-        return cell
-    }
-
-    public func tableViewSelectionDidChange(_ notification: Notification) {
-        let row = devicesTableView.selectedRow
-        if row >= 0, row < devices.count {
-            selectedDevice = devices[row]
-            populateForm(from: devices[row])
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        if control === noteField {
+            finishEditNote()
         } else {
-            selectedDevice = nil
+            handleConnect()
         }
-        updateDeviceActionButtons()
-    }
-}
-
-// MARK: - SavedDeviceCellView
-
-private final class SavedDeviceCellView: NSTableCellView {
-    private let iconView = NSImageView()
-    private let nameLabel = Theme.makeLabel("", size: 13, weight: .semibold, color: Theme.textPrimary)
-    private let addrLabel = Theme.makeLabel("", size: 11.5, color: Theme.textMuted, monospaced: true)
-    private let tlsBadge = Theme.makeBadge(text: "TLS", background: Theme.accentDim, foreground: Theme.accent)
-
-    init(identifier: NSUserInterfaceItemIdentifier) {
-        super.init(frame: .zero)
-        self.identifier = identifier
-        wantsLayer = true
-        layer?.cornerRadius = 8
-
-        iconView.imageScaling = .scaleProportionallyDown
-        iconView.contentTintColor = Theme.accent
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(iconView)
-        addSubview(nameLabel)
-        addSubview(addrLabel)
-        addSubview(tlsBadge)
-
-        NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 24),
-            iconView.heightAnchor.constraint(equalToConstant: 24),
-
-            nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9),
-            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: tlsBadge.leadingAnchor, constant: -6),
-
-            tlsBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            tlsBadge.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
-
-            addrLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
-            addrLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 3),
-            addrLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-        ])
+        return true
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func configure(with device: SavedDevice) {
-        let symbol = Theme.osSymbolName(for: device.serverOs)
-        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: device.serverOs)
-        nameLabel.stringValue = device.displayName
-        addrLabel.stringValue = "\(device.host):\(device.port)"
-        tlsBadge.isHidden = !device.useTls
+    public func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        if field === sessionIdField {
+            let upper = String(field.stringValue.uppercased().prefix(6))
+            if upper != field.stringValue { field.stringValue = upper }
+        } else if field === passwordField {
+            rememberCheckbox.isHidden = usesStoredToken
+            fitWindow()
+        }
     }
 }

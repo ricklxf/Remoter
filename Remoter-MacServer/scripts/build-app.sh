@@ -69,9 +69,9 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.remoter.agent</string>
     <key>CFBundleName</key>
-    <string>RemoterAgent</string>
+    <string>Remoter</string>
     <key>CFBundleDisplayName</key>
-    <string>Remoter Agent</string>
+    <string>Remoter</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>

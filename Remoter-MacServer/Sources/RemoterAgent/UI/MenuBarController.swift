@@ -73,7 +73,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             await MainActor.run {
                 let alert = NSAlert()
                 alert.messageText = "需要屏幕录制权限"
-                alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 RemoterAgent 的开关，然后重启本 app。"
+                alert.informativeText = "请前往「系统设置 → 隐私与安全性 → 屏幕与系统录音」，打开 Remoter 的开关，然后重启本 app。"
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "打开系统设置")
                 alert.addButton(withTitle: "稍后")

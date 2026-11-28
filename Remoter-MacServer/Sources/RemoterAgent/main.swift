@@ -117,7 +117,7 @@ final class RemoterAgent {
         let ips    = getLocalIPs()
         let vpnIPs = getVPNIPs()
         print("╔══════════════════════════════════╗")
-        print("║        Remoter Mac Agent          ║")
+        print("║           Remoter Mac            ║")
         print("╚══════════════════════════════════╝")
         print("  PIN : \(pin)")
         print("  Port: \(config.port)")

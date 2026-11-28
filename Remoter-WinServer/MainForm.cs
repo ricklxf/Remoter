@@ -852,7 +852,7 @@ public partial class MainForm : Form
 
             var ips = GetLocalIPs();
             AppLog.Write("╔══════════════════════════════════╗");
-            AppLog.Write("║      Remoter Windows Agent        ║");
+            AppLog.Write("║        Remoter Windows           ║");
             AppLog.Write("╚══════════════════════════════════╝");
             AppLog.Write($"  PIN : {_pin}");
             AppLog.Write($"  Port: {_port}");

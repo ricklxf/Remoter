@@ -202,6 +202,10 @@ public final class ThemedButton: NSButton {
     public var buttonStyle: Theme.ButtonStyle {
         didSet { applyStyle() }
     }
+    /// Light (Web-style) palette, used by the Connect window; the rest of the client stays dark.
+    public var lightPalette = false {
+        didSet { applyStyle() }
+    }
     private var fontSize: CGFloat
     private var fontWeight: NSFont.Weight
     private var isHovered = false
@@ -274,10 +278,10 @@ public final class ThemedButton: NSButton {
     }
 
     private func applyStyle() {
-        let bg: NSColor
-        let fg: NSColor
-        let borderColor: NSColor
-        let borderWidth: CGFloat
+        var bg: NSColor
+        var fg: NSColor
+        var borderColor: NSColor
+        var borderWidth: CGFloat
         let radius: CGFloat
 
         switch buttonStyle {
@@ -317,6 +321,29 @@ public final class ThemedButton: NSButton {
             borderColor = .clear
             borderWidth = 0
             radius = 6
+        }
+
+        if lightPalette {
+            switch buttonStyle {
+            case .primary:
+                bg = NSColor(hex: isHovered ? 0x0F766E : 0x0D9488)
+                fg = .white
+                borderColor = .clear; borderWidth = 0
+            case .secondary:
+                bg = NSColor(hex: isHovered ? 0xE2E8F0 : 0xF1F5F9)
+                fg = NSColor(hex: 0x64748B)
+                borderColor = .clear; borderWidth = 0
+            case .toolbar:
+                bg = NSColor(hex: isHovered ? 0xE2E8F0 : 0xF1F5F9)
+                fg = NSColor(hex: 0x64748B)
+                borderColor = NSColor(hex: 0xD1D5DB); borderWidth = 1
+            case .toolbarActive:
+                bg = NSColor(hex: 0xF0F4F8)
+                fg = NSColor(hex: 0x1A1A2E)
+                borderColor = NSColor(hex: 0x0D9488); borderWidth = 1
+            default:
+                break
+            }
         }
 
         layer?.backgroundColor = bg.cgColor

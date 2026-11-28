@@ -12,6 +12,9 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     private static let outerX: CGFloat = 28
     private static let outerY: CGFloat = 24
     private static let otherAccountTitle = "+ 使用其他账户…"
+    private static let lastDirectKey = "remoter-direct-url"
+    private static let lastRelayKey = "remoter-relay-url"
+    private static let defaultDirectURL = "wss://192.168.1.144:7788"
 
     // State
     private var devices: [SavedDevice] = []
@@ -29,9 +32,8 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     // Direct
     private let directContainer = NSStackView()
     private let addressField = Theme.makeTextField(placeholder: "wss://192.168.1.100:7788")
-    private let lanSection = NSStackView()
-    private let lanPillsStack = NSStackView()
     private var lanPeers: [DiscoveredLanPeer] = []
+    private var selectedPeerHost: String?
     private let lanBrowser = LanDiscoveryBrowser()
 
     // Saved-account banner
@@ -67,6 +69,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     // Footer
     private let errorBox = ThemedLayerView()
     private let statusLabel = Theme.makeLabel("", size: 13, color: Theme.textMuted)
+    private let reloginButton = Theme.makeButton(title: "重新登录", style: .toolbar, fontSize: 12)
     private let connectButton = Theme.makeButton(title: "连接", style: .primary, fontSize: 15, weight: .semibold)
 
     public init() {
@@ -86,7 +89,10 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         reloadDevices()
         if let latest = devices.max(by: { $0.lastConnectedAt < $1.lastConnectedAt }) {
             selectDevice(latest)
+        } else {
+            addressField.stringValue = UserDefaults.standard.string(forKey: Self.lastDirectKey) ?? Self.defaultDirectURL
         }
+        relayUrlField.stringValue = UserDefaults.standard.string(forKey: Self.lastRelayKey) ?? ""
         refreshAll()
         lanBrowser.onPeersChanged = { [weak self] peers in
             DispatchQueue.main.async { self?.updateLanPeers(peers) }
@@ -120,7 +126,20 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         errorBox.isHidden = message.isEmpty
         errorBox.fillColor = isError ? Theme.dangerBackground : .clear
         errorBox.strokeColor = isError ? Theme.dangerBorder : .clear
+        // Web: a rejected token on a saved account offers 「重新登录」 (forget it and type credentials).
+        let offerRelogin = isError && message.contains("Token") && selectedDevice != nil && !isRelay
+        reloginButton.isHidden = !offerRelogin
+        statusLabel.preferredMaxLayoutWidth = Self.cardWidth - Self.padX * 2 - 24 - (offerRelogin ? 80 : 0)
         fitWindow()
+    }
+
+    @objc private func relogin() {
+        let username = selectedDevice?.username ?? ""
+        forgetAccount()
+        isCredentials = true
+        usernameField.stringValue = username
+        refreshAll()
+        setStatus("")
     }
 
     public func showAndFocus(errorMessage: String? = nil) {
@@ -174,12 +193,23 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         statusLabel.maximumNumberOfLines = 3
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.preferredMaxLayoutWidth = Self.cardWidth - Self.padX * 2 - 24
-        errorBox.addSubview(statusLabel)
+        reloginButton.target = self
+        reloginButton.action = #selector(relogin)
+        reloginButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        reloginButton.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        reloginButton.isHidden = true
+        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let errorRow = NSStackView(views: [statusLabel, reloginButton])
+        errorRow.orientation = .horizontal
+        errorRow.alignment = .centerY
+        errorRow.spacing = 8
+        errorRow.translatesAutoresizingMaskIntoConstraints = false
+        errorBox.addSubview(errorRow)
         NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: errorBox.leadingAnchor, constant: 12),
-            statusLabel.trailingAnchor.constraint(equalTo: errorBox.trailingAnchor, constant: -12),
-            statusLabel.topAnchor.constraint(equalTo: errorBox.topAnchor, constant: 8),
-            statusLabel.bottomAnchor.constraint(equalTo: errorBox.bottomAnchor, constant: -8),
+            errorRow.leadingAnchor.constraint(equalTo: errorBox.leadingAnchor, constant: 12),
+            errorRow.trailingAnchor.constraint(equalTo: errorBox.trailingAnchor, constant: -12),
+            errorRow.topAnchor.constraint(equalTo: errorBox.topAnchor, constant: 8),
+            errorRow.bottomAnchor.constraint(equalTo: errorBox.bottomAnchor, constant: -8),
         ])
         errorBox.isHidden = true
 
@@ -219,20 +249,6 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     private func buildDirectContainer() {
-        // LAN quick-pick pills (hidden when nothing discovered)
-        let lanLabel = Theme.makeLabel("局域网设备 (点击自动填入)", size: 11.5, weight: .medium, color: Theme.accent)
-        lanPillsStack.orientation = .horizontal
-        lanPillsStack.alignment = .centerY
-        lanPillsStack.spacing = 6
-        lanPillsStack.translatesAutoresizingMaskIntoConstraints = false
-        lanSection.orientation = .vertical
-        lanSection.alignment = .leading
-        lanSection.spacing = 4
-        lanSection.translatesAutoresizingMaskIntoConstraints = false
-        lanSection.addArrangedSubview(lanLabel)
-        lanSection.addArrangedSubview(lanPillsStack)
-        lanSection.isHidden = true
-
         buildSavedBanner()
 
         authTabsRow.orientation = .horizontal
@@ -252,7 +268,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         rememberCheckbox.font = Theme.font(size: 13)
 
         let stack = column(
-            [labeled("被控端地址", addressField), lanSection, savedBanner, authTabsRow,
+            [labeled("被控端地址", addressField), savedBanner, authTabsRow,
              pinSection, credentialsSection, rememberCheckbox],
             spacing: 14,
             into: directContainer
@@ -398,18 +414,24 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     private func refreshBanner() {
-        savedBanner.isHidden = devices.isEmpty
+        let peers = visiblePeers
+        savedBanner.isHidden = devices.isEmpty && peers.isEmpty
         updateAuthVisibility()
 
         accountPopup.removeAllItems()
         for d in devices {
             accountPopup.addItem(withTitle: "\(d.displayName) (\(d.host))")
         }
+        for peer in peers {
+            accountPopup.addItem(withTitle: "📡 \(peer.name) (\(peer.host))")
+        }
         accountPopup.addItem(withTitle: Self.otherAccountTitle)
         if let selected = selectedDevice, let idx = devices.firstIndex(where: { $0.id == selected.id }) {
             accountPopup.selectItem(at: idx)
+        } else if let host = selectedPeerHost, let idx = peers.firstIndex(where: { $0.host == host }) {
+            accountPopup.selectItem(at: devices.count + idx)
         } else {
-            accountPopup.selectItem(at: devices.count)
+            accountPopup.selectItem(at: devices.count + peers.count)
         }
 
         let hasSelection = selectedDevice != nil
@@ -483,10 +505,10 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
 
     // MARK: - Selecting / editing saved devices
 
-    private func selectDevice(_ device: SavedDevice) {
+    private func selectDevice(_ device: SavedDevice, fillAddress: Bool = true) {
         selectedDevice = device
         isEditingNote = false
-        addressField.stringValue = formatAddress(device)
+        if fillAddress { addressField.stringValue = formatAddress(device) }
         if device.authMode == .credentials || device.authMode == .token {
             isCredentials = true
             usernameField.stringValue = device.username ?? ""
@@ -501,9 +523,25 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     @objc private func accountPopupChanged() {
         let idx = accountPopup.indexOfSelectedItem
         setStatus("")
+        let peers = visiblePeers
         if idx >= 0, idx < devices.count {
+            selectedPeerHost = nil
             selectDevice(devices[idx])
+        } else if idx >= devices.count, idx < devices.count + peers.count {
+            // Discovered on the LAN but never connected: fill the address and ask for a PIN.
+            let peer = peers[idx - devices.count]
+            selectedDevice = nil
+            selectedPeerHost = peer.host
+            isEditingNote = false
+            isCredentials = false
+            pinField.stringValue = ""
+            passwordField.stringValue = ""
+            addressField.stringValue = "wss://\(peer.host):\(peer.wsPort)"
+            refreshAll()
+            window?.makeFirstResponder(pinField)
+            return
         } else {
+            selectedPeerHost = nil
             selectedDevice = nil
             isEditingNote = false
             isCredentials = false
@@ -550,34 +588,16 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
 
     // MARK: - LAN discovery
 
-    private func updateLanPeers(_ peers: [DiscoveredLanPeer]) {
-        lanPeers = peers
-        for view in lanPillsStack.arrangedSubviews {
-            lanPillsStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        lanSection.isHidden = peers.isEmpty
-        for (idx, peer) in peers.prefix(4).enumerated() {
-            let btn = Theme.makeButton(title: "📡 \(peer.name)", style: .toolbar, fontSize: 11.5, weight: .medium)
-            btn.tag = idx
-            btn.target = self
-            btn.action = #selector(lanPeerPillClicked(_:))
-            btn.toolTip = "\(peer.name) — \(peer.host):\(peer.wsPort)"
-            btn.heightAnchor.constraint(equalToConstant: 24).isActive = true
-            lanPillsStack.addArrangedSubview(btn)
-        }
-        fitWindow()
+    /// Discovered peers that are not already in the saved list (those appear as saved accounts).
+    private var visiblePeers: [DiscoveredLanPeer] {
+        let saved = Set(devices.map { $0.host.lowercased() })
+        return lanPeers.filter { !saved.contains($0.host.lowercased()) }
     }
 
-    @objc private func lanPeerPillClicked(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < lanPeers.count else { return }
-        let peer = lanPeers[sender.tag]
-        isRelay = false
-        selectedDevice = nil
-        addressField.stringValue = "wss://\(peer.host):\(peer.wsPort)"
-        refreshAll()
-        setStatus("已填入局域网设备: \(peer.name) (\(peer.host):\(peer.wsPort))")
-        window?.makeFirstResponder(isCredentials ? passwordField : pinField)
+    private func updateLanPeers(_ peers: [DiscoveredLanPeer]) {
+        lanPeers = peers
+        refreshBanner()
+        fitWindow()
     }
 
     // MARK: - Tabs
@@ -612,6 +632,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
                 setStatus("请输入会话 ID", isError: true)
                 return
             }
+            UserDefaults.standard.set(relayUrl, forKey: Self.lastRelayKey)
             let params = ConnectParams(
                 mode: .relay,
                 relayUrl: relayUrl,
@@ -638,6 +659,7 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         let host = addr.host
         let port = addr.port
         let useTls = addr.tls
+        UserDefaults.standard.set("\(useTls ? "wss" : "ws")://\(host):\(port)", forKey: Self.lastDirectKey)
 
         let secret = isCredentials ? passwordField.stringValue : pinField.stringValue
         let username = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -724,6 +746,28 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         } else if field === passwordField {
             updateAuthVisibility()
             fitWindow()
+        } else if field === addressField {
+            syncSelectionToAddress()
         }
+    }
+
+    /// Web: changing the address loads the saved account for it (selected → credential fields hidden);
+    /// an address with no saved account falls back to the PIN form.
+    private func syncSelectionToAddress() {
+        let match: SavedDevice? = parseAddress(addressField.stringValue).flatMap { addr in
+            devices.first { $0.host.caseInsensitiveCompare(addr.host) == .orderedSame && $0.port == addr.port }
+        }
+        if let match {
+            guard selectedDevice?.id != match.id else { return }
+            selectedPeerHost = nil
+            selectDevice(match, fillAddress: false)
+        } else {
+            guard selectedDevice != nil else { return }
+            selectedDevice = nil
+            isCredentials = false
+            pinField.stringValue = ""
+            passwordField.stringValue = ""
+        }
+        refreshAll()
     }
 }

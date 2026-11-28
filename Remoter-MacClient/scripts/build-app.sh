@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_NAME="RemoterClient"
 BUNDLE_ID="com.remoter.client"
-APP_VERSION="$(sed -n 's/.*kAppVersion *= *"\([^"]*\)".*/\1/p' "${ROOT_DIR}/Sources/RemoterClient/AppVersion.swift" | head -n 1)"
+APP_VERSION="$(sed -n 's/.*kAppVersion *= *"\([^"]*\)".*/\1/p' "${PROJECT_DIR}/Sources/RemoterClient/AppVersion.swift" | head -n 1)"
 APP_VERSION="${APP_VERSION:-3.0.0}"
 
 BUILD_CONFIG="debug"
@@ -59,8 +59,8 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
-if [[ -f "${ROOT_DIR}/Resources/AppIcon.icns" ]]; then
-    cp "${ROOT_DIR}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+if [[ -f "${PROJECT_DIR}/Resources/AppIcon.icns" ]]; then
+    cp "${PROJECT_DIR}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 fi
 
 printf 'APPL????' > "${CONTENTS_DIR}/PkgInfo"

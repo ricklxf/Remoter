@@ -77,6 +77,8 @@ public enum Theme {
         secure: Bool = false
     ) -> NSTextField {
         let field: NSTextField = secure ? ThemedSecureTextField() : ThemedTextField()
+        // Stops macOS from offering its "密码…" AutoFill popup over our own PIN / password fields.
+        field.contentType = secure ? .oneTimeCode : nil
         field.stringValue = text
         field.placeholderString = placeholder
         field.font = font(size: 13)
@@ -470,7 +472,53 @@ public final class ThemedLayerView: NSView {
 
 // MARK: - Themed text fields
 
+/// Single-line text rect inset horizontally and centered vertically inside the field
+/// (AppKit draws text at the top of a tall field by default).
+private func centeredTextRect(_ base: NSRect, cell: NSCell, bounds: NSRect) -> NSRect {
+    var r = base
+    let textHeight = cell.cellSize(forBounds: bounds).height
+    r.origin.x += 8
+    r.size.width = max(0, r.size.width - 16)
+    r.origin.y += max(0, (r.size.height - textHeight) / 2)
+    r.size.height = min(r.size.height, textHeight)
+    return r
+}
+
+final class CenteredTextFieldCell: NSTextFieldCell {
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        centeredTextRect(super.titleRect(forBounds: rect), cell: self, bounds: rect)
+    }
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: titleRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: titleRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, start: selStart, length: selLength)
+    }
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: titleRect(forBounds: cellFrame), in: controlView)
+    }
+}
+
+final class CenteredSecureTextFieldCell: NSSecureTextFieldCell {
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        centeredTextRect(super.titleRect(forBounds: rect), cell: self, bounds: rect)
+    }
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: titleRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: titleRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, start: selStart, length: selLength)
+    }
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: titleRect(forBounds: cellFrame), in: controlView)
+    }
+}
+
 final class ThemedTextField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { CenteredTextFieldCell.self }
+        set {}
+    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         Theme.applyFieldColors(self)
@@ -482,6 +530,10 @@ final class ThemedTextField: NSTextField {
 }
 
 final class ThemedSecureTextField: NSSecureTextField {
+    override class var cellClass: AnyClass? {
+        get { CenteredSecureTextFieldCell.self }
+        set {}
+    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         Theme.applyFieldColors(self)

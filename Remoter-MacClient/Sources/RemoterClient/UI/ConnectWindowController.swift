@@ -12,6 +12,8 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     private static let outerX: CGFloat = 28
     private static let outerY: CGFloat = 24
     private static let otherAccountTitle = "+ 使用其他账户…"
+    private static let peerTagBase = 1000
+    private static let otherTag = -1
     private static let lastDirectKey = "remoter-direct-url"
     private static let lastRelayKey = "remoter-relay-url"
     private static let defaultDirectURL = "wss://192.168.1.144:7788"
@@ -418,20 +420,35 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
         savedBanner.isHidden = devices.isEmpty && peers.isEmpty
         updateAuthVisibility()
 
+        // Item tags: saved account = its index, LAN-discovered = peerTagBase + index, other = otherTag.
         accountPopup.removeAllItems()
-        for d in devices {
-            accountPopup.addItem(withTitle: "\(d.displayName) (\(d.host))")
+        let menu = accountPopup.menu ?? NSMenu()
+        for (i, d) in devices.enumerated() {
+            let item = NSMenuItem(title: "\(d.displayName) (\(d.host))", action: nil, keyEquivalent: "")
+            item.tag = i
+            menu.addItem(item)
         }
-        for peer in peers {
-            accountPopup.addItem(withTitle: "📡 \(peer.name) (\(peer.host))")
+        if !peers.isEmpty {
+            if !devices.isEmpty { menu.addItem(.separator()) }
+            let header = NSMenuItem(title: "局域网发现（未登录过）", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            for (j, peer) in peers.enumerated() {
+                let item = NSMenuItem(title: "\(peer.name) (\(peer.host))", action: nil, keyEquivalent: "")
+                item.tag = Self.peerTagBase + j
+                menu.addItem(item)
+            }
         }
-        accountPopup.addItem(withTitle: Self.otherAccountTitle)
+        menu.addItem(.separator())
+        let other = NSMenuItem(title: Self.otherAccountTitle, action: nil, keyEquivalent: "")
+        other.tag = Self.otherTag
+        menu.addItem(other)
         if let selected = selectedDevice, let idx = devices.firstIndex(where: { $0.id == selected.id }) {
-            accountPopup.selectItem(at: idx)
+            accountPopup.selectItem(withTag: idx)
         } else if let host = selectedPeerHost, let idx = peers.firstIndex(where: { $0.host == host }) {
-            accountPopup.selectItem(at: devices.count + idx)
+            accountPopup.selectItem(withTag: Self.peerTagBase + idx)
         } else {
-            accountPopup.selectItem(at: devices.count + peers.count)
+            accountPopup.selectItem(withTag: Self.otherTag)
         }
 
         let hasSelection = selectedDevice != nil
@@ -521,15 +538,15 @@ public final class ConnectWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     @objc private func accountPopupChanged() {
-        let idx = accountPopup.indexOfSelectedItem
+        let tag = accountPopup.selectedItem?.tag ?? Self.otherTag
         setStatus("")
         let peers = visiblePeers
-        if idx >= 0, idx < devices.count {
+        if tag >= 0, tag < devices.count {
             selectedPeerHost = nil
-            selectDevice(devices[idx])
-        } else if idx >= devices.count, idx < devices.count + peers.count {
+            selectDevice(devices[tag])
+        } else if tag >= Self.peerTagBase, tag - Self.peerTagBase < peers.count {
             // Discovered on the LAN but never connected: fill the address and ask for a PIN.
-            let peer = peers[idx - devices.count]
+            let peer = peers[tag - Self.peerTagBase]
             selectedDevice = nil
             selectedPeerHost = peer.host
             isEditingNote = false

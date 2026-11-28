@@ -1343,13 +1343,23 @@ public final class DesktopWindowController: NSWindowController, NSWindowDelegate
     public func windowDidEnterFullScreen(_ notification: Notification) {
         isFullscreen = true
         toolbarPanel?.updateState(isFullscreen: true)
-        toolbarPanel?.updatePosition()
+        reattachToolbar()
     }
 
     public func windowDidExitFullScreen(_ notification: Notification) {
         isFullscreen = false
         toolbarPanel?.updateState(isFullscreen: false)
-        toolbarPanel?.updatePosition()
+        reattachToolbar()
+    }
+
+    /// 进入/退出全屏会换 Space，子窗口关系会被系统丢掉，悬浮栏随之消失；切换完成后重新挂载并置前。
+    private func reattachToolbar() {
+        guard let win = window, let toolbar = toolbarPanel else { return }
+        if toolbar.parent !== win {
+            win.addChildWindow(toolbar, ordered: .above)
+        }
+        toolbar.updatePosition()
+        toolbar.orderFront(nil)
     }
 }
 

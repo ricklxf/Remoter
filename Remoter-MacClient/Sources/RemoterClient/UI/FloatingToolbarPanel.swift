@@ -99,6 +99,9 @@ public final class FloatingToolbarPanel: NSPanel {
     private let fullscreenButton = Theme.makeButton(title: "全屏", style: .toolbar, fontSize: 11.5)
     private let disconnectButton = Theme.makeButton(title: "断开", style: .danger, fontSize: 11.5, weight: .semibold)
     private let collapseButton = Theme.makeButton(title: "▲", style: .ghost, fontSize: 11)
+    /// 次要功能（切屏/隐私屏/游戏鼠标/键位互换/剪贴板/电源）收进此菜单，避免控制栏过长超出屏幕。
+    private let moreButton = Theme.makeButton(title: "更多 ▾", style: .toolbar, fontSize: 11.5)
+    private var cachedBarWidth: CGFloat?
 
     private let qualityMenu = NSMenu()
     private let displayMenu = NSMenu()
@@ -118,7 +121,7 @@ public final class FloatingToolbarPanel: NSPanel {
         hidesOnDeactivate = false
         isFloatingPanel = true
         becomesKeyOnlyIfNeeded = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        collectionBehavior = [.fullScreenAuxiliary]
 
         buildUI()
         setExpanded(false)
@@ -211,14 +214,17 @@ public final class FloatingToolbarPanel: NSPanel {
         collapseButton.target = self
         collapseButton.action = #selector(collapseTapped)
 
+        moreButton.target = self
+        moreButton.action = #selector(showMoreMenu)
+
         // Bar stack
         let sep2 = Theme.makeSeparator(vertical: true)
         sep2.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let controls: [NSView] = [
-            displayButton, cycleDisplayButton, qualityButton,
+            displayButton, qualityButton,
             audioButton, volumeSlider, micButton,
-            privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton,
+            filesButton, moreButton,
             sep2, fullscreenButton, disconnectButton, collapseButton
         ]
         for view in controls {
@@ -231,9 +237,10 @@ public final class FloatingToolbarPanel: NSPanel {
         barStack.translatesAutoresizingMaskIntoConstraints = false
         rootContainer.addSubview(barStack)
 
-        for btn in [displayButton, cycleDisplayButton, qualityButton, audioButton, micButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton, fullscreenButton, disconnectButton, collapseButton] {
+        for btn in [moreButton, displayButton, cycleDisplayButton, qualityButton, audioButton, micButton, privacyButton, pointerLockButton, keySwapButton, clipboardButton, filesButton, powerButton, fullscreenButton, disconnectButton, collapseButton] {
             btn.heightAnchor.constraint(equalToConstant: 26).isActive = true
         }
+        moreButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
         displayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
         cycleDisplayButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
         qualityButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
@@ -280,9 +287,16 @@ public final class FloatingToolbarPanel: NSPanel {
 
         let targetSize: NSSize
         if isExpanded {
-            barStack.layoutSubtreeIfNeeded()
-            let fittingW = max(540, barStack.fittingSize.width + 6)
-            let clampedW = min(contentScreenRect.width - 24, fittingW)
+            let fittingW: CGFloat
+            if let cached = cachedBarWidth {
+                fittingW = cached
+            } else {
+                barStack.layoutSubtreeIfNeeded()
+                fittingW = barStack.fittingSize.width + 6
+                cachedBarWidth = fittingW
+            }
+            let visW = (owner.screen ?? NSScreen.main)?.visibleFrame.width ?? .greatestFiniteMagnitude
+            let clampedW = max(300, min(contentScreenRect.width - 24, visW - 12, fittingW))
             targetSize = NSSize(width: clampedW, height: Self.barHeight)
         } else {
             let pillW = max(92, min(140, pillButton.attributedTitle.size().width + 26))
@@ -298,11 +312,15 @@ public final class FloatingToolbarPanel: NSPanel {
             y = max(vis.minY + margin, min(y, vis.maxY - targetSize.height - margin))
             x = max(vis.minX + margin, min(x, vis.maxX - targetSize.width - margin))
         }
-        setFrame(NSRect(x: round(x), y: round(y), width: round(targetSize.width), height: round(targetSize.height)), display: true)
+        let newFrame = NSRect(x: round(x), y: round(y), width: round(targetSize.width), height: round(targetSize.height))
+        if frame != newFrame {
+            setFrame(newFrame, display: false)
+        }
     }
 
     public func setExpanded(_ expanded: Bool) {
         isExpanded = expanded
+        cachedBarWidth = nil
         pillButton.isHidden = expanded
         barStack.isHidden = !expanded
         rootContainer.cornerRadius = expanded ? 10 : 12
@@ -340,12 +358,14 @@ public final class FloatingToolbarPanel: NSPanel {
         cycleDisplayButton.isHidden = !hasMultiple
         rebuildDisplayMenu()
         rebuildQualityMenu()
+        cachedBarWidth = nil
         if isExpanded { updatePosition() }
     }
 
     public func updateHostOS(_ serverOs: String) {
         isWindowsHost = serverOs.lowercased().contains("win")
         keySwapButton.isHidden = !isWindowsHost
+        cachedBarWidth = nil
         if isExpanded { updatePosition() }
     }
 
@@ -435,6 +455,10 @@ public final class FloatingToolbarPanel: NSPanel {
 
         if needsMenuRebuild {
             rebuildQualityMenu()
+        }
+        if audioOn != nil || isFullscreen != nil || pointerLocked != nil {
+            cachedBarWidth = nil
+            if self.isExpanded { updatePosition() }
         }
     }
 
@@ -683,6 +707,26 @@ public final class FloatingToolbarPanel: NSPanel {
     @objc private func showQualityMenu() { popMenu(qualityMenu, under: qualityButton) }
     @objc private func showDisplayMenu() { popMenu(displayMenu, under: displayButton) }
     @objc private func showPowerMenu() { popMenu(powerMenu, under: powerButton) }
+
+    @objc private func showMoreMenu() {
+        let menu = NSMenu()
+        func add(_ title: String, _ action: Selector, on: Bool = false) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.state = on ? .on : .off
+            menu.addItem(item)
+        }
+        if displays.count > 1 { add("一键切屏", #selector(cycleDisplayTapped)) }
+        add("隐私屏", #selector(privacyTapped), on: privacyOn)
+        add(pointerLocked ? "游戏鼠标（锁定中）" : "游戏鼠标", #selector(pointerLockTapped), on: pointerLocked)
+        if isWindowsHost { add("⌘↔Ctrl 键位互换", #selector(keySwapTapped), on: macWinSwapOn) }
+        add("剪贴板同步", #selector(clipboardTapped), on: clipboardSyncOn)
+        menu.addItem(.separator())
+        let powerRoot = NSMenuItem(title: "电源", action: nil, keyEquivalent: "")
+        powerRoot.submenu = powerMenu
+        menu.addItem(powerRoot)
+        popMenu(menu, under: moreButton)
+    }
     @objc private func audioTapped() { onAudioToggled?(!audioOn) }
     @objc private func volumeSliderChanged() { onVolumeChanged?(volumeSlider.floatValue) }
     @objc private func micTapped() { onMicToggled?(!micOn) }

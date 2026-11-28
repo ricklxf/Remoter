@@ -573,6 +573,8 @@ public final class UdpVideoReceiver: @unchecked Sendable {
 
     /// Handles strictly video-first UDP audio packet (`0x14`), completely isolated
     /// from video `lastDeliveredFrameId` / `awaitingKeyframe` / `frames`.
+    // NOTE: never build Data from `&recvScratch[i]`: that is the address of ONE element, not a safe view of the
+    // buffer, and made every AES-GCM check fail (zero UDP video/audio frames delivered). Always slice the array.
     private func handleAudioPacketLocked(count: Int) {
         guard count >= Self.videoHeaderSize else { return }
         let seq = (UInt32(recvScratch[4]) << 24)
@@ -597,9 +599,9 @@ public final class UdpVideoReceiver: @unchecked Sendable {
                 recvScratch[4], recvScratch[5], recvScratch[6], recvScratch[7],
                 recvScratch[8], recvScratch[9], recvScratch[10], recvScratch[11]
             ]
-            let header20 = Data(bytes: &recvScratch[0], count: Self.videoHeaderSize)
-            let ciphertext = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
-            let tag = Data(bytes: &recvScratch[Self.videoHeaderSize + payloadLen], count: Self.gcmTagSize)
+            let header20 = Data(recvScratch[0..<Self.videoHeaderSize])
+            let ciphertext = Data(recvScratch[Self.videoHeaderSize..<(Self.videoHeaderSize + payloadLen)])
+            let tag = Data(recvScratch[(Self.videoHeaderSize + payloadLen)..<(Self.videoHeaderSize + payloadLen + Self.gcmTagSize)])
             guard let nonce = try? AES.GCM.Nonce(data: nonceBytes),
                   let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag),
                   let plaintext = try? AES.GCM.open(box, using: key, authenticating: header20) else {
@@ -608,7 +610,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             payload = plaintext
         } else {
             guard count >= Self.videoHeaderSize + payloadLen else { return }
-            payload = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
+            payload = Data(recvScratch[Self.videoHeaderSize..<(Self.videoHeaderSize + payloadLen)])
         }
 
         lastAudioSeq = seq
@@ -705,9 +707,9 @@ public final class UdpVideoReceiver: @unchecked Sendable {
                 recvScratch[4], recvScratch[5], recvScratch[6], recvScratch[7],
                 recvScratch[8], recvScratch[9], recvScratch[10], recvScratch[11]
             ]
-            let header20 = Data(bytes: &recvScratch[0], count: Self.videoHeaderSize)
-            let ciphertext = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
-            let tag = Data(bytes: &recvScratch[Self.videoHeaderSize + payloadLen], count: Self.gcmTagSize)
+            let header20 = Data(recvScratch[0..<Self.videoHeaderSize])
+            let ciphertext = Data(recvScratch[Self.videoHeaderSize..<(Self.videoHeaderSize + payloadLen)])
+            let tag = Data(recvScratch[(Self.videoHeaderSize + payloadLen)..<(Self.videoHeaderSize + payloadLen + Self.gcmTagSize)])
             guard let nonce = try? AES.GCM.Nonce(data: nonceBytes),
                   let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag),
                   let plaintext = try? AES.GCM.open(box, using: key, authenticating: header20) else {
@@ -716,7 +718,7 @@ public final class UdpVideoReceiver: @unchecked Sendable {
             payload = plaintext
         } else {
             guard count >= Self.videoHeaderSize + payloadLen else { return }
-            payload = Data(bytes: &recvScratch[Self.videoHeaderSize], count: payloadLen)
+            payload = Data(recvScratch[Self.videoHeaderSize..<(Self.videoHeaderSize + payloadLen)])
         }
 
         let nowMs = Self.monotonicMs()

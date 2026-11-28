@@ -169,16 +169,21 @@ public final class InputManager {
                 momentumPhase: momentumPhase
             )
         } else {
-            // Discrete mouse wheel: standard 120 units per detent
-            let dx = Int((event.scrollingDeltaX * 120.0).rounded())
-            let dy = Int((event.scrollingDeltaY * 120.0).rounded())
+            // Discrete mouse wheel. `scrollingDelta*` is already in lines (~1 per notch), which is what the
+            // host expects for dx/dy ("notches"; it injects notches * 100px). Sending *120 here (the Windows
+            // unit) made the host scroll 12000px per notch, i.e. straight to the end of the page.
+            let lineX = event.scrollingDeltaX
+            let lineY = event.scrollingDeltaY
+            func notches(_ v: CGFloat) -> Int { v == 0 ? 0 : (v > 0 ? max(1, Int(v.rounded())) : min(-1, Int(v.rounded()))) }
+            let dx = notches(lineX)
+            let dy = notches(lineY)
             guard dx != 0 || dy != 0 else { return }
 
             connection.sendMouseScroll(
                 dx: dx,
                 dy: dy,
-                px: nil,
-                py: nil,
+                px: Int((lineX * 100.0).rounded()),
+                py: Int((lineY * 100.0).rounded()),
                 isPrecise: false,
                 phase: nil,
                 momentumPhase: nil
